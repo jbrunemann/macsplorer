@@ -40,7 +40,7 @@ frame. The fixture folder is built in `app.rs` `mod screenshot`.
   history limit, "expand to open folder" default).
 - Windows 2000 look is a hard requirement: system colors in `theme::color`,
   3D edges via `theme::bevel`, no hover highlight in lists, selection
-  highlights only the label text, Tahoma 8pt (loaded from
+  highlights only the label text, Tahoma at 12 px, one step above Win2000's 8pt (loaded from
   `/System/Library/Fonts/Supplemental`, not bundled). Every file icon is the
   Win2000 paper page (`theme::paint_page`) with the Seti glyph as an emblem;
   apps/packages/Finder custom icons use the real macOS icon; folders are the

@@ -39,7 +39,7 @@ pub mod color {
 }
 use color::*;
 
-pub const FONT_SIZE: f32 = 11.0;
+pub const FONT_SIZE: f32 = 12.0;
 const TAHOMA: &str = "/System/Library/Fonts/Supplemental/Tahoma.ttf";
 const TAHOMA_BOLD: &str = "/System/Library/Fonts/Supplemental/Tahoma Bold.ttf";
 
