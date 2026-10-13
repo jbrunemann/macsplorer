@@ -1,0 +1,38 @@
+name: Release
+
+# Push a tag like v0.1.0 to build Macsplorer.app and attach it to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add Intel target
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace
+      - name: Bundle universal app
+        run: scripts/bundle-macos.sh --universal
+      - name: Zip
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent target/release/Macsplorer.app Macsplorer-macOS.zip
+          shasum -a 256 Macsplorer-macOS.zip > Macsplorer-macOS.zip.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Macsplorer-macOS
+          path: Macsplorer-macOS.zip*
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" Macsplorer-macOS.zip Macsplorer-macOS.zip.sha256 \
+            --title "Macsplorer ${GITHUB_REF_NAME#v}" --generate-notes

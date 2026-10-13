@@ -55,7 +55,19 @@ and still opens your files with the apps you already use on your Mac.
 
 ## Install
 
-You need a recent Rust toolchain.
+**Download:** grab `Macsplorer-macOS.zip` from the
+[latest release](https://github.com/jbrunemann/macsplorer/releases/latest),
+unzip it and drag `Macsplorer.app` to Applications. It's a universal build
+(Apple silicon and Intel, macOS 11 or later).
+
+The app isn't notarized, so the first launch is blocked by Gatekeeper. Either
+right-click the app and choose **Open**, or clear the quarantine flag once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Macsplorer.app
+```
+
+**Build from source:** you need a recent Rust toolchain.
 
 ```sh
 git clone https://github.com/jbrunemann/macsplorer.git

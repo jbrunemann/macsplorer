@@ -1,10 +1,30 @@
 #!/bin/sh
 # Builds target/release/Macsplorer.app with the app icon.
-# Usage: scripts/bundle-macos.sh [--open]
+# Usage: scripts/bundle-macos.sh [--open] [--universal]
+#   --universal  build for Apple silicon and Intel and merge them with lipo
+#                (needs both rustup targets; used by the release workflow)
 set -eu
 cd "$(dirname "$0")/.."
 
-cargo build --release -p macsplorer
+open_app=0
+universal=0
+for arg in "$@"; do
+  case "$arg" in
+    --open) open_app=1 ;;
+    --universal) universal=1 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+if [ "$universal" = 1 ]; then
+  cargo build --release -p macsplorer --target aarch64-apple-darwin
+  cargo build --release -p macsplorer --target x86_64-apple-darwin
+  lipo -create -output target/release/macsplorer \
+    target/aarch64-apple-darwin/release/macsplorer \
+    target/x86_64-apple-darwin/release/macsplorer
+else
+  cargo build --release -p macsplorer
+fi
 [ -f assets/macsplorer.icns ] || cargo run -q -p make-icon
 
 version=$(cargo pkgid -p macsplorer | sed 's/.*[#@]//')
@@ -37,5 +57,5 @@ codesign --force --sign - "$app" >/dev/null 2>&1 || true
 # Make Finder pick up the new icon right away.
 touch "$app"
 echo "built $app"
-[ "${1:-}" = "--open" ] && open "$app"
+[ "$open_app" = 1 ] && open "$app"
 exit 0
