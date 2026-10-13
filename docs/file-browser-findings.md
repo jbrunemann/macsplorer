@@ -7,6 +7,7 @@ Targets (all in `analysis/`, PDBs from the Microsoft symbol server, names recove
 | `ExplorerFrame.dll` | 10.0.10240.21072 | 11,129 |
 | `shell32.dll` | 10.0.10240.21161 | 38,591 |
 | `Windows.Storage.dll` | 10.0.10240.21161 | 50,733 |
+| `comctl32.dll` (v6, WinSxS) | 6.10 (th1.251008-0227) | 12,862 symbols |
 
 Method: Ghidra 12.1.4 pseudocode through REA (by address; Ghidra headless did not load the PDBs) plus `llvm-objdump` with PDB names. Static only, nothing executed.
 **Observed** = read from code. **Inferred** = my interpretation. Section 3 is design advice for macsplorer, not Windows behavior.
@@ -97,6 +98,203 @@ per line (`core::copy_path`). Cmd+Option+C is Finder's shortcut for the same
 (Finder: Option turns "Copy" into "Copy "name" as Pathname", plain text, not
 verified here).
 
+### 2.4 View modes (Large Icons, List, Details)
+
+**Mode switch, observed.** `CDefView::SetViewModeAndIconSize` (shell32 0x18027be20) accepts a
+`FOLDERVIEWMODE` of -1 or 1..8 and an icon size of -1 or 16..256 px (else `E_INVALIDARG`), then
+calls `CDefView::_SwitchToViewModeAndIconSize` (0x1802890c4), which:
+
+1. Logs which menu choice this was: List, Details, Tiles, Content by mode; otherwise by icon size
+   16 = Small, 48 = Medium, 96 = Large, 256 = Extra large icons. So the Windows 10 "Large icons"
+   are 96 px, not Win2000's 32 px.
+2. Folds the icon modes together. `LogicalViewModeFromViewMode` (0x18014f2a0) maps List → list,
+   Details → details, Tile → tiles, Content → content, and everything else (Icon, SmallIcon,
+   Thumbnail, Thumbstrip) → icons. Inside the icons group, the icon size picks the layout:
+   `FVM_ICON` at ≤ 32 px becomes `FVM_SMALLICON`, `FVM_SMALLICON` above 32 px becomes
+   `FVM_THUMBNAIL`, `FVM_THUMBSTRIP` becomes `FVM_THUMBNAIL` (a folder flag, bit 17 of the view
+   settings flags, suppresses the first two).
+3. Stores mode + size in the view settings and fires change notifications (one for the mode, one
+   for the size, only if each actually changed).
+4. Starts a 1 s timer on the view window. **Inferred:** a deferred save of the per-folder view
+   state (`CViewSettings`).
+
+Nothing in this path touches the selection, focus item or sort. **Inferred:** they carry over a
+mode switch, because the item view is rebuilt over the same model (next paragraph).
+
+**Layout per mode, observed.** In ExplorerFrame, `UIItemsView::_CalculateViewMode` (0x18001e6fc)
+turns the logical mode into a layout: details → 4, list → 3, tiles → 6, content → 8, icons → 1,
+and icons at ≤ 32 px → 2. On a change, the view destroys its children and instantiates the DirectUI
+template for that layout (`FUN_18002099c`, table of `rootitem.details`, `.list`, `.smallicons`,
+`.icons`, `.tiles`, `.smart`). Details uses `ItemRowLayout`; the others use `ItemGridLayout`.
+
+Template values from the ExplorerFrame markup resource (a string pool, so which attribute owns a
+value is read from order, **inferred**; `rp` = pixels at 96 DPI):
+
+| Template | Item | Layout |
+|---|---|---|
+| `icons` | `baselinelayout()`: image `bottomcenter`, label `topcenter\|wrapleft\|endellipsis\|editcontrol` (label under the icon, centered, wrapped) | alignment `baseline\|justify\|jaggedbottom`, `minimumicontextwidth` 74rp |
+| `list` | icon left of label, label `MaxPixelWidth` 280rp, min size 16rp | `virtualdirection horizontal`, alignment `jaggedbottom`, item spacing 10rp × 1rp, item width 60rp..800rp |
+| `smallicons` | icon left of label | column width 230rp, item spacing 1rp × 1rp |
+| `details` | rows | `columnpadding` 10rp |
+
+**Grid column width, observed.** `ItemGridLayout::_DetermineColumnWidth` (EF 0x180068014) runs
+when alignment bit 0 is set and the host is a `UIItemsView`:
+
+```
+w = (icon + 9 * (icon - 16) / 240 + 6) * dpi / 96
+column_width = w > minimum_icon_text_width ? w : minimum_icon_text_width
+```
+
+For icons up to ~100 px the 74 px minimum text width wins, so the column is 74 px wide.
+
+**Flow direction, observed.** `ItemLayout::VirtualDirection` is `horizontal` = 1, `vertical` = 2.
+`ItemGridLayout::GetVerticalSpacing` (EF 0x180006a10) returns the item spacing's width instead of
+its height when the direction is horizontal, i.e. the grid is transposed: List fills a column top
+to bottom, then the next column, and scrolls sideways.
+
+**Arrow keys, observed.** `ItemGridLayout::ItemGetAdjacent` (EF 0x18014a700), with `n` items,
+`per` items per line (`ColumnCount`), `lines` lines (`SectionCount`) and focus index `i`. In a
+horizontal-direction grid (List) Up/Left and Down/Right are swapped first (`FUN_18014b638`), so
+the rules below are written for a row-major grid:
+
+| Key | Target |
+|---|---|
+| Left / previous | `i - 1` |
+| Right / next | `i + 1` |
+| Up | `i - per` |
+| Down | `i + per`, clamped to `n - 1`, only if `i / per + 1 < lines` (so Down from the row above a short last row lands on the last item) |
+| Home / End | `0` / `n - 1` |
+
+Out-of-range targets do nothing (`ItemGridLayout::_RealizeItemByIndex` ignores `< 0` and `≥ n`).
+Left/Right do not stop at the row edge: Left on the first item of a row moves to the last item of
+the row above. In List that means Up/Down walk the items in order across column breaks.
+
+Windows 2000 drew the view with SysListView32 instead; its geometry is in §2.5.
+
+### 2.5 SysListView32 geometry (comctl32 v6.10, build 10240)
+
+Windows 2000's Explorer view was the comctl32 ListView. The v6 control in build 10240 is a C++
+rewrite (`CListView` with `CLVIconView`, `CLVListView`, `CLVView`, `CLVImageListManager`,
+`CLVKeyboardManager`, `CLVSlotsManager`), but it keeps the classic metrics. Addresses below are in
+`comctl32.dll` (base 0x171a00000). System metrics at 96 DPI: `SM_CXBORDER`/`SM_CYBORDER` 1,
+`SM_CXEDGE`/`SM_CYEDGE` 2.
+
+**Icon spacing, observed.** `CLVImageListManager::OnSetIconSpacing(-1)` (0x171a4bfe0), the default:
+
+```
+cx_spacing = image_cx - SM_CXICON + SM_CXICONSPACING
+cy_spacing = image_cy - SM_CYICON + SM_CYICONSPACING
+```
+
+With 32 px images that is just `SM_CXICONSPACING` × `SM_CYICONSPACING`. Those come from the user's
+"Icon Spacing" setting, which defaults to 75 × 75 px (registry `IconSpacing` /
+`IconVerticalSpacing` = -1125 twips; the default is **not** in this binary, it's user32's).
+
+**Large Icons cell, observed** (`CLVIconView::GetRects` 0x171bc16f4,
+`CLVImageListManager::GetIconBufferX/Y` 0x171a4cb28 / 0x171a4caf8, `FUN_171aa862c`):
+
+- Icon rect: the full spacing width × (image height + 2 · 2 px). The image is centered
+  horizontally (`buffer_x = (cx_spacing - image_cx) / 2`) and starts 2 px (`2 · SM_CYBORDER`) below
+  the top.
+- Label: top = image bottom + `SM_CYBORDER + SM_CYEDGE` (3 px); width = measured text width +
+  2 · `SM_CXEDGE`, centered on the icon rect.
+
+**Label wrapping, observed** (`CLVView::_ComputeLabelSizeWorker` 0x171a4ae3c,
+`CLVView::v_RecomputeLabelSize` 0x171a4a130, `CLVIconView::_RefoldLabelRect` 0x171aa9284):
+
+- Text is measured with `DrawText(DT_CALCRECT | DT_CENTER | DT_NOPREFIX | DT_EDITCONTROL)` in a
+  box `cx_spacing - 2 · SM_CXEDGE` wide (71 px at 75 spacing), word-wrapped (`DT_WORDBREAK`)
+  unless `LVS_NOLABELWRAP`. A third measurement uses `DT_WORD_ELLIPSIS`.
+- Stored per item: single-line width, wrapped width, ellipsized height and wrapped height, each
+  plus 2 · `SM_CXEDGE` / `SM_CYEDGE`.
+- **Folded** label height = min(wrapped height, ellipsized height, `SM_CYEDGE` + 2 lines). So a
+  label shows at most two lines, the second ending in "…". `GetRects` skips folding for items
+  `CLVIconView::IsItemUnfolded` reports. **Inferred** from the name and Win2000 screenshots: that is
+  the focused item while the view has focus, which shows its full label.
+
+**Auto-arrange slots, observed** (`CLVSlotsManager::GetSlotCountEx` 0x171a4b95c,
+`CLVSlotsManager::CalcSlotRect` 0x171a4b838):
+
+- Slots per row = max(1, available width / slot width) with `LVS_ALIGNTOP` (Explorer's), per
+  column with `LVS_ALIGNLEFT`. Slot = `cx_spacing` × `cy_spacing`.
+- The width is first computed without a vertical scroll bar. If `rows · columns` slots can't hold
+  every item, it is computed again with the scroll bar's width (`SM_CXVSCROLL`) taken off.
+- Slot `i` is at `((i % per) · cx_spacing, (i / per) · cy_spacing)` minus the scroll origin. No
+  extra space is spread between columns unless `LVS_EX_JUSTIFYCOLUMNS` (Vista+), so the grid is
+  left-aligned with the leftover width on the right.
+
+**List mode, observed** (`CLVListView::GetRects` 0x171bb1198, `CalcViewItem` 0x171bb1104,
+`GetNewColWidth` 0x171a323e4, `MaybeResizeListColumns` 0x171a324b0, `ResizeListColumns`
+0x171bb1344, `CLVView::ComputeCYItemSize` 0x171a4ad7c):
+
+- Row height = max(small icon height, font line height) + `SM_CYBORDER`.
+- Items per column = rows that fit the client height (at least 1). Item `i` is in column
+  `i / per`, row `i % per`, so the list fills downwards and then to the right.
+- **Column width** = the widest single-line label (text + 2 · `SM_CXEDGE`) + small icon width +
+  8 · `SM_CXBORDER`, capped at the screen width. All columns share it. `ResizeListColumns`
+  recomputes it over all items; `MaybeResizeListColumns` only widens it when inserted items are
+  wider. Both do nothing once the app has set a width (`LVM_SETCOLUMNWIDTH`).
+- Within a cell: icon rect = small icon width × row height at the cell's left, label rect = the
+  rest of the column.
+
+**Arrow keys, observed** (`CLVKeyboardManager::OnArrow` 0x171a3303c, `FindNearestItem`
+0x171bbecd4, `_NearestItemCommon` 0x171bc0100). Key handling depends on the mode:
+
+- **List** (and Details), by index with `per` = items per column:
+
+  | Key | Target |
+  |---|---|
+  | Up / Down | `i - 1` / `i + 1` |
+  | Left / Right | `i - per` / `i + per` |
+  | Home / End | `0` / `n - 1` |
+  | PgUp / PgDn | ± `per` · max(1, visible columns), where a column counts once ⅓ of it is visible. PgUp stays in the same row if it would go past the start (adds `per` until ≥ 0). PgDn steps back by `per` until it's < `n`. |
+
+  Out-of-range targets do nothing.
+- **Large Icons** (and Small Icons), spatial. From the focused item's top-left corner, look at
+  every other item's top-left corner `(dx, dy)`:
+  - Left: `dx < 0` and `|dx| ≥ |dy|`; Right: `dx > 0` and `|dx| ≥ |dy|`;
+    Up: `dy < 0` and `|dy| ≥ |dx|`; Down: `dy > 0` and `|dy| ≥ |dx|`.
+  - Of those, pick the smallest `dx² + dy²`. If there are none, focus stays.
+  - Home / End = the first / last item.
+  - PgUp / PgDn move the reference point a page (client height minus half an item, at least
+    1.5 items) up or down and take the nearest item, clamping to Home / End.
+
+  On an auto-arranged grid this means Right at the end of a row does **not** wrap (Windows 10's
+  DirectUI grid does, §2.4). With square 75 × 75 slots, Down from above a short last row reaches
+  the item one column to the left (`|dx| = |dy|` counts), but nothing further away.
+  (Owner-data list views use slot arithmetic with the same no-wrap rule instead; Explorer's wasn't
+  owner-data.)
+
+**Hit testing in Large Icons, observed** (`CLVIconView::v_ItemHitTest` 0x171a48f90,
+`CLVIconView::_HitTestItemRect` 0x171a30854). With `p` = the image's top-left corner:
+
+- Icon hit rect: from `p.x - 8 · SM_CXBORDER` to `p.x + image_cx + 8 · SM_CXBORDER` (the image
+  plus 8 px each side), from `p.y - 2` down to the label's top.
+- Label hit rect: the label rect, folded unless the item is unfolded, but starting at the icon
+  rect's bottom.
+- Anything else in the slot is empty space (a click there deselects / starts a marquee). Items are
+  tested in z-order and the first hit wins.
+
+**Label unfolding, observed** (`CLVIconView::IsItemUnfolded` 0x171a30ab4, `IsItemUnfoldedPtr`
+0x171bc1bfc): only in icon view, only while a control state flag (`0x80` in the flags at
+`+0xa8`) is set, and only for the item equal to the control's focus index. **Inferred:** the flag is
+"control has keyboard focus", so the focused item shows its whole label while the view has focus
+and folds back to two lines when focus leaves.
+
+**Selected icon drawing, observed** (`CLVView::v_DrawItem` 0x171a4a6a0,
+`CLVImageListManager::DrawImageEx2` 0x171a4c1f0), for the classic style (no
+`LVS_EX_BORDERSELECT`, no theme):
+
+| Item state | Image | Label |
+|---|---|---|
+| selected, view focused (or drop target) | `ILD_BLEND50` with `CLR_DEFAULT`: 50% blend toward `COLOR_HIGHLIGHT` | highlight background |
+| selected, view not focused (`LVS_SHOWSELALWAYS`) | `ILD_BLEND25`: 25% blend toward `COLOR_HIGHLIGHT` | `COLOR_BTNFACE` background |
+| cut (`LVIS_CUT`) | `ILD_BLEND50` toward the list background color (ghosted) | normal |
+
+The label colors are inferred from the border-select branch, which picks `COLOR_HIGHLIGHT` vs
+`COLOR_BTNFACE` from the same return flags; the label painter itself (`FUN_171a48290`) wasn't
+decoded. **Inferred:** comctl32 v5 (Windows 2000) used the same blends.
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
@@ -107,6 +305,7 @@ verified here).
 | `StrCmpLogicalW` | `localizedStandardCompare:` (Finder's own natural sort), or a Rust natural-sort crate (`natord`, `lexical-sort`) if you need determinism across locales. Keep a "plain sort" setting that matches `NoStrCmpLogical`. |
 | `CViewSettings` per-folder/per-type view memory | Store view state keyed by folder path plus a "folder type" fallback (Documents/Pictures/Music/Videos/General) in your own SQLite/JSON file. Don't write `.DS_Store` files. |
 | Status bar free space | **Unverified, from Windows 2000 behavior (not traced in build 10240, whose status bar only shows the item count).** With nothing selected the first pane reads `N object(s) (Disk free space: 4.65 GB)`; with a selection it reads `N object(s) selected` and drops the free space. The value is the user-available bytes on the folder's volume (`GetDiskFreeSpaceEx`, `lpFreeBytesAvailable`), formatted with `StrFormatByteSize`. macsplorer uses `statvfs` (`f_bavail * f_frsize`) on the listing worker thread. |
+| View modes (§2.4, §2.5) | Win2000 look, so follow the ListView (§2.5): 75 × 75 slots, 32 px icon centered 2 px from the top, label 3 px below, wrapped in 71 px and folded to two lines unless focused; clicks hit the image ± 8 px or the label, not the whole slot; selected icons blended 50% (25% when the view is unfocused) toward the highlight color; spatial arrow keys. List mode is traced above but deliberately not offered. From build 10240 (§2.4): selection, focus and sort survive a mode switch. Labels use Tahoma 12 px instead of 8 pt, so rows and two-line labels come out a little taller than Win2000. View mode is per window until per-folder memory exists. |
 | `CTravelLog` | `Vec<Location>` with a cursor. The back/forward dropdown menu lists entries (`_ShowBackForwardMenu`). |
 | Breadcrumb (`CBreadcrumbBar`) | Each crumb is a button with a chevron dropdown listing subfolders (`_OnDropDown`). Click empty space → edit mode with the full path (`_GoToEditMode`). Crumbs are drag sources and drop targets. Collapse overflow into a root dropdown (`_AddRootDropdownItems`). |
 | `CNscTree` change notifications | FSEvents per expanded node; enumerate in the background (`_StartBackgroundEnum`). |

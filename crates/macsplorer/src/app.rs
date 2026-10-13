@@ -1,4 +1,5 @@
-//! The prototype window: toolbar, breadcrumb, navigation pane, details view, status bar.
+//! The prototype window: toolbar, breadcrumb, navigation pane, item view
+//! (Large Icons or Details), status bar.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -18,13 +19,14 @@ use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{copy_into, move_into};
 use macsplorer_core::history::History;
+use macsplorer_core::layout::{self, IconCell, IconGrid, Nav};
 use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
 
-use crate::icons::FileIcons;
+use crate::icons::{FileIcons, IconState};
 use crate::open_with;
 use crate::platform;
 use crate::scrollbar::{self, Bars};
@@ -41,7 +43,24 @@ type ListResult = (u64, Result<Vec<Entry>, String>, Option<u64>);
 /// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
 type VisibleCache = ((u64, bool, String), Rc<[usize]>);
 
+/// The item view's mode. Windows 2000's View menu also had Small Icons,
+/// List and Thumbnails; List is left out on purpose (rarely used).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewMode {
+    LargeIcons,
+    Details,
+}
+
+/// Last frame's Large Icons layout, for arrow keys handled before the view
+/// is drawn.
+#[derive(Clone, Copy)]
+struct NavLayout {
+    grid: IconGrid,
+    client_height: f32,
+}
+
 struct Settings {
+    view: ViewMode,
     show_extensions: bool,
     show_hidden: bool,
     natural_sort: bool,
@@ -69,6 +88,10 @@ enum Action {
     /// Open a file with an app; `None` asks the user to pick one.
     OpenWith(PathBuf, Option<PathBuf>),
     Click { index: usize, toggle: bool, extend: bool },
+    /// Scroll the item view so this entry is visible.
+    Reveal(usize),
+    /// Clear the selection (a click on empty space in the view).
+    Deselect,
     BeginRename,
     CommitRename,
     CancelRename,
@@ -145,7 +168,13 @@ pub struct Explorer {
     sort: SortSpec,
     settings: Settings,
     selection: BTreeSet<PathBuf>,
+    /// Where Shift+click and Shift+arrow selections start.
     anchor: Option<usize>,
+    /// The focused item, which arrow keys move from (`entries` index).
+    focus_item: Option<usize>,
+    /// An entry to scroll into view on the next frame.
+    reveal: Option<usize>,
+    nav_layout: Option<NavLayout>,
     rename: Option<RenameState>,
     /// `Some` while the address bar shows a text field instead of crumbs.
     address_edit: Option<String>,
@@ -196,9 +225,12 @@ impl Explorer {
             list_request: 0,
             listing: false,
             sort: SortSpec::default(),
-            settings: Settings { show_extensions: true, show_hidden: false, natural_sort: true, expand_to_open: true, show_folders: true },
+            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, expand_to_open: true, show_folders: true },
             selection: BTreeSet::new(),
             anchor: None,
+            focus_item: None,
+            reveal: None,
+            nav_layout: None,
             rename: None,
             address_edit: None,
             address_needs_focus: false,
@@ -456,6 +488,7 @@ impl Explorer {
         sort_entries(&mut self.entries, self.sort);
         self.entries_version += 1;
         self.anchor = None;
+        self.focus_item = None;
     }
 
     /// Indices into `entries` that pass the search filter, in display order.
@@ -481,6 +514,7 @@ impl Explorer {
     fn after_navigation(&mut self) {
         self.selection.clear();
         self.anchor = None;
+        self.focus_item = None;
         self.rename = None;
         self.address_edit = None;
         self.search.clear();
@@ -532,6 +566,7 @@ impl Explorer {
     }
 
     fn click(&mut self, index: usize, toggle: bool, extend: bool, visible: &[usize]) {
+        self.focus_item = Some(index);
         let path = self.entries[index].path.clone();
         let pos = visible.iter().position(|&i| i == index);
         match (extend, self.anchor.and_then(|a| visible.iter().position(|&i| i == a)), pos) {
@@ -610,6 +645,11 @@ impl Explorer {
                 Action::Click { index, toggle, extend } => {
                     self.focus = Pane::List;
                     self.click(index, toggle, extend, visible);
+                }
+                Action::Reveal(index) => self.reveal = Some(index),
+                Action::Deselect => {
+                    self.focus = Pane::List;
+                    self.selection.clear();
                 }
                 Action::BeginRename => self.begin_rename(),
                 Action::CommitRename => self.commit_rename(),
@@ -764,21 +804,48 @@ impl Explorer {
                 }
                 return;
             }
-            let step = match () {
-                _ if cmd || alt => 0,
-                _ if i.key_pressed(Key::ArrowDown) => 1,
-                _ if i.key_pressed(Key::ArrowUp) => -1,
-                _ => 0,
-            };
-            if step != 0 && !visible.is_empty() {
-                let cur = self.anchor.and_then(|a| visible.iter().position(|&v| v == a));
-                let next = match cur {
-                    Some(p) => (p as isize + step).clamp(0, visible.len() as isize - 1) as usize,
-                    None => 0,
-                };
-                actions.push(Action::Click { index: visible[next], toggle: false, extend: i.modifiers.shift });
+            const KEYS: [(Key, Nav); 8] = [
+                (Key::ArrowLeft, Nav::Left),
+                (Key::ArrowRight, Nav::Right),
+                (Key::ArrowUp, Nav::Up),
+                (Key::ArrowDown, Nav::Down),
+                (Key::Home, Nav::Home),
+                (Key::End, Nav::End),
+                (Key::PageUp, Nav::PageUp),
+                (Key::PageDown, Nav::PageDown),
+            ];
+            if cmd || alt || visible.is_empty() {
+                return;
+            }
+            let Some(nav) = KEYS.iter().find(|(k, _)| i.key_pressed(*k)).map(|&(_, n)| n) else { return };
+            if let Some(to) = self.navigate_items(nav, visible) {
+                actions.push(Action::Click { index: visible[to], toggle: false, extend: i.modifiers.shift });
+                actions.push(Action::Reveal(visible[to]));
             }
         });
+    }
+
+    /// Where an arrow or page key moves the focused item, as a position in
+    /// `visible`. Large Icons uses the list view's rules
+    /// (`layout::IconGrid::navigate`); Details steps through the rows.
+    fn navigate_items(&self, nav: Nav, visible: &[usize]) -> Option<usize> {
+        let Some(from) = self.focus_item.and_then(|f| visible.iter().position(|&v| v == f)) else {
+            return Some(0);
+        };
+        let last = visible.len() - 1;
+        match (self.settings.view, self.nav_layout) {
+            (ViewMode::LargeIcons, Some(NavLayout { grid, client_height })) if grid.count == visible.len() => {
+                grid.navigate(from, nav, client_height)
+            }
+            (ViewMode::Details, _) => match nav {
+                Nav::Up => Some(from.saturating_sub(1)),
+                Nav::Down => Some((from + 1).min(last)),
+                Nav::Home => Some(0),
+                Nav::End => Some(last),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     // ---- menu bar, toolbar and address bar --------------------------------
@@ -822,6 +889,14 @@ impl Explorer {
                         ui.close();
                     }
                 });
+                ui.separator();
+                for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::Details, "Details")] {
+                    if ui.radio_value(&mut self.settings.view, mode, label).clicked() {
+                        // Keep the focused item in sight across the switch.
+                        self.reveal = self.focus_item;
+                        ui.close();
+                    }
+                }
                 ui.separator();
                 let mut changed = false;
                 changed |= ui.checkbox(&mut self.settings.show_extensions, "File name extensions").changed();
@@ -1020,7 +1095,17 @@ impl Explorer {
         bars.end(&mut ui, &out);
     }
 
-    // ---- details view --------------------------------------------------
+    // ---- item view -----------------------------------------------------
+
+    fn item_view(&mut self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
+        match self.settings.view {
+            ViewMode::LargeIcons => self.icons_view(ui, visible, actions),
+            ViewMode::Details => {
+                self.nav_layout = None;
+                self.details(ui, visible, actions);
+            }
+        }
+    }
 
     fn details(&mut self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
         let rect = ui.available_rect_before_wrap();
@@ -1040,21 +1125,14 @@ impl Explorer {
         let focused = self.focus == Pane::List && window_focused(ui);
         let can_paste = self.clipboard.is_some();
         let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
+        let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::WINDOW;
         ui.spacing_mut().item_spacing.x = 0.0;
 
         // Under the rows, so a click on a row still reaches the row.
-        ui.interact(viewport, ui.id().with("details-bg"), Sense::click()).context_menu(|ui| {
-            if ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
-                actions.push(Action::Paste(None));
-            }
-            ui.separator();
-            if ui.button("Refresh").clicked() {
-                actions.push(Action::Refresh);
-            }
-        });
+        ui.interact(viewport, ui.id().with("details-bg"), Sense::click()).context_menu(|ui| background_menu(ui, can_paste, actions));
 
         let header = |ui: &mut Ui, label: &str, column: SortColumn, right: bool, actions: &mut Vec<Action>| {
             let rect = ui.max_rect();
@@ -1087,7 +1165,11 @@ impl Explorer {
             }
         };
 
-        let table = TableBuilder::new(ui)
+        let mut table = TableBuilder::new(ui);
+        if let Some(row) = reveal {
+            table = table.scroll_to_row(row, None);
+        }
+        let table = table
             .scroll_bar_visibility(hidden)
             .striped(false)
             .sense(Sense::click())
@@ -1106,15 +1188,9 @@ impl Explorer {
         if visible.is_empty() {
             let out = table.body(|_| {});
             bars.end(ui, &out);
-            if *listing {
-                return;
+            if !*listing {
+                empty_message(ui, search);
             }
-            let msg = if search.is_empty() { "This folder is empty." } else { "No items match your search." };
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.label(RichText::new(msg).color(theme::color::GRAY_TEXT));
-            });
             return;
         }
 
@@ -1127,14 +1203,10 @@ impl Explorer {
                 row.col(|ui| {
                     ui.add_space(4.0);
                     let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
-                    icons.paint(ui, icon_rect, entry);
-                    if cut.contains(&entry.path) {
-                        // Explorer dims the icons of items waiting to be moved.
-                        ui.painter().rect_filled(icon_rect, 0.0, theme::color::WINDOW.gamma_multiply(0.6));
-                    }
+                    icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, cut.contains(&entry.path)));
                     ui.add_space(3.0);
                     match rename.as_mut().filter(|r| r.path == entry.path) {
-                        Some(r) => rename_editor(ui, r, actions),
+                        Some(r) => rename_editor(ui, r, false, actions),
                         None => {
                             let name = entry.display_name(settings.show_extensions);
                             selectable_name(ui, name, selected, focused);
@@ -1168,42 +1240,102 @@ impl Explorer {
                 if resp.double_clicked() {
                     actions.push(Action::Open(entry.path.clone()));
                 }
-                resp.context_menu(|ui| {
-                    if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
-                        actions.push(Action::Open(entry.path.clone()));
-                    }
-                    if open_with::SUPPORTED && entry.kind == RenameKind::File {
-                        open_with_menu(ui, &entry.path, open_with, actions);
-                    }
-                    if ui.button(platform::REVEAL_LABEL).clicked() {
-                        actions.push(Action::RevealInFinder(entry.path.clone()));
-                    }
-                    if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
-                        actions.push(Action::Eject(entry.path.clone()));
-                    }
-                    ui.separator();
-                    if ui.button("Cut").clicked() {
-                        actions.push(Action::Cut);
-                    }
-                    if ui.button("Copy").clicked() {
-                        actions.push(Action::Copy);
-                    }
-                    if ui.button("Copy as Path").clicked() {
-                        actions.push(Action::CopyAsPath);
-                    }
-                    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
-                        actions.push(Action::Paste(Some(entry.path.clone())));
-                    }
-                    ui.separator();
-                    if ui.button("Delete").clicked() {
-                        actions.push(Action::Delete);
-                    }
-                    if ui.button("Rename").clicked() {
-                        actions.push(Action::BeginRename);
-                    }
-                });
+                resp.context_menu(|ui| item_menu(ui, entry, can_paste, open_with, actions));
             });
         });
+        bars.end(ui, &out);
+    }
+
+    /// Large Icons: 32 px icons in 75 × 75 slots, labels wrapped underneath
+    /// (`docs/file-browser-findings.md` §2.5).
+    fn icons_view(&mut self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
+        let rect = ui.available_rect_before_wrap();
+        let inner = theme::sunken_field(ui.painter(), rect);
+        ui.allocate_rect(rect, Sense::hover());
+        let grid = IconGrid::new(visible.len(), inner.width(), inner.height(), scrollbar::WIDTH);
+        self.nav_layout = Some(NavLayout { grid, client_height: inner.height() });
+        // Guess: the arrow-click scroll step wasn't traced.
+        let (bars, viewport) = Bars::begin(ui, ui.id().with("icons-bars"), inner, [false, true], LIST_ROW_HEIGHT);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
+        let ui = &mut ui;
+        let hidden = scrollbar::hidden(ui);
+        if let Some(err) = &self.load_error {
+            ui.centered_and_justified(|ui| ui.label(err));
+            return;
+        }
+        let focused = self.focus == Pane::List && window_focused(ui);
+        let can_paste = self.clipboard.is_some();
+        let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
+        let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let line_height = ui.fonts_mut(|f| f.row_height(&font));
+        let menu_id = ui.id().with("icons-menu");
+        let Self { entries, selection, rename, settings, search, icons, open_with, listing, focus_item, .. } = self;
+
+        let out = egui::ScrollArea::vertical()
+            .id_salt("icons")
+            .auto_shrink(false)
+            .scroll_bar_visibility(hidden)
+            .show_viewport(ui, |ui, view| {
+                let origin = ui.max_rect().min;
+                ui.set_min_size(egui::vec2(viewport.width(), grid.content_height()));
+                if visible.is_empty() {
+                    if !*listing {
+                        empty_message(ui, search);
+                    }
+                    return;
+                }
+                let at = |(x, y): (f32, f32)| origin + egui::vec2(x, y);
+                let screen = |r: layout::Rect| egui::Rect::from_min_max(at(r.min), at(r.max));
+                if let Some(pos) = reveal {
+                    ui.scroll_to_rect(egui::Rect::from_min_size(at(grid.slot(pos)), egui::Vec2::splat(layout::SLOT)), None);
+                }
+                let shown = egui::Rect::from_min_size(origin + view.min.to_vec2(), view.size());
+                let resp = ui.interact(shown, ui.id().with("icons-hit"), Sense::click());
+                let pointer = resp.interact_pointer_pos().or(resp.hover_pos()).map(|p| (p.x - origin.x, p.y - origin.y));
+
+                let mut hit = None;
+                // The focused item's whole label is drawn last, over its neighbors.
+                let mut on_top = None;
+                for pos in grid.items_in(view.min.y, view.max.y) {
+                    let index = visible[pos];
+                    let entry = &entries[index];
+                    let selected = selection.contains(&entry.path);
+                    let unfolded = focused && *focus_item == Some(index);
+                    let galley = icon_label(ui, entry.display_name(settings.show_extensions), &font, selected && focused, unfolded);
+                    let size = layout::label_size((galley.size().x, galley.size().y), line_height, !unfolded);
+                    let cell = IconCell::new(grid.slot(pos), size);
+                    icons.paint(ui, screen(cell.image), entry, IconState::of(selected, focused, cut.contains(&entry.path)));
+                    if pointer.is_some_and(|p| cell.hit(p)) {
+                        hit = Some(pos);
+                    }
+                    let renaming = rename.as_ref().is_some_and(|r| r.path == entry.path);
+                    if unfolded {
+                        on_top = Some((screen(cell.label), galley, selected, renaming));
+                    } else if !renaming {
+                        paint_label(ui, screen(cell.label), galley, selected, focused);
+                    }
+                }
+                if let Some((label, galley, selected, false)) = on_top {
+                    paint_label(ui, label, galley, selected, focused);
+                }
+                if let Some(r) = rename.as_mut()
+                    && let Some(pos) = visible.iter().position(|&i| entries[i].path == r.path)
+                {
+                    // A wrapping edit box under the icon, as wide as the label area.
+                    let slot = at(grid.slot(pos));
+                    let top = slot.y + layout::ICON_TOP + layout::ICON + layout::LABEL_GAP;
+                    let rect = egui::Rect::from_min_size(egui::pos2(slot.x, top), egui::vec2(layout::SLOT, 3.0 * line_height + 4.0));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Center)), |ui| {
+                        rename_editor(ui, r, true, actions)
+                    });
+                }
+                item_clicks(ui, &resp, hit.map(|p| &entries[visible[p]]), hit.map(|p| visible[p]), selection, menu_id, actions);
+                resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
+                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
+                    None => background_menu(ui, can_paste, actions),
+                });
+            });
         bars.end(ui, &out);
     }
 
@@ -1294,7 +1426,7 @@ impl eframe::App for Explorer {
         }
         egui::CentralPanel::default()
             .frame(plain.inner_margin(egui::Margin { left: if self.settings.show_folders { 3 } else { 0 }, ..Default::default() }))
-            .show(ui, |ui| self.details(ui, &visible, &mut actions));
+            .show(ui, |ui| self.item_view(ui, &visible, &mut actions));
 
         self.apply(actions, &visible);
     }
@@ -1324,17 +1456,147 @@ fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<Pat
     });
 }
 
-fn rename_editor(ui: &mut Ui, r: &mut RenameState, actions: &mut Vec<Action>) {
+/// The context menu for an item.
+fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option<(PathBuf, Vec<PathBuf>)>, actions: &mut Vec<Action>) {
+    if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
+        actions.push(Action::Open(entry.path.clone()));
+    }
+    if open_with::SUPPORTED && entry.kind == RenameKind::File {
+        open_with_menu(ui, &entry.path, open_with, actions);
+    }
+    if ui.button(platform::REVEAL_LABEL).clicked() {
+        actions.push(Action::RevealInFinder(entry.path.clone()));
+    }
+    if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
+        actions.push(Action::Eject(entry.path.clone()));
+    }
+    ui.separator();
+    if ui.button("Cut").clicked() {
+        actions.push(Action::Cut);
+    }
+    if ui.button("Copy").clicked() {
+        actions.push(Action::Copy);
+    }
+    if ui.button("Copy as Path").clicked() {
+        actions.push(Action::CopyAsPath);
+    }
+    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
+        actions.push(Action::Paste(Some(entry.path.clone())));
+    }
+    ui.separator();
+    if ui.button("Delete").clicked() {
+        actions.push(Action::Delete);
+    }
+    if ui.button("Rename").clicked() {
+        actions.push(Action::BeginRename);
+    }
+}
+
+/// The context menu for empty space in the item view.
+fn background_menu(ui: &mut Ui, can_paste: bool, actions: &mut Vec<Action>) {
+    if ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
+        actions.push(Action::Paste(None));
+    }
+    ui.separator();
+    if ui.button("Refresh").clicked() {
+        actions.push(Action::Refresh);
+    }
+}
+
+fn empty_message(ui: &mut Ui, search: &str) {
+    let msg = if search.is_empty() { "This folder is empty." } else { "No items match your search." };
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        ui.label(RichText::new(msg).color(theme::color::GRAY_TEXT));
+    });
+}
+
+/// Turns clicks on the Large Icons view into actions. `hit` is the item
+/// under the pointer. A click on empty space clears the selection; a
+/// right-click remembers its target under `menu_id` for the context menu.
+fn item_clicks(
+    ui: &Ui,
+    resp: &egui::Response,
+    hit: Option<&Entry>,
+    index: Option<usize>,
+    selection: &BTreeSet<PathBuf>,
+    menu_id: egui::Id,
+    actions: &mut Vec<Action>,
+) {
+    let m = ui.input(|i| i.modifiers);
+    match (hit, index) {
+        (Some(entry), Some(index)) => {
+            if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
+                actions.push(Action::Click { index, toggle: m.command, extend: m.shift });
+            }
+            if resp.double_clicked() {
+                actions.push(Action::Open(entry.path.clone()));
+            }
+        }
+        _ => {
+            if resp.clicked() && !m.command && !m.shift {
+                actions.push(Action::Deselect);
+            }
+            if resp.clicked() || resp.secondary_clicked() {
+                actions.push(Action::Focus(Pane::List));
+            }
+        }
+    }
+    if resp.secondary_clicked() {
+        ui.data_mut(|d| d.insert_temp(menu_id, index));
+    }
+}
+
+/// Lays out a Large Icons label: centered, wrapped in `layout::LABEL_WRAP`,
+/// cut to `layout::FOLDED_LINES` lines with "…" unless `unfolded`.
+fn icon_label(ui: &Ui, text: &str, font: &egui::FontId, highlighted: bool, unfolded: bool) -> std::sync::Arc<egui::Galley> {
+    let color = if highlighted { theme::color::SELECTION_TEXT } else { theme::color::TEXT };
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), font.clone(), color, layout::LABEL_WRAP);
+    job.halign = Align::Center;
+    if !unfolded {
+        job.wrap.max_rows = layout::FOLDED_LINES;
+        job.wrap.overflow_character = Some('…');
+    }
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// Paints an item label in its box: the text alone, or on the selection
+/// color (button face while the view isn't focused).
+fn paint_label(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, selected: bool, focused: bool) {
+    if selected {
+        ui.painter().rect_filled(rect, 0.0, if focused { theme::color::SELECTION } else { theme::color::FACE });
+    }
+    // Centered galleys are laid out around x = 0; left-aligned ones start there.
+    let x = if galley.job.halign == Align::Center { rect.center().x } else { rect.left() + layout::LABEL_PAD_X };
+    let y = rect.top() + (rect.height() - galley.size().y) / 2.0;
+    ui.painter().with_clip_rect(rect).galley(egui::pos2(x, y), galley, theme::color::TEXT);
+}
+
+/// `wrapping` makes it the Large Icons box: centered text wrapped in the
+/// label width, Enter still commits.
+fn rename_editor(ui: &mut Ui, r: &mut RenameState, wrapping: bool, actions: &mut Vec<Action>) {
     let id = ui.make_persistent_id(("rename", &r.path));
     let frame = egui::Frame::NONE
         .fill(theme::color::WINDOW)
         .stroke(egui::Stroke::new(1.0, theme::color::TEXT))
         .inner_margin(egui::Margin::symmetric(2, 0));
-    let resp = frame
-        .show(ui, |ui| ui.add(TextEdit::singleline(&mut r.text).id(id).frame(egui::Frame::NONE).desired_width(f32::INFINITY)))
-        .inner;
+    let edit = if wrapping {
+        TextEdit::multiline(&mut r.text)
+            .return_key(None)
+            .desired_rows(1)
+            .desired_width(layout::LABEL_WRAP)
+            .horizontal_align(Align::Center)
+    } else {
+        TextEdit::singleline(&mut r.text).desired_width(f32::INFINITY)
+    };
+    let resp = frame.show(ui, |ui| ui.add(edit.id(id).frame(egui::Frame::NONE))).inner;
     if resp.changed() {
-        r.text.retain(|c| !is_invalid_char(c));
+        r.text.retain(|c| !is_invalid_char(c) && c != '\n');
+    }
+    if wrapping && resp.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+        resp.surrender_focus();
+        actions.push(Action::CommitRename);
     }
     if std::mem::take(&mut r.needs_init) {
         resp.request_focus();
@@ -1725,7 +1987,7 @@ mod screenshot {
         for d in ["Projects/2026", "Pictures", "Setup.app"] {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
-        for name in ["main.rs", "app.py", "index.ts", "README.md", "Makefile", "Cargo.toml", "styles.css", "package.json", "photo.png", "archive.zip", "Dockerfile", "notes.txt", "report.pdf", "query.sql", "script.sh", "budget.xlsx", "data.yaml"] {
+        for name in ["main.rs", "app.py", "index.ts", "README.md", "Makefile", "Cargo.toml", "styles.css", "package.json", "photo.png", "archive.zip", "Dockerfile", "notes.txt", "report.pdf", "query.sql", "script.sh", "budget.xlsx", "data.yaml", "Quarterly report for the board of directors.txt"] {
             fs::write(dir.join(name), vec![b'x'; 1_500]).unwrap();
         }
         // A real app (via symlink) to show a native icon.
@@ -1763,6 +2025,34 @@ mod screenshot {
         shoot("window", egui::vec2(900.0, 560.0), |app| {
             let pick = app.entries.iter().find(|e| e.name == "main.rs").map(|e| e.path.clone());
             app.selection.extend(pick);
+        });
+    }
+
+    fn select(app: &mut Explorer, names: &[&str]) {
+        for name in names {
+            let i = app.entries.iter().position(|e| e.name == *name).unwrap();
+            app.selection.insert(app.entries[i].path.clone());
+            app.focus_item = Some(i);
+        }
+    }
+
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn large_icons() {
+        shoot("large-icons", egui::vec2(900.0, 560.0), |app| {
+            app.settings.view = ViewMode::LargeIcons;
+            select(app, &["main.rs", "Pictures"]);
+        });
+    }
+
+    /// The focused item's long label unfolds over the row below.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn large_icons_unfolded() {
+        shoot("large-icons-unfolded", egui::vec2(700.0, 400.0), |app| {
+            app.settings.view = ViewMode::LargeIcons;
+            select(app, &["Quarterly report for the board of directors.txt"]);
+            app.reveal = app.focus_item;
         });
     }
 

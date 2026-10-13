@@ -8,11 +8,17 @@
 //!   VSCodium's Seti glyph as a colored emblem, the way Windows 2000 put
 //!   an application's emblem on its documents;
 //! - unrecognized files are the plain page with gray text lines.
+//!
+//! Selected and cut items are blended toward a color, as the list view's
+//! `CLVImageListManager::DrawImageEx2` does (`docs/file-browser-findings.md` §2.5).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use eframe::egui::{self, Align2, Color32, FontId, Rect, TextureHandle, TextureOptions, Ui};
+use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Rect, Shape, TextureHandle, TextureOptions, Ui};
+use egui::epaint::ColorMode;
+use egui::layers::ShapeIdx;
 use macsplorer_core::listing::Entry;
 use macsplorer_core::places::{KnownFolder, known_folder};
 use macsplorer_core::rename::RenameKind;
@@ -30,9 +36,50 @@ const EMBLEM_SIZE: f32 = 15.0;
 const FOLDER_EMBLEM_SIZE: f32 = 8.0;
 const FOLDER_EMBLEM_CENTER: (f32, f32) = (8.0, 9.7);
 
+/// How an item's icon is drawn for its state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum IconState {
+    #[default]
+    Normal,
+    /// Selected while the view has focus: `ILD_BLEND50` toward `COLOR_HIGHLIGHT`.
+    Selected,
+    /// Selected while the view doesn't have focus: `ILD_BLEND25`.
+    SelectedInactive,
+    /// Cut (`LVIS_CUT`): `ILD_BLEND50` toward the list background, ghosted.
+    Cut,
+}
+
+impl IconState {
+    pub fn of(selected: bool, focused: bool, cut: bool) -> Self {
+        match (cut, selected, focused) {
+            (true, _, _) => Self::Cut,
+            (_, true, true) => Self::Selected,
+            (_, true, false) => Self::SelectedInactive,
+            _ => Self::Normal,
+        }
+    }
+
+    /// The color to blend toward and how far.
+    fn blend(self) -> Option<(Color32, f32)> {
+        match self {
+            Self::Normal => None,
+            Self::Selected => Some((theme::color::SELECTION, 0.5)),
+            Self::SelectedInactive => Some((theme::color::SELECTION, 0.25)),
+            Self::Cut => Some((theme::color::WINDOW, 0.5)),
+        }
+    }
+}
+
+/// A rendered native icon and its blended variants.
+struct Native {
+    image: Arc<ColorImage>,
+    textures: HashMap<IconState, TextureHandle>,
+}
+
 pub struct FileIcons {
     seti: Option<SetiTheme>,
-    native: HashMap<PathBuf, Option<TextureHandle>>,
+    /// By path and pixel size.
+    native: HashMap<(PathBuf, usize), Option<Native>>,
     /// Tintable SF Symbol masks for the known folders, by rendered pixel size.
     symbols: HashMap<(KnownFolder, usize), Option<TextureHandle>>,
     budget: usize,
@@ -59,11 +106,25 @@ impl FileIcons {
         self.native.clear();
     }
 
-    pub fn paint(&mut self, ui: &Ui, rect: Rect, entry: &Entry) {
+    pub fn paint(&mut self, ui: &Ui, rect: Rect, entry: &Entry, state: IconState) {
         let wants_native = entry.kind == RenameKind::Package || entry.custom_icon;
-        if wants_native && self.paint_native(ui, rect, entry) {
+        if wants_native && self.paint_native(ui, rect, entry, state) {
             return;
         }
+        let layer = ui.painter().layer_id();
+        let start = ui.ctx().graphics_mut(|g| g.entry(layer).next_idx());
+        self.paint_vector(ui, rect, entry);
+        if let Some((toward, t)) = state.blend() {
+            ui.ctx().graphics_mut(|g| {
+                let list = g.entry(layer);
+                for i in start.0..list.next_idx().0 {
+                    list.mutate_shape(ShapeIdx(i), |s| blend_shape(&mut s.shape, toward, t));
+                }
+            });
+        }
+    }
+
+    fn paint_vector(&mut self, ui: &Ui, rect: Rect, entry: &Entry) {
         match entry.kind {
             RenameKind::Folder => self.paint_folder(ui, rect, &entry.path),
             RenameKind::Package => {
@@ -108,26 +169,103 @@ impl FileIcons {
 
     /// Paints the cached native icon. Returns false if it isn't available
     /// (yet), so the caller can draw a fallback this frame.
-    fn paint_native(&mut self, ui: &Ui, rect: Rect, entry: &Entry) -> bool {
-        if !self.native.contains_key(&entry.path) {
+    fn paint_native(&mut self, ui: &Ui, rect: Rect, entry: &Entry, state: IconState) -> bool {
+        let px = (rect.width() * ui.ctx().pixels_per_point()).round().max(16.0) as usize;
+        let key = (entry.path.clone(), px);
+        if !self.native.contains_key(&key) {
             if self.budget == 0 {
                 ui.ctx().request_repaint();
                 return false;
             }
             self.budget -= 1;
-            let px = (rect.width() * ui.ctx().pixels_per_point()).round().max(16.0) as usize;
-            let texture = native_icon::render(&entry.path, px).map(|img| {
-                ui.ctx().load_texture(format!("icon:{}", entry.path.display()), img, TextureOptions::LINEAR)
-            });
-            self.native.insert(entry.path.clone(), texture);
+            let native = native_icon::render(&entry.path, px).map(|img| Native { image: Arc::new(img), textures: HashMap::new() });
+            self.native.insert(key.clone(), native);
         }
-        match self.native.get(&entry.path) {
-            Some(Some(tex)) => {
-                let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
-                true
+        let Some(Some(native)) = self.native.get_mut(&key) else { return false };
+        let tex = native.textures.entry(state).or_insert_with(|| {
+            let mut img = (*native.image).clone();
+            if let Some((toward, t)) = state.blend() {
+                for p in &mut img.pixels {
+                    *p = blend_color(*p, toward, t);
+                }
             }
-            _ => false,
+            ui.ctx().load_texture(format!("icon:{}:{px}:{state:?}", entry.path.display()), img, TextureOptions::LINEAR)
+        });
+        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+        true
+    }
+}
+
+/// Moves a color's RGB `t` of the way toward `toward`, keeping its alpha, so
+/// only the icon's own pixels change (like an image list blend through the
+/// icon's mask).
+fn blend_color(c: Color32, toward: Color32, t: f32) -> Color32 {
+    if c.a() == 0 {
+        return c;
+    }
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgba_unmultiplied(mix(r, toward.r()), mix(g, toward.g()), mix(b, toward.b()), a)
+}
+
+fn blend_shape(shape: &mut Shape, toward: Color32, t: f32) {
+    let blend = |c: &mut Color32| *c = blend_color(*c, toward, t);
+    match shape {
+        Shape::Vec(shapes) => shapes.iter_mut().for_each(|s| blend_shape(s, toward, t)),
+        Shape::Circle(s) => {
+            blend(&mut s.fill);
+            blend(&mut s.stroke.color);
         }
+        Shape::Ellipse(s) => {
+            blend(&mut s.fill);
+            blend(&mut s.stroke.color);
+        }
+        Shape::LineSegment { stroke, .. } => blend(&mut stroke.color),
+        Shape::Path(s) => {
+            blend(&mut s.fill);
+            if let ColorMode::Solid(c) = &mut s.stroke.color {
+                blend(c);
+            }
+        }
+        Shape::Rect(s) => {
+            blend(&mut s.fill);
+            blend(&mut s.stroke.color);
+        }
+        Shape::Text(s) => {
+            let mut c = s.override_text_color.unwrap_or(s.fallback_color);
+            blend(&mut c);
+            s.override_text_color = Some(c);
+        }
+        // Vertex colors: plain meshes and tinted masks (the SF Symbol emblems).
+        Shape::Mesh(m) => Arc::make_mut(m).vertices.iter_mut().for_each(|v| blend(&mut v.color)),
+        Shape::QuadraticBezier(s) => {
+            blend(&mut s.fill);
+            if let ColorMode::Solid(c) = &mut s.stroke.color {
+                blend(c);
+            }
+        }
+        Shape::CubicBezier(s) => {
+            blend(&mut s.fill);
+            if let ColorMode::Solid(c) = &mut s.stroke.color {
+                blend(c);
+            }
+        }
+        Shape::Noop | Shape::Callback(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blend_keeps_alpha_and_transparency() {
+        let navy = theme::color::SELECTION;
+        assert_eq!(blend_color(Color32::TRANSPARENT, navy, 0.5), Color32::TRANSPARENT);
+        assert_eq!(blend_color(Color32::WHITE, Color32::BLACK, 0.5), Color32::from_rgb(128, 128, 128));
+        assert_eq!(blend_color(Color32::WHITE, navy, 0.0), Color32::WHITE);
+        let half = Color32::from_rgba_unmultiplied(255, 255, 255, 128);
+        assert_eq!(blend_color(half, Color32::BLACK, 1.0).a(), 128);
     }
 }

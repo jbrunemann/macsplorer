@@ -7,6 +7,7 @@ pub mod breadcrumb;
 pub mod copy_path;
 pub mod fileops;
 pub mod history;
+pub mod layout;
 pub mod listing;
 pub mod natural;
 pub mod places;

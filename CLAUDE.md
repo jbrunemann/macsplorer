@@ -9,7 +9,7 @@ never paste decompiled code into the source.
 
 | Path | What |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic, all unit-tested: `listing` (read_dir, sort, sizes, custom-icon flag), `natural` (StrCmpLogicalW-style sort), `rename` (Explorer's rename selection + APFS name rules), `fileops` (paste: copy/move with "- Copy" names, xattr-preserving), `history` (back/forward), `breadcrumb`, `places`, `tree` (Folders pane model, CNscTree-like), `seti` (VSCodium file icon resolution). |
+| `crates/macsplorer-core` | UI-independent logic, all unit-tested: `listing` (read_dir, sort, sizes, custom-icon flag), `natural` (StrCmpLogicalW-style sort), `rename` (Explorer's rename selection + APFS name rules), `fileops` (paste: copy/move with "- Copy" names, xattr-preserving), `history` (back/forward), `breadcrumb`, `places`, `tree` (Folders pane model, CNscTree-like), `layout` (Large Icons geometry and arrow keys, after the comctl32 ListView), `seti` (VSCodium file icon resolution). |
 | `crates/macsplorer` | egui/eframe 0.36 app. `app.rs` state + UI, `platform.rs` per-OS open/reveal/eject, wording and font paths, `theme.rs` Windows Classic colors/bevels/fonts/icons/title bar, `scrollbar.rs` classic scroll bars drawn over hidden egui ones, `icons.rs` icon choice + native icon cache, `native_icon.rs` NSWorkspace icons via objc2. |
 | `tools/make-icon` | Renders `assets/icon.png` + `assets/macsplorer.icns` (tiny-skia). |
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
@@ -86,7 +86,8 @@ licenses.
 ## Windows analysis setup (local, not in git)
 
 - `*.blob` in the repo root are the user's copies of `explorer.exe`,
-  `ExplorerFrame.dll`, `shell32.dll`, `Windows.Storage.dll` (build 10240).
+  `ExplorerFrame.dll`, `shell32.dll`, `Windows.Storage.dll` (build 10240) and
+  `comctl32.dll` v6.10 (the SysListView32 that Win2000's Explorer view was built on).
   `analysis/` hard-links them under their real names next to their PDBs.
 - `symbols/*.pubs.tsv` = recovered public symbols (≈100k functions).
 - REA MCP with Ghidra 12.1.4 at `~/opt/ghidra_12.1.4_PUBLIC` (macOS arm64
@@ -100,7 +101,7 @@ licenses.
 
 - File watching (FSEvents) so the list and tree update live.
 - Copy / move / delete are in (menu, Edit menu, ⌘X/C/V, Delete). Still open: the replace/skip conflict dialog, progress UI, Shift+Delete, undo, Finder pasteboard interop, drag and drop (`CFileOperation` in Windows.Storage is the reference).
-- More Win2000 views: Large Icons, List, the "Web view" left info panel.
+- More Win2000 views: Small Icons, Thumbnails, the "Web view" left info panel; marquee selection and a dotted focus rectangle in Large Icons. List view was dropped on purpose.
 - Type column with language names ("Rust Source") and image thumbnails.
 - Trace remaining Explorer behaviors listed in `docs/file-browser-findings.md` §4.
 - Column header filler to the right edge; classic scroll bars for the breadcrumb chevron popup.
