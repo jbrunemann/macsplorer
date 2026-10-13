@@ -315,8 +315,16 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
     mesh.add_triangle(0, 2, 3);
     p.add(mesh);
 
-    let icon = Rect::from_min_size(pos2(rect.left() + 2.0, rect.top() + 1.0), vec2(16.0, 16.0));
+    // Not Windows' system menu: a click on the red dot or the folder closes, matching the
+    // macOS close button in the top left.
+    let dot = pos2(rect.left() + 8.0, rect.center().y);
+    p.circle(dot, 5.0, Color32::from_rgb(0xff, 0x5f, 0x57), Stroke::new(1.0, Color32::from_rgb(0xc0, 0x30, 0x28)));
+    let icon = Rect::from_min_size(pos2(rect.left() + 16.0, rect.top() + 1.0), vec2(16.0, 16.0));
     paint_icon(p, icon, Icon::FolderOpen, true);
+    let close_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(icon.right(), rect.bottom()));
+    if ui.interact(close_area, ui.id().with("caption_icon"), Sense::click()).clicked() {
+        ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+    }
     p.text(pos2(icon.right() + 3.0, rect.center().y), Align2::LEFT_CENTER, title, bold(FONT_SIZE), text);
 
     // Caption buttons, right to left: close, (gap), maximize, minimize.
