@@ -1435,8 +1435,20 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TREE_ROW_HEIGHT), Sense::click());
     let p = ui.painter();
     let line = egui::Stroke::new(1.0, theme::color::TREE_LINE);
+    // Single-pixel dots on even pixel coordinates, so the pattern lines up
+    // between rows and stays crisp whatever the row's fractional offset.
     let dotted = |a: egui::Pos2, b: egui::Pos2| {
-        p.extend(egui::Shape::dashed_line(&[a, b], line, 1.0, 1.0));
+        let (lo, hi) = if a.x == b.x { (a.y, b.y) } else { (a.x, b.x) };
+        let mut t = (lo / 2.0).ceil() * 2.0;
+        while t < hi {
+            let dot = if a.x == b.x {
+                egui::Rect::from_min_size(egui::pos2(a.x - 0.5, t), egui::vec2(1.0, 1.0))
+            } else {
+                egui::Rect::from_min_size(egui::pos2(t, a.y - 0.5), egui::vec2(1.0, 1.0))
+            };
+            p.rect_filled(dot, 0.0, line.color);
+            t += 2.0;
+        }
     };
     let col_x = |level: usize| (x0 + level as f32 * TREE_INDENT + TREE_INDENT / 2.0).floor() + 0.5;
     let mid_y = rect.center().y.floor() + 0.5;
