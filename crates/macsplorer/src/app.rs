@@ -1,5 +1,5 @@
 //! The prototype window: toolbar, breadcrumb, navigation pane, item view
-//! (Large Icons or Details), status bar.
+//! (Large Icons, List or Details), status bar.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ use macsplorer_core::columns::{self, ColumnDrag, HeaderHit};
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{copy_into, move_into};
 use macsplorer_core::history::History;
-use macsplorer_core::layout::{self, IconCell, IconGrid, Nav};
+use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
 use macsplorer_core::marquee::{self, Marquee};
 use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
@@ -49,20 +49,21 @@ type ListResult = (u64, Result<Vec<Entry>, String>, Option<u64>);
 /// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
 type VisibleCache = ((u64, bool, String), Rc<[usize]>);
 
-/// The item view's mode. Windows 2000's View menu also had Small Icons,
-/// List and Thumbnails; List is left out on purpose (rarely used).
+/// The item view's mode. Windows 2000's View menu also had Small Icons and
+/// Thumbnails.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewMode {
     LargeIcons,
+    List,
     Details,
 }
 
-/// Last frame's Large Icons layout, for arrow keys handled before the view
-/// is drawn.
+/// Last frame's Large Icons or List layout, for arrow keys handled before
+/// the view is drawn.
 #[derive(Clone, Copy)]
-struct NavLayout {
-    grid: IconGrid,
-    client_height: f32,
+enum NavLayout {
+    Icons { grid: IconGrid, client_height: f32 },
+    List { columns: ListColumns, client_width: f32 },
 }
 
 struct Settings {
@@ -184,6 +185,8 @@ pub struct Explorer {
     /// An entry to scroll into view on the next frame.
     reveal: Option<usize>,
     nav_layout: Option<NavLayout>,
+    /// The widest visible name in the List view, keyed like `visible_cache`.
+    widest_name: Option<((u64, bool, String), f32)>,
     /// The rubber band while it's being dragged in the item view.
     marquee: Option<Marquee>,
     /// Details view column widths, shared by every folder until the window
@@ -251,6 +254,7 @@ impl Explorer {
             focus_item: None,
             reveal: None,
             nav_layout: None,
+            widest_name: None,
             marquee: None,
             column_widths: DEFAULT_COLUMN_WIDTHS,
             column_drag: None,
@@ -858,16 +862,20 @@ impl Explorer {
     }
 
     /// Where an arrow or page key moves the focused item, as a position in
-    /// `visible`. Large Icons uses the list view's rules
-    /// (`layout::IconGrid::navigate`); Details steps through the rows.
+    /// `visible`. Large Icons and List use the list view's rules
+    /// (`layout::IconGrid::navigate`, `layout::ListColumns::navigate`);
+    /// Details steps through the rows.
     fn navigate_items(&self, nav: Nav, visible: &[usize]) -> Option<usize> {
         let Some(from) = self.focus_item.and_then(|f| visible.iter().position(|&v| v == f)) else {
             return Some(0);
         };
         let last = visible.len() - 1;
         match (self.settings.view, self.nav_layout) {
-            (ViewMode::LargeIcons, Some(NavLayout { grid, client_height })) if grid.count == visible.len() => {
+            (ViewMode::LargeIcons, Some(NavLayout::Icons { grid, client_height })) if grid.count == visible.len() => {
                 grid.navigate(from, nav, client_height)
+            }
+            (ViewMode::List, Some(NavLayout::List { columns, client_width })) if columns.count == visible.len() => {
+                columns.navigate(from, nav, client_width)
             }
             (ViewMode::Details, _) => match nav {
                 Nav::Up => Some(from.saturating_sub(1)),
@@ -922,7 +930,7 @@ impl Explorer {
                     }
                 });
                 ui.separator();
-                for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::Details, "Details")] {
+                for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::List, "List"), (ViewMode::Details, "Details")] {
                     if ui.radio_value(&mut self.settings.view, mode, label).clicked() {
                         // Keep the focused item in sight across the switch.
                         self.reveal = self.focus_item;
@@ -1132,6 +1140,7 @@ impl Explorer {
     fn item_view(&mut self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
         match self.settings.view {
             ViewMode::LargeIcons => self.icons_view(ui, visible, actions),
+            ViewMode::List => self.list_view(ui, visible, actions),
             ViewMode::Details => {
                 self.nav_layout = None;
                 self.details(ui, visible, actions);
@@ -1263,7 +1272,7 @@ impl Explorer {
             table.body(|mut body| {
                 if marquee.is_some() {
                     let shown = body.ui_mut().clip_rect();
-                    edge_scroll(body.ui_mut(), shown, LIST_ROW_HEIGHT);
+                    edge_scroll(body.ui_mut(), shown, LIST_ROW_HEIGHT, 1);
                 }
                 body.rows(LIST_ROW_HEIGHT, visible.len(), |mut row| {
                     let pos = row.index();
@@ -1368,7 +1377,7 @@ impl Explorer {
                         })
                         .collect()
                 };
-                if !drag_marquee(ui, m, egui::pos2(0.0, top), out.inner_rect, candidates, entries, selection, anchor) {
+                if !drag_marquee(ui, m, egui::pos2(0.0, top), out.inner_rect, candidates, f32::INFINITY, entries, selection, anchor) {
                     *marquee = None;
                 }
             }
@@ -1448,7 +1457,7 @@ impl Explorer {
         let inner = theme::sunken_field(ui.painter(), rect);
         ui.allocate_rect(rect, Sense::hover());
         let grid = IconGrid::new(visible.len(), inner.width(), inner.height(), scrollbar::WIDTH);
-        self.nav_layout = Some(NavLayout { grid, client_height: inner.height() });
+        self.nav_layout = Some(NavLayout::Icons { grid, client_height: inner.height() });
         // Guess: the arrow-click scroll step wasn't traced.
         let (bars, viewport) = Bars::begin(ui, ui.id().with("icons-bars"), inner, [false, true], LIST_ROW_HEIGHT);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
@@ -1487,7 +1496,7 @@ impl Explorer {
                 }
                 let shown = egui::Rect::from_min_size(origin + view.min.to_vec2(), view.size());
                 if marquee.is_some() {
-                    edge_scroll(ui, shown, LIST_ROW_HEIGHT);
+                    edge_scroll(ui, shown, LIST_ROW_HEIGHT, 1);
                 }
                 let resp = ui.interact(shown, ui.id().with("icons-hit"), Sense::click_and_drag());
                 let content = |p: egui::Pos2| (p.x - origin.x, p.y - origin.y);
@@ -1553,7 +1562,145 @@ impl Explorer {
                             })
                             .collect()
                     };
-                    if !drag_marquee(ui, m, origin, shown, candidates, entries, selection, anchor) {
+                    if !drag_marquee(ui, m, origin, shown, candidates, f32::INFINITY, entries, selection, anchor) {
+                        *marquee = None;
+                    }
+                }
+                item_clicks(ui, &resp, hit.map(|p| &entries[visible[p]]), hit.map(|p| visible[p]), selection, menu_id, actions);
+                resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
+                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
+                    None => background_menu(ui, can_paste, actions),
+                });
+            });
+        bars.end(ui, &out);
+    }
+
+    /// List: 16 px icons with the name to the right, filled top to bottom in
+    /// columns as wide as the widest name (`docs/file-browser-findings.md` §2.5).
+    fn list_view(&mut self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
+        let rect = ui.available_rect_before_wrap();
+        let inner = theme::sunken_field(ui.painter(), rect);
+        ui.allocate_rect(rect, Sense::hover());
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let line_height = ui.fonts_mut(|f| f.row_height(&font));
+        let key = (self.entries_version, self.settings.show_extensions, self.search.trim().to_lowercase());
+        let widest = match &self.widest_name {
+            Some((k, w)) if *k == key => *w,
+            _ => {
+                let w = visible
+                    .iter()
+                    .map(|&i| {
+                        let name = self.entries[i].display_name(self.settings.show_extensions).to_owned();
+                        ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), theme::color::TEXT).size().x)
+                    })
+                    .fold(0.0, f32::max);
+                self.widest_name = Some((key, w));
+                w
+            }
+        };
+        let row_height = layout::list_row_height(line_height);
+        let columns = ListColumns::new(visible.len(), layout::list_column_width(widest), row_height, inner.width(), inner.height(), scrollbar::WIDTH);
+        self.nav_layout = Some(NavLayout::List { columns, client_width: inner.width() });
+        // Guess: an arrow click scrolls one column.
+        let (bars, viewport) = Bars::begin(ui, ui.id().with("list-bars"), inner, [true, false], columns.column_width);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
+        let ui = &mut ui;
+        let hidden = scrollbar::hidden(ui);
+        if let Some(err) = &self.load_error {
+            ui.centered_and_justified(|ui| ui.label(err));
+            return;
+        }
+        let focused = self.focus == Pane::List && window_focused(ui);
+        let can_paste = self.clipboard.is_some();
+        let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
+        let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
+        let menu_id = ui.id().with("list-menu");
+        let Self { entries, selection, rename, settings, search, icons, open_with, listing, marquee, anchor, .. } = self;
+        // An item's icon rect and label box (text plus `SM_CXEDGE` each side,
+        // within the column), in content coordinates. Unverified: that the
+        // label box hugs the text as in Large Icons (`CLVListView::v_ItemHitTest`
+        // wasn't traced).
+        let item_rects = |ui: &Ui, pos: usize| {
+            let (x, y) = columns.cell(pos);
+            let icon = layout::Rect::from_min_size((x, y + (row_height - layout::SMALL_ICON) / 2.0), (layout::SMALL_ICON, layout::SMALL_ICON));
+            let name = entries[visible[pos]].display_name(settings.show_extensions).to_owned();
+            let text = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), theme::color::TEXT).size().x);
+            let width = (text + 2.0 * layout::LABEL_PAD_X).min(columns.column_width - layout::SMALL_ICON);
+            (icon, layout::Rect::from_min_size((x + layout::SMALL_ICON, y), (width, row_height)))
+        };
+
+        let out = egui::ScrollArea::horizontal()
+            .id_salt("list")
+            .auto_shrink(false)
+            .scroll_bar_visibility(hidden)
+            .show_viewport(ui, |ui, view| {
+                let origin = ui.max_rect().min;
+                ui.set_min_size(egui::vec2(columns.content_width(), viewport.height()));
+                if visible.is_empty() {
+                    if !*listing {
+                        empty_message(ui, search);
+                    }
+                    return;
+                }
+                let at = |(x, y): (f32, f32)| origin + egui::vec2(x, y);
+                let screen = |r: layout::Rect| egui::Rect::from_min_max(at(r.min), at(r.max));
+                if let Some(pos) = reveal {
+                    let cell = egui::Rect::from_min_size(at(columns.cell(pos)), egui::vec2(columns.column_width, row_height));
+                    ui.scroll_to_rect(cell, None);
+                }
+                let shown = egui::Rect::from_min_size(origin + view.min.to_vec2(), view.size());
+                if marquee.is_some() {
+                    edge_scroll(ui, shown, columns.column_width, 0);
+                }
+                let resp = ui.interact(shown, ui.id().with("list-hit"), Sense::click_and_drag());
+                let content = |p: egui::Pos2| (p.x - origin.x, p.y - origin.y);
+                let pointer = resp.interact_pointer_pos().or(resp.hover_pos()).map(content);
+                let press = resp.drag_started().then(|| ui.input(|i| i.pointer.press_origin())).flatten().map(content);
+
+                let mut hit = None;
+                let mut press_hit = false;
+                for pos in columns.items_in(view.min.x, view.max.x) {
+                    let index = visible[pos];
+                    let entry = &entries[index];
+                    let selected = selection.contains(&entry.path);
+                    let (icon, label) = item_rects(ui, pos);
+                    icons.paint(ui, screen(icon), entry, IconState::of(selected, focused, cut.contains(&entry.path)));
+                    let hits = |p: (f32, f32)| icon.contains(p) || label.contains(p);
+                    if pointer.is_some_and(hits) {
+                        hit = Some(pos);
+                    }
+                    press_hit |= press.is_some_and(hits);
+                    if let Some(r) = rename.as_mut().filter(|r| r.path == entry.path) {
+                        let (x, y) = columns.cell(pos);
+                        let area = layout::Rect::from_min_size((x + layout::SMALL_ICON, y), (columns.column_width - layout::SMALL_ICON, row_height));
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(screen(area)).layout(Layout::left_to_right(Align::Center)), |ui| {
+                            rename_editor(ui, r, false, actions)
+                        });
+                        continue;
+                    }
+                    let color = if selected && focused { theme::color::SELECTION_TEXT } else { theme::color::TEXT };
+                    let name = entry.display_name(settings.show_extensions).to_owned();
+                    let galley = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), color));
+                    paint_label(ui, screen(label), galley, selected, focused);
+                }
+                if let Some(origin) = press
+                    && !press_hit
+                {
+                    let m = ui.input(|i| i.modifiers);
+                    actions.push(Action::MarqueeBegin { origin, extend: m.command || m.shift });
+                }
+                if let Some(m) = marquee.as_mut() {
+                    // Select bounds: the icon and the label box.
+                    let candidates = |r: &layout::Rect| {
+                        columns
+                            .items_in(r.min.0, r.max.0)
+                            .map(|pos| {
+                                let (icon, label) = item_rects(ui, pos);
+                                (visible[pos], icon.union(&label))
+                            })
+                            .collect()
+                    };
+                    if !drag_marquee(ui, m, origin, shown, candidates, layout::SMALL_ICON, entries, selection, anchor) {
                         *marquee = None;
                     }
                 }
@@ -1739,7 +1886,7 @@ fn empty_message(ui: &mut Ui, search: &str) {
     });
 }
 
-/// Turns clicks on the Large Icons view into actions. `hit` is the item
+/// Turns clicks on the Large Icons or List view into actions. `hit` is the item
 /// under the pointer. A click on empty space clears the selection; a
 /// right-click remembers its target under `menu_id` for the context menu.
 fn item_clicks(
@@ -1780,7 +1927,8 @@ fn item_clicks(
 /// view, on screen), and selects what its edge crossed. `origin` is the
 /// screen position of the content's (0, 0). `candidates` lists the items
 /// (`entries` index and select bounds, in content coordinates) that may lie
-/// in the given rectangle. Paints the band. Returns false once the button is
+/// in the given rectangle; `max_inset_x` goes to `marquee::hit_bounds`.
+/// Paints the band. Returns false once the button is
 /// up, or after Escape, which clears the selection.
 #[allow(clippy::too_many_arguments)]
 fn drag_marquee(
@@ -1789,6 +1937,7 @@ fn drag_marquee(
     origin: egui::Pos2,
     shown: egui::Rect,
     candidates: impl FnOnce(&layout::Rect) -> Vec<(usize, layout::Rect)>,
+    max_inset_x: f32,
     entries: &[Entry],
     selection: &mut BTreeSet<PathBuf>,
     anchor: &mut Option<usize>,
@@ -1805,7 +1954,7 @@ fn drag_marquee(
         if old != m.rect {
             let mut inside = Vec::new();
             for (index, bounds) in candidates(&old.union(&m.rect)) {
-                let bounds = marquee::hit_bounds(bounds);
+                let bounds = marquee::hit_bounds(bounds, max_inset_x);
                 let path = &entries[index].path;
                 match m.item_state(&old, &bounds, selection.contains(path), mods.command) {
                     Some(true) => _ = selection.insert(path.clone()),
@@ -1829,20 +1978,23 @@ fn drag_marquee(
 }
 
 /// While a marquee is dragged with the pointer at or past the top or bottom
-/// of `shown`, scrolls the enclosing scroll area toward it
+/// of `shown` (`axis` 1), or its left or right for the sideways List view
+/// (`axis` 0), scrolls the enclosing scroll area toward it
 /// (`CLVScrollingManager::ShouldScroll`). Guess: the speed, about 20
-/// `line`s a second, wasn't traced.
-fn edge_scroll(ui: &Ui, shown: egui::Rect, line: f32) {
+/// `line`s a second, wasn't traced; nor was the List view's horizontal case.
+fn edge_scroll(ui: &Ui, shown: egui::Rect, line: f32, axis: usize) {
     let (pointer, dt) = ui.input(|i| (i.pointer.latest_pos(), i.stable_dt.min(0.1)));
     let Some(p) = pointer else { return };
-    let dir = if p.y >= shown.bottom() - 1.0 {
+    let dir = if p[axis] >= shown.max[axis] - 1.0 {
         -1.0
-    } else if p.y <= shown.top() {
+    } else if p[axis] <= shown.min[axis] {
         1.0
     } else {
         return;
     };
-    ui.scroll_with_delta_animation(egui::vec2(0.0, dir * 20.0 * line * dt), egui::style::ScrollAnimation::none());
+    let mut delta = egui::Vec2::ZERO;
+    delta[axis] = dir * 20.0 * line * dt;
+    ui.scroll_with_delta_animation(delta, egui::style::ScrollAnimation::none());
     ui.ctx().request_repaint();
 }
 
@@ -2380,6 +2532,15 @@ mod screenshot {
         }
     }
 
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn list() {
+        shoot("list", egui::vec2(900.0, 400.0), |app| {
+            app.settings.view = ViewMode::List;
+            select(app, &["main.rs", "Setup.app"]);
+        });
+    }
+
     /// A marquee dragged from empty space in Large Icons, button still down.
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
@@ -2389,6 +2550,18 @@ mod screenshot {
             egui::vec2(900.0, 560.0),
             |app| app.settings.view = ViewMode::LargeIcons,
             |h| drag(h, egui::pos2(880.0, 140.0), egui::pos2(520.0, 250.0)),
+        );
+    }
+
+    /// A marquee dragged from empty space below the last List column.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn marquee_list() {
+        shoot_driven(
+            "marquee-list",
+            egui::vec2(900.0, 400.0),
+            |app| app.settings.view = ViewMode::List,
+            |h| drag(h, egui::pos2(800.0, 300.0), egui::pos2(380.0, 160.0)),
         );
     }
 

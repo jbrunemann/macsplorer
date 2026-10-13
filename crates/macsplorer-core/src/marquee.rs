@@ -67,12 +67,16 @@ impl Marquee {
 }
 
 /// The part of an item's select bounds (icon plus label) the band has to
-/// touch: shrunk by a quarter of its width and height on each side.
-pub fn hit_bounds(select_bounds: Rect) -> Rect {
+/// touch: shrunk by a quarter of its width and height on each side. The
+/// List view caps the horizontal inset at the small icon width
+/// (`max_inset_x`, `CLVSelectionManager::_DragSelectItem`); pass
+/// `f32::INFINITY` for the other views.
+pub fn hit_bounds(select_bounds: Rect, max_inset_x: f32) -> Rect {
     let (w, h) = (select_bounds.max.0 - select_bounds.min.0, select_bounds.max.1 - select_bounds.min.1);
+    let dx = (w / 4.0).min(max_inset_x);
     Rect {
-        min: (select_bounds.min.0 + w / 4.0, select_bounds.min.1 + h / 4.0),
-        max: (select_bounds.max.0 - w / 4.0, select_bounds.max.1 - h / 4.0),
+        min: (select_bounds.min.0 + dx, select_bounds.min.1 + h / 4.0),
+        max: (select_bounds.max.0 - dx, select_bounds.max.1 - h / 4.0),
     }
 }
 
@@ -118,7 +122,7 @@ mod tests {
 
     #[test]
     fn items_change_only_when_the_edge_crosses_them() {
-        let item = hit_bounds(rect(0.0, 0.0, 40.0, 40.0));
+        let item = hit_bounds(rect(0.0, 0.0, 40.0, 40.0), f32::INFINITY);
         assert_eq!(item, rect(10.0, 10.0, 30.0, 30.0));
         let mut m = Marquee::new((0.0, 0.0));
         let clip = rect(0.0, 0.0, 1000.0, 1000.0);
@@ -142,5 +146,13 @@ mod tests {
         assert_eq!(anchor((60.0, 60.0), items), Some(0));
         assert_eq!(anchor((0.0, 0.0), items), Some(1));
         assert_eq!(anchor((0.0, 0.0), std::iter::empty::<(u8, Rect)>()), None);
+    }
+
+    #[test]
+    fn list_caps_the_horizontal_inset() {
+        // A 200 wide List item loses 16 px each side, not 50.
+        assert_eq!(hit_bounds(rect(0.0, 0.0, 200.0, 20.0), 16.0), rect(16.0, 5.0, 184.0, 15.0));
+        // A narrow one still loses a quarter.
+        assert_eq!(hit_bounds(rect(0.0, 0.0, 40.0, 20.0), 16.0), rect(10.0, 5.0, 30.0, 15.0));
     }
 }

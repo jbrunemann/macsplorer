@@ -97,8 +97,9 @@ package have it) or egui's default font is used.
 
 ## Features
 
-- **Large Icons** and **Details** views (View menu). Details has Name / Size / Type / Modified columns; click a header to sort, click again to reverse. Drag a divider to resize a column (Esc cancels), double-click it to fit the contents; widths apply to every folder until the window closes. *Explorer-derived* (comctl32 `SysHeader32`).
+- **Large Icons**, **List** and **Details** views (View menu). Details has Name / Size / Type / Modified columns; click a header to sort, click again to reverse. Drag a divider to resize a column (Esc cancels), double-click it to fit the contents; widths apply to every folder until the window closes. *Explorer-derived* (comctl32 `SysHeader32`).
 - Large Icons follows the Windows 2000 list view: 75 px slots, names wrapped under the icon and cut to two lines (the focused item shows its full name), and arrow keys that move to the nearest icon in that direction. *Explorer-derived* (comctl32 `SysListView32`).
+- List fills columns top to bottom with small icons, every column as wide as the longest name, and scrolls sideways (the mouse wheel too). ↑↓ step through the items, ←→ jump a column. *Explorer-derived* (same source).
 - Folders first, natural name sorting (`file2` before `file10`). *Explorer-derived* (`StrCmpLogicalW`); turn it off under View.
 - Click, ⌘-click and ⇧-click selection, arrow keys, double-click or Enter to open (files open in their default app).
 - **Marquee selection**: drag a dotted rectangle from empty space (in Details, anywhere beside a name) to select what it touches; ⌘ toggles items, ⇧ adds to the selection, Esc clears it, and the view scrolls when you drag past its edge. *Explorer-derived* (comctl32 `CLVSelectionManager::DragSelect`).
@@ -112,7 +113,7 @@ package have it) or egui's default font is used.
 - Search box filters the current folder by name.
 - **Navigation pane tree** (modeled on Explorer's `CNscTree`): Favorites and Locations roots, folders only, natural-sorted, packages left out. Children load on background threads with a "Loading…" row; chevrons appear only on folders that have subfolders. Click a name to open it, click the chevron or double-click to expand. Arrow keys follow tree conventions (← collapses or goes to the parent, → expands or goes to the first child). Refresh reloads expanded folders.
 - **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
-- Menus: File › Close; Edit › Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
+- Menus: File › Close; Edit › Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
 - Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane.
 - Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name.
 
@@ -135,8 +136,7 @@ package have it) or egui's default font is used.
 File watching (FSEvents, so the list updates live), drag and drop, window persistence, pinning favorites, multiple windows and tabs.
 For file operations: no replace/skip dialog on name conflicts (copies get a
 "- Copy" name, moves stop with an error), no progress window, no undo and no
-Shift+Delete. Small Icons and Thumbnails views are still to come; List view is
-left out on purpose.
+Shift+Delete. Small Icons and Thumbnails views are still to come.
 
 ## How it's built
 
@@ -148,7 +148,7 @@ output.
 
 | Crate | Purpose |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons layout, marquee selection and column header resizing. Unit-tested. |
+| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons and List layouts, marquee selection and column header resizing. Unit-tested. |
 | `crates/macsplorer` | The app (egui/eframe). |
 | `tools/make-icon` | Renders the app icon and `.icns`. |
 

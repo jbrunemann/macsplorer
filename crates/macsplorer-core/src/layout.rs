@@ -1,4 +1,4 @@
-//! Geometry and keyboard movement for the Large Icons view, after
+//! Geometry and keyboard movement for the Large Icons and List views, after
 //! the comctl32 ListView (SysListView32) that Windows 2000's Explorer used.
 //! See `docs/file-browser-findings.md` §2.5 for the traced functions.
 //!
@@ -13,6 +13,8 @@ use std::ops::Range;
 pub const SLOT: f32 = 75.0;
 /// Large icon image size.
 pub const ICON: f32 = 32.0;
+/// Small icon image size (List view).
+pub const SMALL_ICON: f32 = 16.0;
 /// Image top inside its slot, `2 · SM_CYBORDER` (`GetIconBufferY`).
 pub const ICON_TOP: f32 = 2.0;
 /// Gap from the image bottom to the label, `SM_CYBORDER + SM_CYEDGE`.
@@ -191,6 +193,112 @@ impl IconCell {
     }
 }
 
+/// List view row height (`CLVView::ComputeCYItemSize`): the taller of the
+/// small icon and a text line, plus `SM_CYBORDER`.
+pub fn list_row_height(line_height: f32) -> f32 {
+    line_height.max(SMALL_ICON) + 1.0
+}
+
+/// List view column width from the widest label text
+/// (`CLVListView::GetNewColWidth`): text + 2 · `SM_CXEDGE` + small icon +
+/// 8 · `SM_CXBORDER`. Windows also caps it at the screen width.
+pub fn list_column_width(widest_text: f32) -> f32 {
+    widest_text + 2.0 * LABEL_PAD_X + SMALL_ICON + 8.0
+}
+
+/// List view columns, filled top to bottom, then left to right
+/// (`CLVListView::GetRects`). All columns share one width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ListColumns {
+    pub count: usize,
+    pub per_column: usize,
+    pub column_width: f32,
+    pub row_height: f32,
+}
+
+impl ListColumns {
+    /// Rows per column for a client area of `width` × `height`. Like
+    /// [`IconGrid::new`], `scrollbar` (the horizontal bar's height) comes off
+    /// when the columns overflow the width. Unverified: which height
+    /// `CLVListView::v_RecomputeEx` divides wasn't traced.
+    pub fn new(count: usize, column_width: f32, row_height: f32, width: f32, height: f32, scrollbar: f32) -> Self {
+        let fit = |h: f32| ((h / row_height).floor() as usize).max(1);
+        let mut per_column = fit(height);
+        if count.div_ceil(per_column) as f32 * column_width > width {
+            per_column = fit(height - scrollbar);
+        }
+        Self { count, per_column, column_width, row_height }
+    }
+
+    pub fn columns(&self) -> usize {
+        self.count.div_ceil(self.per_column)
+    }
+
+    pub fn content_width(&self) -> f32 {
+        self.columns() as f32 * self.column_width
+    }
+
+    /// Top-left corner of item `i`'s cell.
+    pub fn cell(&self, i: usize) -> (f32, f32) {
+        ((i / self.per_column) as f32 * self.column_width, (i % self.per_column) as f32 * self.row_height)
+    }
+
+    /// Items in the columns that overlap `left..right`.
+    pub fn items_in(&self, left: f32, right: f32) -> Range<usize> {
+        let first = (left.max(0.0) / self.column_width).floor() as usize;
+        let last = (right.max(0.0) / self.column_width).ceil() as usize;
+        (first * self.per_column).min(self.count)..(last * self.per_column).min(self.count)
+    }
+
+    /// The item at `p`, if any (`CLVListView::CalcViewItem` picks the cell;
+    /// cells past the last item are empty).
+    pub fn item_at(&self, p: (f32, f32)) -> Option<usize> {
+        if p.0 < 0.0 || p.1 < 0.0 {
+            return None;
+        }
+        let row = (p.1 / self.row_height) as usize;
+        if row >= self.per_column {
+            return None;
+        }
+        let i = (p.0 / self.column_width) as usize * self.per_column + row;
+        (i < self.count).then_some(i)
+    }
+
+    /// The item the cursor moves to from `from`, or `None` to stay
+    /// (`CLVKeyboardManager::OnArrow`, index arithmetic). Up/Down step one
+    /// item, Left/Right one column. Page keys move by the visible columns
+    /// (a column counts once a third of it shows) and stay in the same row
+    /// when they would run past either end.
+    pub fn navigate(&self, from: usize, nav: Nav, client_width: f32) -> Option<usize> {
+        let (n, per) = (self.count as isize, self.per_column as isize);
+        let i = from as isize;
+        let page = ((client_width + self.column_width * 2.0 / 3.0) / self.column_width).floor().max(1.0) as isize * per;
+        let to = match nav {
+            Nav::Up => i - 1,
+            Nav::Down => i + 1,
+            Nav::Left => i - per,
+            Nav::Right => i + per,
+            Nav::Home => 0,
+            Nav::End => n - 1,
+            Nav::PageUp => {
+                let mut to = i - page;
+                while to < 0 {
+                    to += per;
+                }
+                to
+            }
+            Nav::PageDown => {
+                let mut to = i + page;
+                while to >= n && to >= per {
+                    to -= per;
+                }
+                to
+            }
+        };
+        (0..n).contains(&to).then_some(to as usize)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +380,52 @@ mod tests {
         assert!(!c.hit((75.0 + 5.0, 10.0))); // slot corner
         assert!(c.hit((75.0 + 37.0, 50.0))); // label
         assert!(!c.hit((75.0 + 37.0, 60.0))); // below the label
+    }
+
+    #[test]
+    fn list_metrics() {
+        assert_eq!(list_row_height(15.0), 17.0);
+        assert_eq!(list_row_height(18.0), 19.0);
+        assert_eq!(list_column_width(100.0), 128.0);
+    }
+
+    #[test]
+    fn list_fills_columns_and_reserves_the_scroll_bar() {
+        // 100 tall fits 5 rows of 20; 12 items = 3 columns of 50 = 150 > 140,
+        // so the scroll bar takes 16 and leaves 4 rows.
+        let l = ListColumns::new(12, 50.0, 20.0, 140.0, 100.0, 16.0);
+        assert_eq!(l.per_column, 4);
+        assert_eq!(ListColumns::new(12, 50.0, 20.0, 400.0, 100.0, 16.0).per_column, 5);
+        assert_eq!(l.cell(5), (50.0, 20.0));
+        assert_eq!(l.columns(), 3);
+        assert_eq!(l.item_at((55.0, 25.0)), Some(5));
+        assert_eq!(l.item_at((55.0, 85.0)), None); // past the last row
+        assert_eq!(l.item_at((140.0, 70.0)), Some(11));
+        assert_eq!(l.item_at((160.0, 10.0)), None); // past the last column
+        let short = ListColumns { count: 10, ..l };
+        assert_eq!(short.item_at((140.0, 70.0)), None); // past the last item
+        assert_eq!(l.items_in(60.0, 90.0), 4..8);
+    }
+
+    #[test]
+    fn list_keys() {
+        // 4 per column, 10 items:
+        // 0 4 8
+        // 1 5 9
+        // 2 6
+        // 3 7
+        let l = ListColumns { count: 10, per_column: 4, column_width: 50.0, row_height: 20.0 };
+        let nav = |i, n| l.navigate(i, n, 100.0);
+        assert_eq!(nav(3, Nav::Down), Some(4));
+        assert_eq!(nav(0, Nav::Up), None);
+        assert_eq!(nav(5, Nav::Right), Some(9));
+        assert_eq!(nav(6, Nav::Right), None);
+        assert_eq!(nav(1, Nav::Left), None);
+        // 100 wide shows 2 columns (+ a third of one): pages are 8 items.
+        assert_eq!(nav(1, Nav::PageDown), Some(9));
+        assert_eq!(nav(2, Nav::PageDown), Some(6));
+        assert_eq!(nav(9, Nav::PageUp), Some(1));
+        assert_eq!(nav(6, Nav::PageUp), Some(2));
+        assert_eq!(nav(5, Nav::End), Some(9));
     }
 }
