@@ -44,7 +44,7 @@ frame. The fixture folder is built in `app.rs` `mod screenshot`.
   `/System/Library/Fonts/Supplemental`, not bundled). Every file icon is the
   Win2000 paper page (`theme::paint_page`) with the Seti glyph as an emblem;
   apps/packages/Finder custom icons use the real macOS icon; folders are the
-  yellow Win2000 folder.
+  yellow Win2000 folder (the user folders Finder gives a sidebar glyph carry that SF Symbol as an emblem).
 - The window is borderless (`with_decorations(false)`) so macOS doesn't
   round its corners; the caption bar is drawn by `theme::title_bar`.
 - UI code collects `Action`s while drawing and applies them afterwards

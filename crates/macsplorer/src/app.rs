@@ -16,7 +16,7 @@ use egui_extras::{Column, TableBuilder};
 
 use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::history::History;
-use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, list_dir, sort_entries};
+use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::places::{favorites, volumes};
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
@@ -33,7 +33,7 @@ const TREE_INDENT: f32 = 19.0;
 
 type LoadResult = (PathBuf, bool, Result<Vec<Node>, String>);
 /// A details-view listing, tagged with the request it answers.
-type ListResult = (u64, Result<Vec<Entry>, String>);
+type ListResult = (u64, Result<Vec<Entry>, String>, Option<u64>);
 /// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
 type VisibleCache = ((u64, bool, String), Rc<[usize]>);
 
@@ -100,6 +100,8 @@ pub struct Explorer {
     /// The search-filtered rows, keyed by what they were computed from.
     visible_cache: Option<VisibleCache>,
     load_error: Option<String>,
+    /// Free bytes on the open folder's volume, queried on the listing thread.
+    free_space: Option<u64>,
     /// The details view lists folders on a worker thread so a huge or slow
     /// folder never freezes the window. Results for anything but the latest
     /// request (`list_request`) are dropped.
@@ -144,6 +146,7 @@ impl Explorer {
             entries_version: 0,
             visible_cache: None,
             load_error: None,
+            free_space: None,
             list_tx,
             list_rx,
             list_request: 0,
@@ -220,23 +223,24 @@ impl Explorer {
         let (tx, ctx) = (self.list_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let result = list_dir(&dir, show_hidden).map_err(|e| format!("Can't open {}: {e}", dir.display()));
-            if tx.send((request, result)).is_ok() {
+            if tx.send((request, result, free_space(&dir))).is_ok() {
                 ctx.request_repaint();
             }
         });
     }
 
     fn poll_lists(&mut self) {
-        while let Ok((request, result)) = self.list_rx.try_recv() {
-            self.listed(request, result);
+        while let Ok((request, result, free)) = self.list_rx.try_recv() {
+            self.listed(request, result, free);
         }
     }
 
-    fn listed(&mut self, request: u64, result: Result<Vec<Entry>, String>) {
+    fn listed(&mut self, request: u64, result: Result<Vec<Entry>, String>, free: Option<u64>) {
         if request != self.list_request {
             return;
         }
         self.listing = false;
+        self.free_space = free;
         match result {
             Ok(mut entries) => {
                 sort_entries(&mut entries, self.sort);
@@ -257,8 +261,8 @@ impl Explorer {
     #[cfg(test)]
     fn finish_listing(&mut self) {
         while self.listing {
-            let (request, result) = self.list_rx.recv().expect("listing thread");
-            self.listed(request, result);
+            let (request, result, free) = self.list_rx.recv().expect("listing thread");
+            self.listed(request, result, free);
         }
     }
 
@@ -781,7 +785,7 @@ impl Explorer {
                     });
                     ui.add_space(1.0);
                 }
-                tree_row(ui, row, guide, scroll, focused, actions);
+                tree_row(ui, &mut self.icons, row, guide, scroll, focused, actions);
             }
         });
         bars.end(&mut ui, &out);
@@ -943,7 +947,9 @@ impl Explorer {
         let (objects, bytes) = if selected.is_empty() {
             let n = visible.len();
             let bytes: u64 = visible.iter().filter_map(|&i| self.entries[i].size).sum();
-            (format!("{n} object(s)"), bytes)
+            // Explorer appends the volume's free space only when nothing is selected.
+            let free = self.free_space.map(|f| format!(" (Disk free space: {})", format_byte_size(f))).unwrap_or_default();
+            (format!("{n} object(s){free}"), bytes)
         } else {
             (format!("{} object(s) selected", selected.len()), selected.iter().filter_map(|e| e.size).sum())
         };
@@ -1146,7 +1152,7 @@ fn tree_guides(rows: &[Row]) -> Vec<Guide> {
 /// One Folders pane row in the Windows 2000 tree view style: dotted
 /// connector lines, a +/− box, a folder icon and a label that highlights
 /// only its text.
-fn tree_row(ui: &mut Ui, row: &Row, guide: &Guide, scroll: bool, focused: bool, actions: &mut Vec<Action>) {
+fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll: bool, focused: bool, actions: &mut Vec<Action>) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let text_w = ui.painter().layout_no_wrap(row.label.clone(), font.clone(), theme::color::TEXT).size().x;
     let x0 = ui.max_rect().left() + 2.0;
@@ -1186,8 +1192,11 @@ fn tree_row(ui: &mut Ui, row: &Row, guide: &Guide, scroll: bool, focused: bool, 
         p.text(egui::pos2(icon_rect.left(), rect.center().y), egui::Align2::LEFT_CENTER, &row.label, font, theme::color::GRAY_TEXT);
         return;
     }
-    let icon = if row.depth == 0 && row.section == Section::Locations { Icon::Drive } else { Icon::Folder };
-    theme::paint_icon(p, icon_rect, icon, true);
+    if row.depth == 0 && row.section == Section::Locations {
+        theme::paint_icon(p, icon_rect, Icon::Drive, true);
+    } else {
+        icons.paint_folder(ui, icon_rect, &row.key.path);
+    }
     let text_rect = egui::Rect::from_min_size(egui::pos2(label_x - 2.0, rect.center().y - 7.0), egui::vec2(text_w + 4.0, 14.0));
     let text_color = if row.selected {
         let fill = if focused { theme::color::SELECTION } else { theme::color::FACE };

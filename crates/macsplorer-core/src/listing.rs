@@ -188,6 +188,21 @@ pub fn sort_entries(entries: &mut [Entry], spec: SortSpec) {
     });
 }
 
+/// Bytes available to the current user on the volume holding `path`, like
+/// `GetDiskFreeSpaceEx`'s `lpFreeBytesAvailable` (what the status bar's
+/// "Disk free space" shows). `None` if the volume can't be queried.
+pub fn free_space(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs is plain old data, so all-zero is a valid value.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: valid NUL-terminated path and a statvfs buffer to fill.
+    if unsafe { libc::statvfs(cpath.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some(u64::from(st.f_bavail) * st.f_frsize)
+}
+
 /// Formats a byte count the way Explorer's Size column does: whole KB,
 /// rounded up, so a 1-byte file shows as "1 KB".
 pub fn format_size(bytes: u64) -> String {
@@ -325,6 +340,12 @@ mod tests {
         assert_eq!(format_size(1024), "1 KB");
         assert_eq!(format_size(1025), "2 KB");
         assert_eq!(format_size(5_000_000_000), "4,882,813 KB");
+    }
+
+    #[test]
+    fn free_space_of_temp_dir() {
+        assert!(free_space(&std::env::temp_dir()).is_some_and(|b| b > 0));
+        assert_eq!(free_space(Path::new("/definitely/not/here")), None);
     }
 
     #[test]

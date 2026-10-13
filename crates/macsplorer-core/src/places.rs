@@ -9,21 +9,83 @@ pub struct Place {
     pub path: PathBuf,
 }
 
+/// The user folders Finder gives their own sidebar glyph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KnownFolder {
+    Desktop,
+    Downloads,
+    Documents,
+    Pictures,
+    Music,
+    Movies,
+    Home,
+    Applications,
+}
+
+impl KnownFolder {
+    /// In Explorer's Quick access order.
+    const ALL: [KnownFolder; 8] = [
+        KnownFolder::Desktop,
+        KnownFolder::Downloads,
+        KnownFolder::Documents,
+        KnownFolder::Pictures,
+        KnownFolder::Music,
+        KnownFolder::Movies,
+        KnownFolder::Home,
+        KnownFolder::Applications,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            KnownFolder::Desktop => "Desktop",
+            KnownFolder::Downloads => "Downloads",
+            KnownFolder::Documents => "Documents",
+            KnownFolder::Pictures => "Pictures",
+            KnownFolder::Music => "Music",
+            KnownFolder::Movies => "Movies",
+            KnownFolder::Home => "Home",
+            KnownFolder::Applications => "Applications",
+        }
+    }
+
+    pub fn path(self) -> Option<PathBuf> {
+        match self {
+            KnownFolder::Desktop => dirs::desktop_dir(),
+            KnownFolder::Downloads => dirs::download_dir(),
+            KnownFolder::Documents => dirs::document_dir(),
+            KnownFolder::Pictures => dirs::picture_dir(),
+            KnownFolder::Music => dirs::audio_dir(),
+            KnownFolder::Movies => dirs::video_dir(),
+            KnownFolder::Home => dirs::home_dir(),
+            KnownFolder::Applications => Some(PathBuf::from("/Applications")),
+        }
+    }
+
+    /// The SF Symbol Finder's sidebar shows for this folder.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            KnownFolder::Desktop => "menubar.dock.rectangle",
+            KnownFolder::Downloads => "arrow.down.circle",
+            KnownFolder::Documents => "doc",
+            KnownFolder::Pictures => "photo",
+            KnownFolder::Music => "music.note",
+            KnownFolder::Movies => "film",
+            KnownFolder::Home => "house",
+            KnownFolder::Applications => "app.badge",
+        }
+    }
+}
+
+/// Which known folder `path` is, if any.
+pub fn known_folder(path: &Path) -> Option<KnownFolder> {
+    KnownFolder::ALL.into_iter().find(|k| k.path().is_some_and(|p| p == path))
+}
+
 /// User folders that exist on this machine, in Explorer's Quick access order.
 pub fn favorites() -> Vec<Place> {
-    let known = [
-        ("Desktop", dirs::desktop_dir()),
-        ("Downloads", dirs::download_dir()),
-        ("Documents", dirs::document_dir()),
-        ("Pictures", dirs::picture_dir()),
-        ("Music", dirs::audio_dir()),
-        ("Movies", dirs::video_dir()),
-        ("Home", dirs::home_dir()),
-        ("Applications", Some(PathBuf::from("/Applications"))),
-    ];
-    known
+    KnownFolder::ALL
         .into_iter()
-        .filter_map(|(label, path)| path.filter(|p| p.is_dir()).map(|path| Place { label: label.into(), path }))
+        .filter_map(|k| k.path().filter(|p| p.is_dir()).map(|path| Place { label: k.label().into(), path }))
         .collect()
 }
 
@@ -91,5 +153,15 @@ mod tests {
         for v in volumes().iter().skip(1) {
             assert!(is_browsable_mount(&v.path), "{}", v.path.display());
         }
+    }
+
+    #[test]
+    fn known_folders() {
+        assert_eq!(known_folder(Path::new("/Applications")), Some(KnownFolder::Applications));
+        assert_eq!(known_folder(Path::new("/definitely/not/known")), None);
+        if let Some(music) = dirs::audio_dir() {
+            assert_eq!(known_folder(&music), Some(KnownFolder::Music));
+        }
+        assert!(favorites().iter().all(|f| known_folder(&f.path).is_some()));
     }
 }
