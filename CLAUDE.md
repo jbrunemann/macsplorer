@@ -1,4 +1,4 @@
-# macsplorer
+# Macsplorer
 
 A Windows Explorer–style file browser for macOS in Rust, with a Windows 2000
 "Windows Classic" look. Behaviors are traced from Windows 10 build 10240
@@ -13,7 +13,7 @@ never paste decompiled code into the source.
 | `crates/macsplorer` | egui/eframe 0.36 app. `app.rs` state + UI, `theme.rs` Windows Classic colors/bevels/fonts/icons/title bar, `icons.rs` icon choice + native icon cache, `native_icon.rs` NSWorkspace icons via objc2. |
 | `tools/make-icon` | Renders `assets/icon.png` + `assets/macsplorer.icns` (tiny-skia). |
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
-| `scripts/bundle-macos.sh` | Builds `target/release/macsplorer.app`. |
+| `scripts/bundle-macos.sh` | Builds `target/release/Macsplorer.app`. |
 | `scripts/update-seti.py` | Refreshes `assets/seti` (Seti font/theme + language table) from the VS Code repo. |
 | `docs/` | Findings from the Windows binaries. `file-browser-findings.md` §4 lists untraced behaviors. |
 
@@ -52,6 +52,8 @@ frame. The fixture folder is built in `app.rs` `mod screenshot`.
 - Navigation pane folder listings run on worker threads (`Explorer::load`)
   and come back through a channel; never block the UI thread on disk I/O.
 - Core logic goes in `macsplorer-core` with tests; keep the app crate thin.
+- The user-facing name is "Macsplorer" (capital M): window title, About, bundle
+  name. Crate, binary, file names and bundle id stay lowercase `macsplorer`.
 
 ## egui 0.36 notes (newer than most examples)
 

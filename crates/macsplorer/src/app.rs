@@ -542,8 +542,8 @@ impl Explorer {
                 }
             });
             ui.menu_button("Help", |ui| {
-                if ui.button("About macsplorer").clicked() {
-                    self.status = Some(format!("macsplorer {}", env!("CARGO_PKG_VERSION")));
+                if ui.button("About Macsplorer").clicked() {
+                    self.status = Some(format!("Macsplorer {}", env!("CARGO_PKG_VERSION")));
                 }
             });
         });

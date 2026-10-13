@@ -16,7 +16,7 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("macsplorer")
+            .with_title("Macsplorer")
             .with_inner_size([1000.0, 680.0])
             .with_min_inner_size([520.0, 320.0])
             // The Windows 2000 caption and frame are drawn by the app. A
@@ -27,7 +27,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "macsplorer",
+        "Macsplorer",
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(egui::Theme::Light);

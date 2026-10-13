@@ -1,4 +1,4 @@
-# macsplorer
+# Macsplorer
 
 A Windows Explorer–style file browser for macOS, written in Rust.
 
@@ -20,7 +20,7 @@ those behavioral notes, not copied from decompiled output.
 ```sh
 cargo run -p macsplorer -- [folder]   # defaults to your home folder
 cargo test --workspace
-scripts/bundle-macos.sh --open        # builds target/release/macsplorer.app with the icon
+scripts/bundle-macos.sh --open        # builds target/release/Macsplorer.app with the icon
 ```
 
 ## Icon

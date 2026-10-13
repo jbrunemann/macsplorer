@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds target/release/macsplorer.app with the app icon.
+# Builds target/release/Macsplorer.app with the app icon.
 # Usage: scripts/bundle-macos.sh [--open]
 set -eu
 cd "$(dirname "$0")/.."
@@ -8,7 +8,7 @@ cargo build --release -p macsplorer
 [ -f assets/macsplorer.icns ] || cargo run -q -p make-icon
 
 version=$(cargo pkgid -p macsplorer | sed 's/.*[#@]//')
-app=target/release/macsplorer.app
+app=target/release/Macsplorer.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/macsplorer "$app/Contents/MacOS/macsplorer"
@@ -18,8 +18,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>macsplorer</string>
-  <key>CFBundleDisplayName</key><string>macsplorer</string>
+  <key>CFBundleName</key><string>Macsplorer</string>
+  <key>CFBundleDisplayName</key><string>Macsplorer</string>
   <key>CFBundleIdentifier</key><string>dev.macsplorer.app</string>
   <key>CFBundleExecutable</key><string>macsplorer</string>
   <key>CFBundleIconFile</key><string>macsplorer</string>
