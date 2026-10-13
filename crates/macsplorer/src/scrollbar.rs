@@ -11,7 +11,7 @@
 
 use eframe::egui;
 use egui::scroll_area::{ScrollAreaOutput, ScrollBarVisibility};
-use egui::{Color32, Id, Mesh, Painter, Rangef, Rect, Sense, Stroke, Ui, Vec2b, pos2, vec2};
+use egui::{Color32, Id, Mesh, Painter, Rangef, Rect, Sense, Stroke, Ui, Vec2, Vec2b, pos2, vec2};
 
 use crate::theme::color::{FACE, HIGHLIGHT, SHADOW, TEXT};
 use crate::theme::{Bevel, bevel};
@@ -57,9 +57,19 @@ impl Bars {
     }
 
     pub fn end<R>(self, ui: &mut Ui, out: &ScrollAreaOutput<R>) {
+        self.end_split(ui, out, out);
+    }
+
+    /// Like [`Bars::end`] with the horizontal bar driving `h` and the
+    /// vertical one `v`, for a vertical scroll area nested in a horizontal
+    /// one. Room in the viewport outside a scroll area's own rect (a list
+    /// header above it) doesn't count as page.
+    pub fn end_split<R, S>(self, ui: &mut Ui, h: &ScrollAreaOutput<R>, v: &ScrollAreaOutput<S>) {
         let Self { id, outer, dirs, show, line } = self;
-        let content = out.content_size;
-        let size = outer.size();
+        let viewport = Rect::from_min_max(outer.min, outer.max - vec2(bar_use(show.y), bar_use(show.x)));
+        let content = vec2(h.content_size.x, v.content_size.y);
+        let chrome = vec2(viewport.width() - h.inner_rect.width(), viewport.height() - v.inner_rect.height()).max(Vec2::ZERO);
+        let size = outer.size() - chrome;
         // A bar is needed when the content overflows; one bar can make the
         // other necessary by taking away room.
         let mut need = Vec2b::new(false, dirs.y && content.y > size.y + 0.5);
@@ -71,10 +81,7 @@ impl Bars {
             return;
         }
 
-        let viewport = Rect::from_min_max(outer.min, outer.max - vec2(bar_use(show.y), bar_use(show.x)));
-        let mut state = egui::scroll_area::State::load(ui.ctx(), out.id).unwrap_or(out.state);
-        let mut changed = false;
-        for d in 0..2 {
+        for (d, out_id, out_state) in [(0, h.id, h.state), (1, v.id, v.state)] {
             if !show[d] {
                 continue;
             }
@@ -83,15 +90,15 @@ impl Bars {
             } else {
                 Rect::from_x_y_ranges(viewport.x_range(), viewport.bottom()..=outer.bottom())
             };
-            let metrics = Metrics { content: content[d], page: viewport.size()[d], line };
-            changed |= bar(ui, id.with(d), rect, d, &mut state.offset[d], metrics);
+            let mut state = egui::scroll_area::State::load(ui.ctx(), out_id).unwrap_or(out_state);
+            let metrics = Metrics { content: content[d], page: viewport.size()[d] - chrome[d], line };
+            if bar(ui, id.with(d), rect, d, &mut state.offset[d], metrics) {
+                state.store(ui.ctx(), out_id);
+                ui.ctx().request_repaint();
+            }
         }
         if show.x && show.y {
             ui.painter().rect_filled(Rect::from_min_max(viewport.max, outer.max), 0.0, FACE);
-        }
-        if changed {
-            state.store(ui.ctx(), out.id);
-            ui.ctx().request_repaint();
         }
     }
 }

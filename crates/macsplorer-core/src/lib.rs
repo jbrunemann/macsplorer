@@ -4,6 +4,7 @@
 //! in `docs/file-browser-findings.md`.
 
 pub mod breadcrumb;
+pub mod columns;
 pub mod copy_path;
 pub mod fileops;
 pub mod history;

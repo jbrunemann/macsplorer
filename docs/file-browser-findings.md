@@ -326,6 +326,57 @@ The label colors are inferred from the border-select branch, which picks `COLOR_
 `COLOR_BTNFACE` from the same return flags; the label painter itself (`FUN_171a48290`) wasn't
 decoded. **Inferred:** comctl32 v5 (Windows 2000) used the same blends.
 
+### 2.6 Column header resizing (SysHeader32, comctl32 v6.10)
+
+The Details view's header is a `SysHeader32` created by `CLVHeaderControlManager::CreateHeader`
+(0x171a4dca0) with `HDS_FULLDRAG` always set. Header code from build 10240; **inferred:** the
+classic (unthemed) paths are unchanged from Windows 2000's comctl32 v5.
+
+**Hit test, observed** (`Header_HitTest` 0x171ad6154; slop set in `Header_OnCreate` 0x171a34fb8):
+
+- The divider slop is 8 · `SM_CXBORDER` = 8 px, capped at a quarter of the column being tested.
+- Walking the columns left to right, a point inside column *i* is on divider *i − 1* if it is less
+  than the slop past the column's left edge (*i* > 0), on divider *i* if it is within the slop of
+  the right edge, otherwise on the column. The empty header past the last column is tested as one
+  more column, so the last divider can be grabbed from the right too; the rest of it is
+  `HHT_NOWHERE`.
+- Zero-width columns are skipped. Right after one, the left-edge zone is `HHT_ONDIVOPEN` for the
+  hidden column (strictly right of the edge) and plain `HHT_ONDIVIDER` exactly on it, so a hidden
+  column can always be dragged back open.
+- Columns with `HDF_FIXEDWIDTH`, or a header with `HDS_NOSIZING`, have no divider zones.
+- Cursors (`Header_OnSetCursor` 0x171ad770c): comctl32 resource 106 (split) on a divider, 107 (split
+  open, double bar) on `HHT_ONDIVOPEN`, the arrow elsewhere.
+
+**Drag, observed** (`Header_OnLButtonDown` 0x171ad6ff4, `Header_OnMouseMove` 0x171ad7480,
+`Header_OnLButtonUp` 0x171ad7200, `Header_WndProc` inner 0x171a35b00):
+
+- Tracking starts on the press itself, no drag threshold; the header captures the mouse and sends
+  `HDN_BEGINTRACK` (the parent can veto). A press on a divider never sorts.
+- The divider keeps its offset from the press point. The new right edge is clamped to the column's
+  left edge, so the minimum width is 0; there's no maximum. Columns to the right shift; nothing is
+  squeezed to fit, the list just scrolls sideways.
+- With full drag (`HDS_FULLDRAG` and "Show window contents while dragging") each move sends
+  `HDN_TRACK` and resizes the column live. Without it the header and the ListView
+  (`CLVHeaderControlManager::_RHeaderTrack` 0x171bb9450) draw an inverted `SM_CXBORDER` line down
+  the view, and the width is set only on release (`HDN_ENDTRACK`).
+- Escape held, a right-button press or losing capture cancels: `HDN_ENDTRACK` with the original
+  width, which is put back.
+
+**Double-click, observed:** a double-click on `HHT_ONDIVIDER` (not `HHT_ONDIVOPEN`) sends
+`HDN_DIVIDERDBLCLICK`; `CLVHeaderControlManager::HeaderNotify` (0x171a4d898) answers with
+`SetColumnWidth(i, LVSCW_AUTOSIZE)` (0x171a13154). `_GetAutoWidth` (0x171bb8ee8) takes the widest
+item in the column (`_ComputeColumnWidthForItem`, not decoded), then `_ValidateMinWidth`
+(0x171a4de98) raises it to at least the header item's own width (caption plus 3 · `SM_CXEDGE` each
+side, `Header_ComputeItemWidth`) plus 25 px at 96 dpi. **Unverified:** whether comctl32 v5 had that
+minimum; it looks like a Vista addition.
+
+**Empty header, observed** (`Header_Draw` 0x171a18194): without a theme and without `HDS_FLAT`,
+the space past the last column is drawn as one more raised, empty button out to the edge.
+
+**Persistence, unverified, from memory:** Windows 2000 kept column widths per folder with the rest
+of the view state (`Explorer\Streams`, a limited MRU of folders). macsplorer deliberately keeps one
+set of widths for all folders until the window closes.
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
@@ -337,6 +388,7 @@ decoded. **Inferred:** comctl32 v5 (Windows 2000) used the same blends.
 | `CViewSettings` per-folder/per-type view memory | Store view state keyed by folder path plus a "folder type" fallback (Documents/Pictures/Music/Videos/General) in your own SQLite/JSON file. Don't write `.DS_Store` files. |
 | Status bar free space | **Unverified, from Windows 2000 behavior (not traced in build 10240, whose status bar only shows the item count).** With nothing selected the first pane reads `N object(s) (Disk free space: 4.65 GB)`; with a selection it reads `N object(s) selected` and drops the free space. The value is the user-available bytes on the folder's volume (`GetDiskFreeSpaceEx`, `lpFreeBytesAvailable`), formatted with `StrFormatByteSize`. macsplorer uses `statvfs` (`f_bavail * f_frsize`) on the listing worker thread. |
 | View modes (§2.4, §2.5) | Win2000 look, so follow the ListView (§2.5): 75 × 75 slots, 32 px icon centered 2 px from the top, label 3 px below, wrapped in 71 px and folded to two lines unless focused; clicks hit the image ± 8 px or the label, not the whole slot; selected icons blended 50% (25% when the view is unfocused) toward the highlight color; spatial arrow keys. List mode is traced above but deliberately not offered. Marquee as traced in both views; Details uses the icon plus the label's highlight box as select bounds, the band is drawn as black dots since egui can't XOR, and auto-scroll runs while the pointer is at or past the view's top or bottom edge at a guessed 20 lines a second. From build 10240 (§2.4): selection, focus and sort survive a mode switch. Labels use Tahoma 12 px instead of 8 pt, so rows and two-line labels come out a little taller than Win2000. View mode is per window until per-folder memory exists. |
+| Column header (§2.6) | Hit test and drag as traced (`macsplorer_core::columns`), always full drag. macOS has no split-open cursor, so both divider zones use the system resize cursor. Auto-size measures the cells with macsplorer's own padding (`_ComputeColumnWidthForItem` wasn't decoded) and applies the caption + 37 px minimum. The double-click is recognized on the second release (egui), not the second press. Widths are shared by all folders and last until the window closes. |
 | `CTravelLog` | `Vec<Location>` with a cursor. The back/forward dropdown menu lists entries (`_ShowBackForwardMenu`). |
 | Breadcrumb (`CBreadcrumbBar`) | Each crumb is a button with a chevron dropdown listing subfolders (`_OnDropDown`). Click empty space → edit mode with the full path (`_GoToEditMode`). Crumbs are drag sources and drop targets. Collapse overflow into a root dropdown (`_AddRootDropdownItems`). |
 | `CNscTree` change notifications | FSEvents per expanded node; enumerate in the background (`_StartBackgroundEnum`). |

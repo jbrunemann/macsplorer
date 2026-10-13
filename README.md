@@ -97,7 +97,7 @@ package have it) or egui's default font is used.
 
 ## Features
 
-- **Large Icons** and **Details** views (View menu). Details has Name / Size / Type / Modified columns; click a header to sort, click again to reverse.
+- **Large Icons** and **Details** views (View menu). Details has Name / Size / Type / Modified columns; click a header to sort, click again to reverse. Drag a divider to resize a column (Esc cancels), double-click it to fit the contents; widths apply to every folder until the window closes. *Explorer-derived* (comctl32 `SysHeader32`).
 - Large Icons follows the Windows 2000 list view: 75 px slots, names wrapped under the icon and cut to two lines (the focused item shows its full name), and arrow keys that move to the nearest icon in that direction. *Explorer-derived* (comctl32 `SysListView32`).
 - Folders first, natural name sorting (`file2` before `file10`). *Explorer-derived* (`StrCmpLogicalW`); turn it off under View.
 - Click, ⌘-click and ⇧-click selection, arrow keys, double-click or Enter to open (files open in their default app).
@@ -132,7 +132,7 @@ package have it) or egui's default font is used.
 
 ## Not yet
 
-File watching (FSEvents, so the list updates live), drag and drop, column and window persistence, pinning favorites, multiple windows and tabs.
+File watching (FSEvents, so the list updates live), drag and drop, window persistence, pinning favorites, multiple windows and tabs.
 For file operations: no replace/skip dialog on name conflicts (copies get a
 "- Copy" name, moves stop with an error), no progress window, no undo and no
 Shift+Delete. Small Icons and Thumbnails views are still to come; List view is
@@ -148,7 +148,7 @@ output.
 
 | Crate | Purpose |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons layout and marquee selection. Unit-tested. |
+| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons layout, marquee selection and column header resizing. Unit-tested. |
 | `crates/macsplorer` | The app (egui/eframe). |
 | `tools/make-icon` | Renders the app icon and `.icns`. |
 

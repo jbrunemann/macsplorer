@@ -16,6 +16,7 @@ use egui::{Align, Key, Layout, RichText, Sense, TextEdit, Ui};
 use egui_extras::{Column, TableBuilder};
 
 use macsplorer_core::breadcrumb::crumbs;
+use macsplorer_core::columns::{self, ColumnDrag, HeaderHit};
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{copy_into, move_into};
 use macsplorer_core::history::History;
@@ -35,6 +36,10 @@ use crate::theme::{self, Bevel, Icon};
 use crate::trash::move_to_trash;
 
 const LIST_ROW_HEIGHT: f32 = 17.0;
+const LIST_HEADER_HEIGHT: f32 = 18.0;
+/// Details view columns: Name, Size, Type, Modified.
+const DEFAULT_COLUMN_WIDTHS: [f32; 4] = [300.0, 80.0, 140.0, 120.0];
+const COLUMN_CAPTIONS: [&str; 4] = ["Name", "Size", "Type", "Modified"];
 const TREE_ROW_HEIGHT: f32 = 18.0;
 const TREE_INDENT: f32 = 19.0;
 
@@ -181,6 +186,15 @@ pub struct Explorer {
     nav_layout: Option<NavLayout>,
     /// The rubber band while it's being dragged in the item view.
     marquee: Option<Marquee>,
+    /// Details view column widths, shared by every folder until the window
+    /// closes. (Explorer kept them per folder.)
+    column_widths: [f32; 4],
+    /// A header divider drag, and whether it started on a divider proper
+    /// (where a double-click auto-sizes) rather than a hidden column's.
+    column_drag: Option<(ColumnDrag, bool)>,
+    /// The details header's left edge on screen last frame, for hit testing
+    /// before this frame's layout.
+    header_left: f32,
     rename: Option<RenameState>,
     /// `Some` while the address bar shows a text field instead of crumbs.
     address_edit: Option<String>,
@@ -238,6 +252,9 @@ impl Explorer {
             reveal: None,
             nav_layout: None,
             marquee: None,
+            column_widths: DEFAULT_COLUMN_WIDTHS,
+            column_drag: None,
+            header_left: 0.0,
             rename: None,
             address_edit: None,
             address_needs_focus: false,
@@ -1127,8 +1144,9 @@ impl Explorer {
         let inner = theme::sunken_field(ui.painter(), rect);
         ui.allocate_rect(rect, Sense::hover());
         // The vertical bar runs beside the column header too, as in a
-        // Windows list view, so it is carved out of the whole field.
-        let (bars, viewport) = Bars::begin(ui, ui.id().with("details-bars"), inner, [false, true], LIST_ROW_HEIGHT);
+        // Windows list view, so it is carved out of the whole field. The
+        // header scrolls sideways with the rows.
+        let (bars, viewport) = Bars::begin(ui, ui.id().with("details-bars"), inner, [true, true], LIST_ROW_HEIGHT);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
         let ui = &mut ui;
         let hidden = scrollbar::hidden(ui);
@@ -1137,12 +1155,14 @@ impl Explorer {
             ui.centered_and_justified(|ui| ui.label(err));
             return;
         }
+        let header_rect = egui::Rect::from_min_size(viewport.min, egui::vec2(viewport.width(), LIST_HEADER_HEIGHT));
+        let header_hit = self.header_input(ui, header_rect, visible);
         let focused = self.focus == Pane::List && window_focused(ui);
         let can_paste = self.clipboard.is_some();
         let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("details-menu");
-        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, .. } = self;
+        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, column_widths, header_left, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::WINDOW;
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -1151,8 +1171,9 @@ impl Explorer {
         let (press, mods) = ui.input(|i| (i.pointer.press_origin(), i.modifiers));
         let extend = mods.command || mods.shift;
 
-        // Under the rows, so a click on a row still reaches the row.
-        let bg = ui.interact(viewport, ui.id().with("details-bg"), Sense::click_and_drag());
+        // Under the rows, so a click on a row still reaches the row. Not
+        // under the header, where a press may grab a divider.
+        let bg = ui.interact(viewport.with_min_y(header_rect.bottom()), ui.id().with("details-bg"), Sense::click_and_drag());
         if bg.clicked() {
             if !extend {
                 actions.push(Action::Deselect);
@@ -1161,9 +1182,12 @@ impl Explorer {
         }
         bg.context_menu(|ui| background_menu(ui, can_paste, actions));
 
-        let header = |ui: &mut Ui, label: &str, column: SortColumn, right: bool, actions: &mut Vec<Action>| {
+        let header = |ui: &mut Ui, column: usize, sort_column: SortColumn, right: bool, actions: &mut Vec<Action>| {
+            let label = COLUMN_CAPTIONS[column];
             let rect = ui.max_rect();
-            let resp = ui.interact(rect, ui.id().with(label), Sense::click());
+            // Over a divider a press resizes instead of sorting.
+            let sense = if header_hit.divider().is_some() { Sense::hover() } else { Sense::click() };
+            let resp = ui.interact(rect, ui.id().with(label), sense);
             let p = ui.painter();
             p.rect_filled(rect, 0.0, theme::color::FACE);
             let down = resp.is_pointer_button_down_on();
@@ -1176,7 +1200,7 @@ impl Explorer {
                 (egui::pos2(rect.left() + 6.0 + off, rect.center().y + off), egui::Align2::LEFT_CENTER)
             };
             let text = p.text(pos, align, label, font, theme::color::TEXT);
-            if sort.column == column {
+            if sort.column == sort_column {
                 // A small sort triangle beside the caption.
                 let x = if right { text.left() - 10.0 } else { text.right() + 6.0 };
                 let c = egui::pos2(x + 3.0, rect.center().y + off);
@@ -1188,125 +1212,140 @@ impl Explorer {
                 p.add(egui::Shape::convex_polygon(pts, theme::color::SHADOW, egui::Stroke::NONE));
             }
             if resp.clicked() {
-                actions.push(Action::Sort(column));
+                actions.push(Action::Sort(sort_column));
             }
         };
-
-        let mut table = TableBuilder::new(ui);
-        if let Some(row) = reveal {
-            table = table.scroll_to_row(row, None);
-        }
-        let table = table
-            .scroll_bar_visibility(hidden)
-            .striped(false)
-            .sense(Sense::click_and_drag())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(300.0).at_least(120.0).clip(true))
-            .column(Column::initial(80.0).at_least(50.0))
-            .column(Column::initial(140.0).at_least(60.0).clip(true))
-            .column(Column::remainder().at_least(120.0).clip(true))
-            .header(18.0, |mut row| {
-                row.col(|ui| header(ui, "Name", SortColumn::Name, false, actions));
-                row.col(|ui| header(ui, "Size", SortColumn::Size, true, actions));
-                row.col(|ui| header(ui, "Type", SortColumn::Kind, false, actions));
-                row.col(|ui| header(ui, "Modified", SortColumn::Modified, false, actions));
-            });
-
-        if visible.is_empty() {
-            let out = table.body(|_| {});
-            bars.end(ui, &out);
-            if !*listing {
-                empty_message(ui, search);
-            }
-            return;
-        }
 
         // Where the rows are: row 0's top on screen, the icon's left edge and
         // the Name column's right edge. Taken from a drawn row, for the marquee.
         let mut geometry: Option<(f32, f32, f32)> = None;
-        let out = table.body(|mut body| {
-            if marquee.is_some() {
-                let shown = body.ui_mut().clip_rect();
-                edge_scroll(body.ui_mut(), shown, LIST_ROW_HEIGHT);
+        let h_out = egui::ScrollArea::horizontal().id_salt("details-h").auto_shrink(false).scroll_bar_visibility(hidden).show(ui, |ui| {
+            let mut table = TableBuilder::new(ui);
+            if let Some(row) = reveal {
+                table = table.scroll_to_row(row, None);
             }
-            body.rows(LIST_ROW_HEIGHT, visible.len(), |mut row| {
-                let pos = row.index();
-                let index = visible[pos];
-                let entry = &entries[index];
-                let selected = selection.contains(&entry.path);
-                // The icon and label, the only part of the row that hits the
-                // item: elsewhere is empty space (`CListView::HandleMouse`).
-                let mut item_rect = egui::Rect::NOTHING;
-                let mut name_column = (0.0, 0.0);
-
-                row.col(|ui| {
-                    ui.add_space(4.0);
-                    let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
-                    icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, cut.contains(&entry.path)));
-                    ui.add_space(3.0);
-                    let label = match rename.as_mut().filter(|r| r.path == entry.path) {
-                        Some(r) => {
-                            rename_editor(ui, r, false, actions);
-                            ui.min_rect()
-                        }
-                        None => {
-                            let name = entry.display_name(settings.show_extensions);
-                            selectable_name(ui, name, selected, focused)
-                        }
-                    };
-                    item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
-                    name_column = (icon_rect.left(), ui.max_rect().right());
-                });
-                row.col(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add_space(6.0);
-                        if let Some(size) = entry.size {
-                            ui.label(format_size(size));
-                        }
+            // Fixed widths; the last column fills the rest of the header with
+            // an empty button, as `Header_Draw` does.
+            let table = table
+                .scroll_bar_visibility(hidden)
+                .auto_shrink([false, visible.is_empty()])
+                .striped(false)
+                .sense(Sense::click_and_drag())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .column(Column::exact(column_widths[0]).clip(true))
+                .column(Column::exact(column_widths[1]).clip(true))
+                .column(Column::exact(column_widths[2]).clip(true))
+                .column(Column::exact(column_widths[3]).clip(true))
+                .column(Column::remainder().at_least(0.0).clip(true))
+                .header(LIST_HEADER_HEIGHT, |mut row| {
+                    row.col(|ui| {
+                        *header_left = ui.max_rect().left();
+                        header(ui, 0, SortColumn::Name, false, actions);
+                    });
+                    row.col(|ui| header(ui, 1, SortColumn::Size, true, actions));
+                    row.col(|ui| header(ui, 2, SortColumn::Kind, false, actions));
+                    row.col(|ui| header(ui, 3, SortColumn::Modified, false, actions));
+                    row.col(|ui| {
+                        let rect = ui.max_rect();
+                        ui.painter().rect_filled(rect, 0.0, theme::color::FACE);
+                        theme::bevel(ui.painter(), rect, Bevel::Raised);
                     });
                 });
-                row.col(|ui| {
-                    ui.add_space(6.0);
-                    ui.label(entry.kind_label());
-                });
-                row.col(|ui| {
-                    ui.add_space(6.0);
-                    if let Some(t) = entry.modified {
-                        ui.label(DateTime::<Local>::from(t).format("%d/%m/%Y %H:%M").to_string());
-                    }
-                });
 
-                let resp = row.response();
-                let top = resp.rect.top() - pos as f32 * pitch;
-                geometry.get_or_insert((top, name_column.0, name_column.1));
-                let on_item = resp.interact_pointer_pos().is_some_and(|p| item_rect.contains(p));
-                if on_item {
-                    if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
-                        actions.push(Action::Click { index, toggle: mods.command, extend: mods.shift });
-                    }
-                    if resp.double_clicked() {
-                        actions.push(Action::Open(entry.path.clone()));
-                    }
-                } else if resp.clicked() || resp.secondary_clicked() {
-                    if resp.clicked() && !extend {
-                        actions.push(Action::Deselect);
-                    }
-                    actions.push(Action::Focus(Pane::List));
+            if visible.is_empty() {
+                let out = table.body(|_| {});
+                if !*listing {
+                    empty_message(ui, search);
                 }
-                if resp.secondary_clicked() {
-                    resp.ctx.data_mut(|d| d.insert_temp(menu_id, on_item.then_some(index)));
+                return out;
+            }
+
+            table.body(|mut body| {
+                if marquee.is_some() {
+                    let shown = body.ui_mut().clip_rect();
+                    edge_scroll(body.ui_mut(), shown, LIST_ROW_HEIGHT);
                 }
-                if resp.drag_started()
-                    && let Some(p) = press.filter(|p| !item_rect.contains(*p))
-                {
-                    actions.push(Action::MarqueeBegin { origin: (p.x, p.y - top), extend });
-                }
-                resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
-                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
-                    None => background_menu(ui, can_paste, actions),
+                body.rows(LIST_ROW_HEIGHT, visible.len(), |mut row| {
+                    let pos = row.index();
+                    let index = visible[pos];
+                    let entry = &entries[index];
+                    let selected = selection.contains(&entry.path);
+                    // The icon and label, the only part of the row that hits the
+                    // item: elsewhere is empty space (`CListView::HandleMouse`).
+                    let mut item_rect = egui::Rect::NOTHING;
+                    let mut name_column = (0.0, 0.0);
+
+                    row.col(|ui| {
+                        ui.add_space(4.0);
+                        let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
+                        icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, cut.contains(&entry.path)));
+                        ui.add_space(3.0);
+                        let label = match rename.as_mut().filter(|r| r.path == entry.path) {
+                            Some(r) => {
+                                rename_editor(ui, r, false, actions);
+                                ui.min_rect()
+                            }
+                            None => {
+                                let name = entry.display_name(settings.show_extensions);
+                                selectable_name(ui, name, selected, focused)
+                            }
+                        };
+                        item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
+                        name_column = (icon_rect.left(), ui.max_rect().right());
+                    });
+                    row.col(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.add_space(6.0);
+                            if let Some(size) = entry.size {
+                                ui.label(format_size(size));
+                            }
+                        });
+                    });
+                    row.col(|ui| {
+                        ui.add_space(6.0);
+                        ui.label(entry.kind_label());
+                    });
+                    row.col(|ui| {
+                        ui.add_space(6.0);
+                        if let Some(t) = modified_text(entry) {
+                            ui.label(t);
+                        }
+                    });
+                    row.col(|_| {});
+
+                    let resp = row.response();
+                    let top = resp.rect.top() - pos as f32 * pitch;
+                    geometry.get_or_insert((top, name_column.0, name_column.1));
+                    let on_item = resp.interact_pointer_pos().is_some_and(|p| item_rect.contains(p));
+                    if on_item {
+                        if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
+                            actions.push(Action::Click { index, toggle: mods.command, extend: mods.shift });
+                        }
+                        if resp.double_clicked() {
+                            actions.push(Action::Open(entry.path.clone()));
+                        }
+                    } else if resp.clicked() || resp.secondary_clicked() {
+                        if resp.clicked() && !extend {
+                            actions.push(Action::Deselect);
+                        }
+                        actions.push(Action::Focus(Pane::List));
+                    }
+                    if resp.secondary_clicked() {
+                        resp.ctx.data_mut(|d| d.insert_temp(menu_id, on_item.then_some(index)));
+                    }
+                    if resp.drag_started()
+                        && let Some(p) = press.filter(|p| !item_rect.contains(*p))
+                    {
+                        actions.push(Action::MarqueeBegin { origin: (p.x, p.y - top), extend });
+                    }
+                    resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
+                        Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
+                        None => background_menu(ui, can_paste, actions),
+                    });
                 });
-            });
+            })
         });
+        let out = &h_out.inner;
         // Content coordinates: screen x, y from row 0's top.
         if let Some((top, icon_left, name_right)) = geometry {
             if bg.drag_started()
@@ -1334,7 +1373,72 @@ impl Explorer {
                 }
             }
         }
-        bars.end(ui, &out);
+        bars.end_split(ui, &h_out, out);
+    }
+
+    /// Divider drags in the details header, handled before the table is
+    /// laid out so a new width shows the same frame. After the comctl32
+    /// header control (`docs/file-browser-findings.md` §2.6). Returns what
+    /// the pointer is over, a divider for as long as one is dragged.
+    fn header_input(&mut self, ui: &mut Ui, header: egui::Rect, visible: &[usize]) -> HeaderHit {
+        let left = self.header_left;
+        if self.column_drag.is_none() {
+            let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|&p| header.contains(p) && ui.rect_contains_pointer(header)) else {
+                return HeaderHit::Nowhere;
+            };
+            let hit = columns::hit_test(&self.column_widths, header.right() - left, p.x - left);
+            let Some(column) = hit.divider() else { return hit };
+            // The system has no "split open" cursor; both zones get the same one.
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+            if !ui.input(|i| i.pointer.primary_pressed()) {
+                return hit;
+            }
+            self.column_drag = Some((ColumnDrag::new(&self.column_widths, column, p.x - left), matches!(hit, HeaderHit::Divider(_))));
+        }
+        let Some((drag, on_divider)) = self.column_drag else { return HeaderHit::Nowhere };
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+        // Esc or the right button puts the width back (`Header_WndProc`).
+        let cancel = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape) || i.pointer.secondary_pressed());
+        if cancel {
+            self.column_widths[drag.column] = drag.original;
+            self.column_drag = None;
+            return HeaderHit::Divider(drag.column);
+        }
+        let (down, pos, double) = ui.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos(), i.pointer.button_double_clicked(egui::PointerButton::Primary)));
+        if let Some(p) = pos {
+            self.column_widths[drag.column] = drag.width_at(p.x - left);
+        }
+        if !down {
+            self.column_drag = None;
+            if double && on_divider {
+                self.column_widths[drag.column] = self.auto_width(ui, drag.column, visible);
+            }
+        }
+        HeaderHit::Divider(drag.column)
+    }
+
+    /// The width a divider double-click gives `column`: its widest cell, but
+    /// no less than the caption plus 37 px (`SetColumnWidth(LVSCW_AUTOSIZE)`,
+    /// `_ValidateMinWidth`). Cell padding is ours, matching how cells draw.
+    fn auto_width(&self, ui: &Ui, column: usize, visible: &[usize]) -> f32 {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let width = |text: String| ui.fonts_mut(|f| f.layout_no_wrap(text, font.clone(), theme::color::TEXT).size().x);
+        // Caption plus 6 px each side (3 × SM_CXEDGE), plus 25.
+        let caption = width(COLUMN_CAPTIONS[column].into()) + 12.0 + 25.0;
+        visible
+            .iter()
+            .map(|&i| {
+                let e = &self.entries[i];
+                match column {
+                    // 4 + icon 16 + 3, the label's 2 px highlight, 6 to spare.
+                    0 => width(e.display_name(self.settings.show_extensions).into()) + 4.0 + 16.0 + 3.0 + 2.0 + 6.0,
+                    1 => e.size.map_or(0.0, |s| width(format_size(s)) + 12.0),
+                    2 => width(e.kind_label()) + 12.0,
+                    _ => modified_text(e).map_or(0.0, |t| width(t) + 12.0),
+                }
+            })
+            .fold(caption, f32::max)
+            .ceil()
     }
 
     /// Large Icons: 32 px icons in 75 × 75 slots, labels wrapped underneath
@@ -1813,6 +1917,11 @@ fn rename_editor(ui: &mut Ui, r: &mut RenameState, wrapping: bool, actions: &mut
 /// An item label that highlights only its text when selected: navy with
 /// white text when the pane has focus, button-face gray otherwise.
 /// Returns the highlight box.
+/// The details view's Modified cell.
+fn modified_text(entry: &Entry) -> Option<String> {
+    entry.modified.map(|t| DateTime::<Local>::from(t).format("%d/%m/%Y %H:%M").to_string())
+}
+
 fn selectable_name(ui: &mut Ui, text: &str, selected: bool, focused: bool) -> egui::Rect {
     let bg = ui.painter().add(egui::Shape::Noop);
     let color = if selected && focused { theme::color::SELECTION_TEXT } else { theme::color::TEXT };
@@ -2288,6 +2397,14 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn marquee_details() {
         shoot_driven("marquee-details", egui::vec2(900.0, 560.0), |_| {}, |h| drag(h, egui::pos2(700.0, 150.0), egui::pos2(300.0, 260.0)));
+    }
+
+    /// The Name column's divider dragged left, grabbed 3 px inside the
+    /// column, button still down.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn column_resize() {
+        shoot_driven("column-resize", egui::vec2(900.0, 560.0), |_| {}, |h| drag(h, egui::pos2(526.0, 111.0), egui::pos2(400.0, 140.0)));
     }
 
     /// A window small enough that both panes need classic scroll bars.

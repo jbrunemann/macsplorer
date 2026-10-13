@@ -9,7 +9,7 @@ never paste decompiled code into the source.
 
 | Path | What |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic, all unit-tested: `listing` (read_dir, sort, sizes, custom-icon flag), `natural` (StrCmpLogicalW-style sort), `rename` (Explorer's rename selection + APFS name rules), `fileops` (paste: copy/move with "- Copy" names, xattr-preserving), `history` (back/forward), `breadcrumb`, `places`, `tree` (Folders pane model, CNscTree-like), `layout` (Large Icons geometry and arrow keys, after the comctl32 ListView), `marquee` (rubber band selection, same source), `seti` (VSCodium file icon resolution). |
+| `crates/macsplorer-core` | UI-independent logic, all unit-tested: `listing` (read_dir, sort, sizes, custom-icon flag), `natural` (StrCmpLogicalW-style sort), `rename` (Explorer's rename selection + APFS name rules), `fileops` (paste: copy/move with "- Copy" names, xattr-preserving), `history` (back/forward), `breadcrumb`, `places`, `tree` (Folders pane model, CNscTree-like), `layout` (Large Icons geometry and arrow keys, after the comctl32 ListView), `marquee` (rubber band selection, same source), `columns` (Details header divider hit test and resize drag, after SysHeader32), `seti` (VSCodium file icon resolution). |
 | `crates/macsplorer` | egui/eframe 0.36 app. `app.rs` state + UI, `platform.rs` per-OS open/reveal/eject, wording and font paths, `theme.rs` Windows Classic colors/bevels/fonts/icons/title bar, `scrollbar.rs` classic scroll bars drawn over hidden egui ones, `icons.rs` icon choice + native icon cache, `native_icon.rs` NSWorkspace icons via objc2. |
 | `tools/make-icon` | Renders `assets/icon.png` + `assets/macsplorer.icns` (tiny-skia). |
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
@@ -104,6 +104,6 @@ licenses.
 - More Win2000 views: Small Icons, Thumbnails, the "Web view" left info panel; a dotted focus rectangle on the focused item. List view was dropped on purpose.
 - Type column with language names ("Rust Source") and image thumbnails.
 - Trace remaining Explorer behaviors listed in `docs/file-browser-findings.md` §4.
-- Column header filler to the right edge; classic scroll bars for the breadcrumb chevron popup.
-- Persist settings, column widths and window size; pinning favorites; tabs/multiple windows.
+- Classic scroll bars for the breadcrumb chevron popup.
+- Persist settings and window size (column widths are deliberately per window only, shared by all folders); pinning favorites; tabs/multiple windows.
 - Replace the placeholder bundle id `dev.macsplorer.app` once the user picks one.
