@@ -9,7 +9,7 @@ never paste decompiled code into the source.
 
 | Path | What |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic, all unit-tested: `listing` (read_dir, sort, sizes, custom-icon flag), `natural` (StrCmpLogicalW-style sort), `rename` (Explorer's rename selection + APFS name rules), `history` (back/forward), `breadcrumb`, `places`, `tree` (Folders pane model, CNscTree-like), `seti` (VSCodium file icon resolution). |
+| `crates/macsplorer-core` | UI-independent logic, all unit-tested: `listing` (read_dir, sort, sizes, custom-icon flag), `natural` (StrCmpLogicalW-style sort), `rename` (Explorer's rename selection + APFS name rules), `fileops` (paste: copy/move with "- Copy" names, xattr-preserving), `history` (back/forward), `breadcrumb`, `places`, `tree` (Folders pane model, CNscTree-like), `seti` (VSCodium file icon resolution). |
 | `crates/macsplorer` | egui/eframe 0.36 app. `app.rs` state + UI, `theme.rs` Windows Classic colors/bevels/fonts/icons/title bar, `scrollbar.rs` classic scroll bars drawn over hidden egui ones, `icons.rs` icon choice + native icon cache, `native_icon.rs` NSWorkspace icons via objc2. |
 | `tools/make-icon` | Renders `assets/icon.png` + `assets/macsplorer.icns` (tiny-skia). |
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
@@ -88,7 +88,7 @@ licenses.
 ## Backlog (ideas raised so far)
 
 - File watching (FSEvents) so the list and tree update live.
-- Copy / move / delete (`CFileOperation` in Windows.Storage is the reference), drag and drop.
+- Copy / move / delete are in (menu, Edit menu, ⌘X/C/V, Delete). Still open: the replace/skip conflict dialog, progress UI, Shift+Delete, undo, Finder pasteboard interop, drag and drop (`CFileOperation` in Windows.Storage is the reference).
 - More Win2000 views: Large Icons, List, the "Web view" left info panel.
 - Type column with language names ("Rust Source") and image thumbnails.
 - Trace remaining Explorer behaviors listed in `docs/file-browser-findings.md` §4.

@@ -4,6 +4,7 @@ mod native_icon;
 mod open_with;
 mod scrollbar;
 mod theme;
+mod trash;
 
 use eframe::egui;
 

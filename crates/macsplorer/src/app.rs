@@ -15,10 +15,11 @@ use egui::{Align, Key, Layout, RichText, Sense, TextEdit, Ui};
 use egui_extras::{Column, TableBuilder};
 
 use macsplorer_core::breadcrumb::crumbs;
+use macsplorer_core::fileops::{copy_into, move_into};
 use macsplorer_core::history::History;
 use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
-use macsplorer_core::places::{computer_name, favorites, volumes};
+use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
 
@@ -26,6 +27,7 @@ use crate::icons::FileIcons;
 use crate::open_with;
 use crate::scrollbar::{self, Bars};
 use crate::theme::{self, Bevel, Icon};
+use crate::trash::move_to_trash;
 
 const LIST_ROW_HEIGHT: f32 = 17.0;
 const TREE_ROW_HEIGHT: f32 = 18.0;
@@ -75,6 +77,12 @@ enum Action {
     Up,
     Refresh,
     RevealInFinder(PathBuf),
+    Eject(PathBuf),
+    Cut,
+    Copy,
+    /// Paste into a folder; `None` is the open folder.
+    Paste(Option<PathBuf>),
+    Delete,
     TreeSelect(NodeKey),
     TreeToggle(NodeKey),
     TreeExpand(NodeKey),
@@ -83,6 +91,25 @@ enum Action {
     ToggleFolders,
     SelectAll,
     InvertSelection,
+}
+
+/// What Cut or Copy remembered. The paths' text is also put on the system
+/// clipboard: egui only reports Cmd+V when it holds text, and a paste only
+/// counts while that text is still the clipboard's, i.e. nothing newer was
+/// copied elsewhere.
+struct Clipboard {
+    paths: Vec<PathBuf>,
+    cut: bool,
+    token: String,
+}
+
+/// The outcome of a paste or delete that ran on a worker thread.
+struct OpDone {
+    /// Folders whose contents changed.
+    dirs: Vec<PathBuf>,
+    /// Items to select once they show up in the open folder.
+    select: Vec<PathBuf>,
+    error: Option<String>,
 }
 
 /// Which pane receives arrow keys.
@@ -127,6 +154,14 @@ pub struct Explorer {
     /// stale results from before a toggle are dropped.
     load_tx: Sender<LoadResult>,
     load_rx: Receiver<LoadResult>,
+    /// `diskutil eject` runs on a worker thread; (volume, error text).
+    eject_tx: Sender<(PathBuf, Result<(), String>)>,
+    eject_rx: Receiver<(PathBuf, Result<(), String>)>,
+    clipboard: Option<Clipboard>,
+    /// Paste and delete run on worker threads and report back here.
+    op_tx: Sender<OpDone>,
+    op_rx: Receiver<OpDone>,
+    pending_select: BTreeSet<PathBuf>,
     focus: Pane,
     /// Set while navigating from a tree click, so the clicked row stays
     /// selected instead of jumping to another root that has the same folder.
@@ -142,6 +177,8 @@ impl Explorer {
     pub fn new(ctx: egui::Context, start: PathBuf) -> Self {
         let (load_tx, load_rx) = channel();
         let (list_tx, list_rx) = channel();
+        let (eject_tx, eject_rx) = channel();
+        let (op_tx, op_rx) = channel();
         let mut app = Self {
             history: History::new(start),
             entries: Vec::new(),
@@ -166,6 +203,12 @@ impl Explorer {
             tree: FolderTree::new(tree_roots()),
             load_tx,
             load_rx,
+            eject_tx,
+            eject_rx,
+            clipboard: None,
+            op_tx,
+            op_rx,
+            pending_select: BTreeSet::new(),
             focus: Pane::List,
             navigating_from_tree: false,
             icons: FileIcons::new(),
@@ -198,6 +241,131 @@ impl Explorer {
         while let Ok((path, show_hidden, result)) = self.load_rx.try_recv() {
             if show_hidden == self.settings.show_hidden {
                 self.tree.loaded(path, result);
+            }
+        }
+    }
+
+    /// Unmounts and ejects a volume off the UI thread; `poll_ejects` reports.
+    fn eject(&mut self, volume: PathBuf) {
+        self.status = Some(format!("Ejecting {}...", volume.display()));
+        let (tx, ctx) = (self.eject_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let result = match Command::new("diskutil").arg("eject").arg(&volume).output() {
+                Ok(out) if out.status.success() => Ok(()),
+                Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()),
+                Err(e) => Err(e.to_string()),
+            };
+            if tx.send((volume, result)).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn poll_ejects(&mut self) {
+        while let Ok((volume, result)) = self.eject_rx.try_recv() {
+            match result {
+                Ok(()) => {
+                    self.status = None;
+                    if self.current().starts_with(&volume) {
+                        let target = self.home.clone().unwrap_or_else(|| PathBuf::from("/"));
+                        self.navigate(target);
+                    }
+                    self.tree.set_roots(tree_roots());
+                    let loads = self.tree.refresh();
+                    self.load(loads);
+                    self.reload();
+                }
+                Err(e) => {
+                    self.status = Some(format!("Couldn't eject {}: {e}", volume.display()));
+                }
+            }
+        }
+    }
+
+    fn set_clipboard(&mut self, cut: bool) {
+        let paths: Vec<PathBuf> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        let token = paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
+        self.ctx.copy_text(token.clone());
+        self.clipboard = Some(Clipboard { paths, cut, token });
+    }
+
+    /// Copies or moves the clipboard's items into `dest` on a worker thread.
+    fn paste(&mut self, dest: PathBuf) {
+        let Some(clip) = self.clipboard.as_ref() else { return };
+        let (paths, cut) = (clip.paths.clone(), clip.cut);
+        if cut {
+            // Like Explorer, a cut can be pasted once.
+            self.clipboard = None;
+        }
+        self.status = Some(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len()));
+        let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let mut done = OpDone { dirs: vec![dest.clone()], select: Vec::new(), error: None };
+            for src in &paths {
+                let result = if cut { move_into(src, &dest) } else { copy_into(src, &dest) };
+                match result {
+                    Ok(new) => {
+                        done.select.push(new);
+                        if cut && let Some(parent) = src.parent() {
+                            done.dirs.push(parent.to_path_buf());
+                        }
+                    }
+                    Err(e) => {
+                        let name = src.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                        let reason = match e.kind() {
+                            std::io::ErrorKind::AlreadyExists => format!("There is already an item named \"{name}\" here."),
+                            _ => format!("Couldn't {} \"{name}\": {e}", if cut { "move" } else { "copy" }),
+                        };
+                        done.error = Some(reason);
+                        break;
+                    }
+                }
+            }
+            if tx.send(done).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// Moves the selection to the Trash on a worker thread.
+    fn delete_selection(&mut self) {
+        let paths: Vec<PathBuf> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.rename = None;
+        let dir = self.current().to_path_buf();
+        let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let mut done = OpDone { dirs: vec![dir], select: Vec::new(), error: None };
+            for path in &paths {
+                if let Err(e) = move_to_trash(path) {
+                    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    done.error = Some(format!("Couldn't delete \"{name}\": {e}"));
+                    break;
+                }
+            }
+            if tx.send(done).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn poll_ops(&mut self) {
+        while let Ok(done) = self.op_rx.try_recv() {
+            self.status = done.error;
+            let current = self.current().to_path_buf();
+            if done.dirs.contains(&current) {
+                self.pending_select = done.select.iter().filter(|p| p.parent() == Some(current.as_path())).cloned().collect();
+                self.reload();
+            }
+            for dir in &done.dirs {
+                if let Some(path) = self.tree.refresh_path(dir) {
+                    self.load([path]);
+                }
             }
         }
     }
@@ -258,6 +426,10 @@ impl Explorer {
         self.entries_version += 1;
         let present: BTreeSet<_> = self.entries.iter().map(|e| &e.path).collect();
         self.selection.retain(|p| present.contains(p));
+        let picked: Vec<PathBuf> = std::mem::take(&mut self.pending_select).into_iter().filter(|p| present.contains(p)).collect();
+        if !picked.is_empty() {
+            self.selection = picked.into_iter().collect();
+        }
     }
 
     /// Blocks until the latest listing has arrived, for tests.
@@ -470,6 +642,14 @@ impl Explorer {
                 Action::RevealInFinder(p) => {
                     let _ = Command::new("open").arg("-R").arg(p).spawn();
                 }
+                Action::Eject(p) => self.eject(p),
+                Action::Cut => self.set_clipboard(true),
+                Action::Copy => self.set_clipboard(false),
+                Action::Paste(dir) => {
+                    let dir = dir.unwrap_or_else(|| self.current().to_path_buf());
+                    self.paste(dir);
+                }
+                Action::Delete => self.delete_selection(),
                 Action::TreeSelect(key) => {
                     self.focus = Pane::Tree;
                     let path = key.path.clone();
@@ -527,13 +707,26 @@ impl Explorer {
             if cmd && i.key_pressed(Key::A) {
                 actions.push(Action::SelectAll);
             }
+            if in_list && i.events.iter().any(|e| matches!(e, egui::Event::Cut)) {
+                actions.push(Action::Cut);
+            }
+            if in_list && i.events.iter().any(|e| matches!(e, egui::Event::Copy)) {
+                actions.push(Action::Copy);
+            }
+            let pasted = i.events.iter().any(|e| matches!(e, egui::Event::Paste(text) if self.clipboard.as_ref().is_some_and(|c| &c.token == text)));
+            if pasted {
+                actions.push(Action::Paste(None));
+            }
+            if in_list && (i.key_pressed(Key::Delete) || (cmd && i.key_pressed(Key::Backspace))) {
+                actions.push(Action::Delete);
+            }
             if in_list && i.key_pressed(Key::F2) {
                 actions.push(Action::BeginRename);
             }
             if in_list && i.key_pressed(Key::Enter) && let Some(p) = self.selection.first() {
                 actions.push(Action::Open(p.clone()));
             }
-            if i.key_pressed(Key::Backspace) || (cmd && i.key_pressed(Key::OpenBracket)) || (alt && i.key_pressed(Key::ArrowLeft)) {
+            if (i.key_pressed(Key::Backspace) && !cmd) || (cmd && i.key_pressed(Key::OpenBracket)) || (alt && i.key_pressed(Key::ArrowLeft)) {
                 actions.push(Action::Back);
             }
             if (cmd && i.key_pressed(Key::CloseBracket)) || (alt && i.key_pressed(Key::ArrowRight)) {
@@ -583,6 +776,21 @@ impl Explorer {
                 }
             });
             ui.menu_button("Edit", |ui| {
+                let has_selection = !self.selection.is_empty();
+                if ui.add_enabled(has_selection, egui::Button::new("Cut")).clicked() {
+                    actions.push(Action::Cut);
+                }
+                if ui.add_enabled(has_selection, egui::Button::new("Copy")).clicked() {
+                    actions.push(Action::Copy);
+                }
+                if ui.add_enabled(self.clipboard.is_some(), egui::Button::new("Paste")).clicked() {
+                    actions.push(Action::Paste(None));
+                }
+                ui.separator();
+                if ui.add_enabled(has_selection, egui::Button::new("Delete")).clicked() {
+                    actions.push(Action::Delete);
+                }
+                ui.separator();
                 if ui.button("Select All").clicked() {
                     actions.push(Action::SelectAll);
                 }
@@ -812,10 +1020,23 @@ impl Explorer {
             return;
         }
         let focused = self.focus == Pane::List && window_focused(ui);
+        let can_paste = self.clipboard.is_some();
+        let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
         let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::WINDOW;
         ui.spacing_mut().item_spacing.x = 0.0;
+
+        // Under the rows, so a click on a row still reaches the row.
+        ui.interact(viewport, ui.id().with("details-bg"), Sense::click()).context_menu(|ui| {
+            if ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
+                actions.push(Action::Paste(None));
+            }
+            ui.separator();
+            if ui.button("Refresh").clicked() {
+                actions.push(Action::Refresh);
+            }
+        });
 
         let header = |ui: &mut Ui, label: &str, column: SortColumn, right: bool, actions: &mut Vec<Action>| {
             let rect = ui.max_rect();
@@ -889,6 +1110,10 @@ impl Explorer {
                     ui.add_space(4.0);
                     let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
                     icons.paint(ui, icon_rect, entry);
+                    if cut.contains(&entry.path) {
+                        // Explorer dims the icons of items waiting to be moved.
+                        ui.painter().rect_filled(icon_rect, 0.0, theme::color::WINDOW.gamma_multiply(0.6));
+                    }
                     ui.add_space(3.0);
                     match rename.as_mut().filter(|r| r.path == entry.path) {
                         Some(r) => rename_editor(ui, r, actions),
@@ -935,7 +1160,23 @@ impl Explorer {
                     if ui.button("Show in Finder").clicked() {
                         actions.push(Action::RevealInFinder(entry.path.clone()));
                     }
+                    if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
+                        actions.push(Action::Eject(entry.path.clone()));
+                    }
                     ui.separator();
+                    if ui.button("Cut").clicked() {
+                        actions.push(Action::Cut);
+                    }
+                    if ui.button("Copy").clicked() {
+                        actions.push(Action::Copy);
+                    }
+                    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
+                        actions.push(Action::Paste(Some(entry.path.clone())));
+                    }
+                    ui.separator();
+                    if ui.button("Delete").clicked() {
+                        actions.push(Action::Delete);
+                    }
                     if ui.button("Rename").clicked() {
                         actions.push(Action::BeginRename);
                     }
@@ -991,6 +1232,8 @@ impl eframe::App for Explorer {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.poll_loads();
         self.poll_lists();
+        self.poll_ejects();
+        self.poll_ops();
         self.icons.begin_frame();
         let visible = self.visible();
         let mut actions = Vec::new();
@@ -1249,6 +1492,9 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
         if ui.button("Show in Finder").clicked() {
             actions.push(Action::RevealInFinder(row.key.path.clone()));
         }
+        if is_ejectable(&row.key.path) && ui.button("Eject").clicked() {
+            actions.push(Action::Eject(row.key.path.clone()));
+        }
     });
 }
 
@@ -1369,6 +1615,70 @@ mod tests {
 
 /// Renders the window offscreen to `target/screenshots/*.png` so the look can
 /// be checked without a display. Run with `cargo test -p macsplorer -- --ignored`.
+#[cfg(test)]
+mod clipboard {
+    use super::*;
+    use std::fs;
+
+    fn explorer(name: &str) -> (Explorer, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("macsplorer-clipboard-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("a.txt"), "hi").unwrap();
+        let mut app = Explorer::new(egui::Context::default(), dir.clone());
+        app.finish_listing();
+        (app, dir)
+    }
+
+    fn wait(app: &mut Explorer) {
+        for _ in 0..500 {
+            app.poll_ops();
+            if app.status.is_none() {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.status.is_none(), "{:?}", app.status);
+    }
+
+    #[test]
+    fn copy_paste_and_cut_paste() {
+        let (mut app, dir) = explorer("ops");
+        app.selection = BTreeSet::from([dir.join("a.txt")]);
+        app.apply(vec![Action::Copy, Action::Paste(None)], &[]);
+        wait(&mut app);
+        assert_eq!(fs::read_to_string(dir.join("a - Copy.txt")).unwrap(), "hi");
+        assert!(app.clipboard.is_some(), "a copy can be pasted again");
+
+        app.selection = BTreeSet::from([dir.join("a.txt")]);
+        app.apply(vec![Action::Cut, Action::Paste(Some(dir.join("sub")))], &[]);
+        wait(&mut app);
+        assert!(!dir.join("a.txt").exists());
+        assert_eq!(fs::read_to_string(dir.join("sub/a.txt")).unwrap(), "hi");
+        assert!(app.clipboard.is_none(), "a cut is pasted once");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn paste_conflict_is_reported() {
+        let (mut app, dir) = explorer("conflict");
+        fs::write(dir.join("sub/a.txt"), "old").unwrap();
+        app.selection = BTreeSet::from([dir.join("a.txt")]);
+        app.apply(vec![Action::Cut, Action::Paste(Some(dir.join("sub")))], &[]);
+        for _ in 0..500 {
+            app.poll_ops();
+            if !app.status.as_deref().is_some_and(|s| s.starts_with("Moving")) {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.status.as_deref().unwrap().contains("already an item named"));
+        assert_eq!(fs::read_to_string(dir.join("sub/a.txt")).unwrap(), "old");
+        assert!(dir.join("a.txt").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod screenshot {
     use super::*;

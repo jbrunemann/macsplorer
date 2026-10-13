@@ -120,6 +120,12 @@ pub fn volumes() -> Vec<Place> {
     out
 }
 
+/// True if `path` is a mounted volume under `/Volumes` that can be ejected
+/// (disk images, USB drives, network shares), never the boot volume.
+pub fn is_ejectable(path: &Path) -> bool {
+    path.parent() == Some(Path::new("/Volumes")) && is_browsable_mount(path)
+}
+
 /// True if `path` is itself a mount point that Finder would show. Skips
 /// `nobrowse` mounts (e.g. a Recovery volume a macOS update left mounted),
 /// leftover plain folders in /Volumes, and the boot volume's symlink to "/".
@@ -147,6 +153,17 @@ pub fn is_browsable_mount(path: &Path) -> bool {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ejectable_volumes() {
+        assert!(!is_ejectable(Path::new("/")));
+        assert!(!is_ejectable(Path::new("/Volumes")));
+        assert!(!is_ejectable(&std::env::temp_dir()));
+        // Every other mounted volume under /Volumes can be ejected.
+        for v in volumes().iter().skip(1) {
+            assert!(is_ejectable(&v.path) || v.path.parent() != Some(Path::new("/Volumes")));
+        }
+    }
 
     #[test]
     fn browsable_mounts() {

@@ -4,6 +4,7 @@
 //! in `docs/file-browser-findings.md`.
 
 pub mod breadcrumb;
+pub mod fileops;
 pub mod history;
 pub mod listing;
 pub mod natural;
