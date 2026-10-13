@@ -18,7 +18,7 @@ use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::history::History;
 use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
-use macsplorer_core::places::{favorites, volumes};
+use macsplorer_core::places::{computer_name, favorites, volumes};
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
 
@@ -102,6 +102,8 @@ pub struct Explorer {
     load_error: Option<String>,
     /// Free bytes on the open folder's volume, queried on the listing thread.
     free_space: Option<u64>,
+    /// Shown in the status bar's right pane, where Explorer says "My Computer".
+    computer_name: String,
     /// The details view lists folders on a worker thread so a huge or slow
     /// folder never freezes the window. Results for anything but the latest
     /// request (`list_request`) are dropped.
@@ -147,6 +149,7 @@ impl Explorer {
             visible_cache: None,
             load_error: None,
             free_space: None,
+            computer_name: computer_name().unwrap_or_else(|| "My Computer".into()),
             list_tx,
             list_rx,
             list_request: 0,
@@ -974,7 +977,13 @@ impl Explorer {
         p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::TEXT);
         let icon = egui::Rect::from_min_size(egui::pos2(right.left() + 4.0, right.center().y - 8.0), egui::vec2(16.0, 16.0));
         theme::paint_icon(p, icon, Icon::Drive, true);
-        p.text(egui::pos2(icon.right() + 4.0, right.center().y), egui::Align2::LEFT_CENTER, "My Computer", font, theme::color::TEXT);
+        p.with_clip_rect(right.shrink(2.0)).text(
+            egui::pos2(icon.right() + 4.0, right.center().y),
+            egui::Align2::LEFT_CENTER,
+            &self.computer_name,
+            font,
+            theme::color::TEXT,
+        );
     }
 }
 
@@ -1273,7 +1282,8 @@ fn tree_key_action(rows: &[Row], key: Key) -> Option<Action> {
 fn tree_roots() -> Vec<Root> {
     let favs = favorites();
     let vols = volumes();
-    Root::from_places(&favs, Section::Favorites).chain(Root::from_places(&vols, Section::Locations)).collect()
+    // Locations first, like Nautilus's sidebar.
+    Root::from_places(&vols, Section::Locations).chain(Root::from_places(&favs, Section::Favorites)).collect()
 }
 
 fn select_all(ui: &Ui, id: egui::Id, text: &str) {

@@ -89,6 +89,22 @@ pub fn favorites() -> Vec<Place> {
         .collect()
 }
 
+/// The machine's name for the status bar's zone pane ("My Computer" in
+/// Explorer): the host name without its domain, e.g. "pc192" for
+/// "pc192.example.com". `None` if it can't be read.
+pub fn computer_name() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for its length; gethostname NUL-terminates
+    // within it unless the name was truncated, which the last byte guards.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len() - 1) } != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0)?;
+    let name = String::from_utf8_lossy(&buf[..len]);
+    let short = name.split('.').next().unwrap_or_default().trim();
+    (!short.is_empty()).then(|| short.to_string())
+}
+
 /// Mounted volumes, Explorer's "This PC" drives.
 pub fn volumes() -> Vec<Place> {
     let mut out = vec![Place { label: "Macintosh HD".into(), path: PathBuf::from("/") }];
@@ -153,6 +169,12 @@ mod tests {
         for v in volumes().iter().skip(1) {
             assert!(is_browsable_mount(&v.path), "{}", v.path.display());
         }
+    }
+
+    #[test]
+    fn computer_name_has_no_domain() {
+        let name = computer_name().expect("host name");
+        assert!(!name.is_empty() && !name.contains('.'));
     }
 
     #[test]
