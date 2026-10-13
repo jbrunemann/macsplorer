@@ -26,6 +26,7 @@ use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_
 
 use crate::icons::FileIcons;
 use crate::open_with;
+use crate::platform;
 use crate::scrollbar::{self, Bars};
 use crate::theme::{self, Bevel, Icon};
 use crate::trash::move_to_trash;
@@ -157,7 +158,7 @@ pub struct Explorer {
     /// stale results from before a toggle are dropped.
     load_tx: Sender<LoadResult>,
     load_rx: Receiver<LoadResult>,
-    /// `diskutil eject` runs on a worker thread; (volume, error text).
+    /// `platform::eject` runs on a worker thread; (volume, error text).
     eject_tx: Sender<(PathBuf, Result<(), String>)>,
     eject_rx: Receiver<(PathBuf, Result<(), String>)>,
     clipboard: Option<Clipboard>,
@@ -253,11 +254,7 @@ impl Explorer {
         self.status = Some(format!("Ejecting {}...", volume.display()));
         let (tx, ctx) = (self.eject_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let result = match Command::new("diskutil").arg("eject").arg(&volume).output() {
-                Ok(out) if out.status.success() => Ok(()),
-                Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()),
-                Err(e) => Err(e.to_string()),
-            };
+            let result = platform::eject(&volume);
             if tx.send((volume, result)).is_ok() {
                 ctx.request_repaint();
             }
@@ -510,7 +507,7 @@ impl Explorer {
         let is_folder = self.entries.iter().find(|e| e.path == path).map_or(path.is_dir(), Entry::is_folder);
         if is_folder {
             self.navigate(path);
-        } else if let Err(e) = Command::new("open").arg(&path).spawn() {
+        } else if let Err(e) = platform::open_default(&path) {
             self.status = Some(format!("Couldn't open {}: {e}", path.display()));
         }
     }
@@ -654,7 +651,7 @@ impl Explorer {
                     self.reload();
                 }
                 Action::RevealInFinder(p) => {
-                    let _ = Command::new("open").arg("-R").arg(p).spawn();
+                    thread::spawn(move || platform::reveal(&p));
                 }
                 Action::Eject(p) => self.eject(p),
                 Action::Cut => self.set_clipboard(true),
@@ -859,7 +856,7 @@ impl Explorer {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(2.0);
-            let back = theme::tool_button(ui, Icon::Back, Some("Back"), self.history.can_go_back()).on_hover_text("Back (⌘[)");
+            let back = theme::tool_button(ui, Icon::Back, Some("Back"), self.history.can_go_back()).on_hover_text(format!("Back ({}[)", platform::CMD));
             if back.clicked() {
                 actions.push(Action::Back);
             }
@@ -871,7 +868,7 @@ impl Explorer {
                     }
                 }
             });
-            let fwd = theme::tool_button(ui, Icon::Forward, None, self.history.can_go_forward()).on_hover_text("Forward (⌘])");
+            let fwd = theme::tool_button(ui, Icon::Forward, None, self.history.can_go_forward()).on_hover_text(format!("Forward ({}])", platform::CMD));
             if fwd.clicked() {
                 actions.push(Action::Forward);
             }
@@ -884,7 +881,7 @@ impl Explorer {
                 }
             });
             let has_parent = self.current().parent().is_some();
-            if theme::tool_button(ui, Icon::Up, None, has_parent).on_hover_text("Up (⌘↑)").clicked() {
+            if theme::tool_button(ui, Icon::Up, None, has_parent).on_hover_text(format!("Up ({}↑)", platform::CMD)).clicked() {
                 actions.push(Action::Up);
             }
             theme::etched_vline(ui, 22.0);
@@ -892,7 +889,7 @@ impl Explorer {
             if folders.clicked() {
                 actions.push(Action::ToggleFolders);
             }
-            if theme::tool_button(ui, Icon::Refresh, Some("Refresh"), true).on_hover_text("Refresh (⌘R)").clicked() {
+            if theme::tool_button(ui, Icon::Refresh, Some("Refresh"), true).on_hover_text(format!("Refresh ({}R)", platform::CMD)).clicked() {
                 actions.push(Action::Refresh);
             }
         });
@@ -1175,10 +1172,10 @@ impl Explorer {
                     if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
                         actions.push(Action::Open(entry.path.clone()));
                     }
-                    if entry.kind == RenameKind::File {
+                    if open_with::SUPPORTED && entry.kind == RenameKind::File {
                         open_with_menu(ui, &entry.path, open_with, actions);
                     }
-                    if ui.button("Show in Finder").clicked() {
+                    if ui.button(platform::REVEAL_LABEL).clicked() {
                         actions.push(Action::RevealInFinder(entry.path.clone()));
                     }
                     if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
@@ -1267,6 +1264,7 @@ impl eframe::App for Explorer {
         let outer = ui.max_rect();
         ui.painter().rect_filled(outer, 0.0, theme::color::FACE);
         theme::bevel(ui.painter(), outer, Bevel::Raised);
+        theme::resize_frame(ui, outer);
         let mut root = ui.new_child(egui::UiBuilder::new().max_rect(outer.shrink(4.0)).layout(Layout::top_down(Align::Min)));
         let ui = &mut root;
         let plain = egui::Frame::NONE.fill(theme::color::FACE);
@@ -1513,7 +1511,7 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
         if ui.button("Open").clicked() {
             actions.push(Action::TreeSelect(row.key.clone()));
         }
-        if ui.button("Show in Finder").clicked() {
+        if ui.button(platform::REVEAL_LABEL).clicked() {
             actions.push(Action::RevealInFinder(row.key.path.clone()));
         }
         if is_ejectable(&row.key.path) && ui.button("Eject").clicked() {

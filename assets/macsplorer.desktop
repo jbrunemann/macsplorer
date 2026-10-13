@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Macsplorer
+GenericName=File Manager
+Comment=A Windows 2000 Explorer-style file browser
+Exec=macsplorer %f
+Icon=macsplorer
+Terminal=false
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+StartupWMClass=macsplorer

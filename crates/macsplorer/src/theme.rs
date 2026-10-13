@@ -10,6 +10,8 @@ use egui::{
     Sense, Shadow, Stroke, TextStyle, Ui, Vec2, ViewportCommand, pos2, vec2,
 };
 
+use crate::platform;
+
 /// Windows Classic system colors (`GetSysColor` defaults on Windows 2000).
 pub mod color {
     use super::Color32;
@@ -40,8 +42,6 @@ pub mod color {
 use color::*;
 
 pub const FONT_SIZE: f32 = 12.0;
-const TAHOMA: &str = "/System/Library/Fonts/Supplemental/Tahoma.ttf";
-const TAHOMA_BOLD: &str = "/System/Library/Fonts/Supplemental/Tahoma Bold.ttf";
 
 /// VSCodium's Seti file icon font (see `assets/seti`).
 pub fn seti_family() -> FontFamily {
@@ -56,13 +56,14 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, bold_family())
 }
 
-/// Installs fonts and visuals. Tahoma is read from the macOS system fonts
-/// at runtime (not bundled); egui's default font is the fallback.
+/// Installs fonts and visuals. Tahoma is read from the system fonts at
+/// runtime (not bundled, see `platform::TAHOMA`); egui's default font is the
+/// fallback.
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let mut bold_fonts = Vec::new();
-    for (key, path, family) in [("tahoma", TAHOMA, FontFamily::Proportional), ("tahoma-bold", TAHOMA_BOLD, bold_family())] {
-        if let Ok(bytes) = std::fs::read(path) {
+    for (key, paths, family) in [("tahoma", platform::TAHOMA, FontFamily::Proportional), ("tahoma-bold", platform::TAHOMA_BOLD, bold_family())] {
+        if let Some(bytes) = paths.iter().find_map(|path| std::fs::read(path).ok()) {
             fonts.font_data.insert(key.into(), Arc::new(FontData::from_owned(bytes)));
             if family == FontFamily::Proportional {
                 fonts.families.entry(family).or_default().insert(0, key.into());
@@ -315,15 +316,22 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
     mesh.add_triangle(0, 2, 3);
     p.add(mesh);
 
-    // Not Windows' system menu: a click on the red dot or the folder closes, matching the
-    // macOS close button in the top left.
-    let dot = pos2(rect.left() + 8.0, rect.center().y);
-    p.circle(dot, 5.0, Color32::from_rgb(0xff, 0x5f, 0x57), Stroke::new(1.0, Color32::from_rgb(0xc0, 0x30, 0x28)));
-    let icon = Rect::from_min_size(pos2(rect.left() + 16.0, rect.top() + 1.0), vec2(16.0, 16.0));
+    // On macOS, not Windows' system menu: a click on the red dot or the folder closes, matching
+    // the macOS close button in the top left.
+    let icon_left = if cfg!(target_os = "macos") {
+        let dot = pos2(rect.left() + 8.0, rect.center().y);
+        p.circle(dot, 5.0, Color32::from_rgb(0xff, 0x5f, 0x57), Stroke::new(1.0, Color32::from_rgb(0xc0, 0x30, 0x28)));
+        16.0
+    } else {
+        2.0
+    };
+    let icon = Rect::from_min_size(pos2(rect.left() + icon_left, rect.top() + 1.0), vec2(16.0, 16.0));
     paint_icon(p, icon, Icon::FolderOpen, true);
-    let close_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(icon.right(), rect.bottom()));
-    if ui.interact(close_area, ui.id().with("caption_icon"), Sense::click()).clicked() {
-        ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+    if cfg!(target_os = "macos") {
+        let close_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(icon.right(), rect.bottom()));
+        if ui.interact(close_area, ui.id().with("caption_icon"), Sense::click()).clicked() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+        }
     }
     p.text(pos2(icon.right() + 3.0, rect.center().y), Align2::LEFT_CENTER, title, bold(FONT_SIZE), text);
 
@@ -352,6 +360,41 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
     }
     if resp.double_clicked() {
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+    }
+}
+
+/// Resize handles on the 4 px window frame. macOS keeps edge resizing on a
+/// borderless window, but on Linux the compositor gives it none, so the app
+/// asks for a resize drag itself. Does nothing on macOS or when maximized.
+pub fn resize_frame(ui: &Ui, outer: Rect) {
+    if cfg!(target_os = "macos") || ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false)) {
+        return;
+    }
+    use egui::viewport::ResizeDirection as Dir;
+    use egui::CursorIcon as Cursor;
+    const EDGE: f32 = 4.0;
+    const CORNER: f32 = 12.0;
+    let (l, r, t, b) = (outer.left(), outer.right(), outer.top(), outer.bottom());
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
+    // Corners first: they take priority over the edges they overlap.
+    let handles = [
+        (rect(l, t, l + CORNER, t + CORNER), Dir::NorthWest, Cursor::ResizeNwSe),
+        (rect(r - CORNER, t, r, t + CORNER), Dir::NorthEast, Cursor::ResizeNeSw),
+        (rect(l, b - CORNER, l + CORNER, b), Dir::SouthWest, Cursor::ResizeNeSw),
+        (rect(r - CORNER, b - CORNER, r, b), Dir::SouthEast, Cursor::ResizeNwSe),
+        (rect(l, t, r, t + EDGE), Dir::North, Cursor::ResizeVertical),
+        (rect(l, b - EDGE, r, b), Dir::South, Cursor::ResizeVertical),
+        (rect(l, t, l + EDGE, b), Dir::West, Cursor::ResizeHorizontal),
+        (rect(r - EDGE, t, r, b), Dir::East, Cursor::ResizeHorizontal),
+    ];
+    for (i, (area, dir, cursor)) in handles.into_iter().enumerate() {
+        let resp = ui.interact(area, ui.id().with(("resize", i)), Sense::drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(cursor);
+        }
+        if resp.drag_started() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::BeginResize(dir));
+        }
     }
 }
 

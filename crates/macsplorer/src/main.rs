@@ -2,6 +2,7 @@ mod app;
 mod icons;
 mod native_icon;
 mod open_with;
+mod platform;
 mod scrollbar;
 mod theme;
 mod trash;
@@ -19,6 +20,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Macsplorer")
+            // Wayland and X11 match the window to its .desktop file by this.
+            .with_app_id("macsplorer")
             .with_inner_size([1000.0, 680.0])
             .with_min_inner_size([520.0, 320.0])
             // The Windows 2000 caption and frame are drawn by the app. A

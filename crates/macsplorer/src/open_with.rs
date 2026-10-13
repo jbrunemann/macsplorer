@@ -4,6 +4,11 @@
 
 use std::path::{Path, PathBuf};
 
+/// Whether this platform can list apps for a file. There is no Linux
+/// implementation yet (it would read `.desktop` files and `mimeapps.list`),
+/// so the menu is hidden there.
+pub const SUPPORTED: bool = cfg!(target_os = "macos");
+
 /// Apps that can open `path`: the default app first, then the rest by name.
 /// Copies of the same app in several places show up once.
 #[cfg(target_os = "macos")]

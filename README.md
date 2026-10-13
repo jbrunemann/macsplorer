@@ -81,8 +81,26 @@ Or run it straight from the source tree:
 cargo run --release -p macsplorer -- [folder]   # defaults to your home folder
 ```
 
-Macsplorer uses Tahoma, which ships with macOS, and reads it from the system
-fonts at runtime. It isn't bundled.
+### Linux (experimental)
+
+Download `Macsplorer-linux-x86_64.tar.gz` from the
+[latest release](https://github.com/jbrunemann/macsplorer/releases/latest), unpack it and run
+`./macsplorer [folder]`; `README.txt` inside shows how to install the desktop
+entry. Or build it with `scripts/bundle-linux.sh`. It needs a Wayland or X11
+desktop with Vulkan or OpenGL, and the usual `libxkbcommon` and `libwayland`
+or `libx11` libraries.
+
+Differences from macOS: Delete moves to the freedesktop Trash, Show in File
+Manager uses the `FileManager1` D-Bus interface (falling back to `xdg-open`),
+Eject uses `gio` or `umount`, volumes come from `/media`, `/run/media` and
+`/mnt`, shortcuts use Ctrl instead of ⌘, and the window gets resize handles on
+its frame. **Open With** is not available yet, and apps keep the paper-page
+icon instead of a native one. This port is built and tested in CI but hasn't
+had much real-world use, so expect rough edges.
+
+Macsplorer uses Tahoma and reads it from the system fonts at runtime, it isn't
+bundled. macOS ships it. On Linux install it (Wine and the `msttcorefonts`
+package have it) or egui's default font is used.
 
 ## Features
 

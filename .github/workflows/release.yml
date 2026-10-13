@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag like v0.1.0 to build Macsplorer.app and attach it to a GitHub release.
+# Push a tag like v0.1.0 to build Macsplorer.app and the Linux tarball and attach
+# both to one GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -29,10 +30,38 @@ jobs:
         with:
           name: Macsplorer-macOS
           path: Macsplorer-macOS.zip*
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace
+      - name: Bundle
+        run: |
+          scripts/bundle-linux.sh
+          mv target/release/macsplorer-linux-x86_64.tar.gz Macsplorer-linux-x86_64.tar.gz
+          sha256sum Macsplorer-linux-x86_64.tar.gz > Macsplorer-linux-x86_64.tar.gz.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Macsplorer-linux
+          path: Macsplorer-linux-x86_64.tar.gz*
+
+  release:
+    # Only when both builds succeeded, so a release never ships one platform.
+    needs: [macos, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" Macsplorer-macOS.zip Macsplorer-macOS.zip.sha256 \
+          gh release create "$GITHUB_REF_NAME" dist/* \
             --title "Macsplorer ${GITHUB_REF_NAME#v}" --generate-notes

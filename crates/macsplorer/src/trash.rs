@@ -15,7 +15,8 @@ pub fn move_to_trash(path: &Path) -> io::Result<()> {
         .map_err(|e| io::Error::other(e.localizedDescription().to_string()))
 }
 
+/// The freedesktop trash (`~/.local/share/Trash`, or a per-volume `.Trash-uid`).
 #[cfg(not(target_os = "macos"))]
-pub fn move_to_trash(_path: &Path) -> io::Result<()> {
-    Err(io::Error::other("the Trash is only available on macOS"))
+pub fn move_to_trash(path: &Path) -> io::Result<()> {
+    trash::delete(path).map_err(|e| io::Error::other(e.to_string()))
 }

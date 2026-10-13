@@ -1,4 +1,4 @@
-//! Sidebar locations: the macOS stand-ins for Explorer's known folders.
+//! Sidebar locations: the macOS (and Linux) stand-ins for Explorer's known folders.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -42,7 +42,7 @@ impl KnownFolder {
             KnownFolder::Documents => "Documents",
             KnownFolder::Pictures => "Pictures",
             KnownFolder::Music => "Music",
-            KnownFolder::Movies => "Movies",
+            KnownFolder::Movies => if cfg!(target_os = "macos") { "Movies" } else { "Videos" },
             KnownFolder::Home => "Home",
             KnownFolder::Applications => "Applications",
         }
@@ -57,7 +57,8 @@ impl KnownFolder {
             KnownFolder::Music => dirs::audio_dir(),
             KnownFolder::Movies => dirs::video_dir(),
             KnownFolder::Home => dirs::home_dir(),
-            KnownFolder::Applications => Some(PathBuf::from("/Applications")),
+            // Linux has no single Applications folder.
+            KnownFolder::Applications => cfg!(target_os = "macos").then(|| PathBuf::from("/Applications")),
         }
     }
 
@@ -105,25 +106,87 @@ pub fn computer_name() -> Option<String> {
     (!short.is_empty()).then(|| short.to_string())
 }
 
+/// The label of the root of the file system.
+const ROOT_LABEL: &str = if cfg!(target_os = "macos") { "Macintosh HD" } else { "File System" };
+
 /// Mounted volumes, Explorer's "This PC" drives.
 pub fn volumes() -> Vec<Place> {
-    let mut out = vec![Place { label: "Macintosh HD".into(), path: PathBuf::from("/") }];
-    if let Ok(dir) = fs::read_dir("/Volumes") {
-        let mut vols: Vec<Place> = dir
-            .flatten()
-            .filter(|e| is_browsable_mount(&e.path()))
-            .map(|e| Place { label: e.file_name().to_string_lossy().into_owned(), path: e.path() })
-            .collect();
-        vols.sort_by(|a, b| crate::natural::natural_cmp(&a.label, &b.label));
-        out.extend(vols);
-    }
+    let mut out = vec![Place { label: ROOT_LABEL.into(), path: PathBuf::from("/") }];
+    let mut vols: Vec<Place> = mounted_volumes()
+        .into_iter()
+        .map(|path| Place { label: path.file_name().unwrap_or_default().to_string_lossy().into_owned(), path })
+        .collect();
+    vols.sort_by(|a, b| crate::natural::natural_cmp(&a.label, &b.label));
+    out.extend(vols);
     out
 }
 
-/// True if `path` is a mounted volume under `/Volumes` that can be ejected
-/// (disk images, USB drives, network shares), never the boot volume.
+/// Volumes other than the boot volume that Finder would show: the entries of
+/// `/Volumes` that are real, browsable mount points.
+#[cfg(target_os = "macos")]
+fn mounted_volumes() -> Vec<PathBuf> {
+    let Ok(dir) = fs::read_dir("/Volumes") else { return Vec::new() };
+    dir.flatten().map(|e| e.path()).filter(|p| is_browsable_mount(p)).collect()
+}
+
+/// Removable media and manual mounts, the places desktop file managers list:
+/// `/media/<user>/x`, `/run/media/<user>/x` (udisks) and `/mnt/x`.
+#[cfg(not(target_os = "macos"))]
+fn mounted_volumes() -> Vec<PathBuf> {
+    let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    parse_mounts(&mounts).into_iter().filter(|p| is_user_mount(p)).collect()
+}
+
+/// True if `path` is a mounted volume that can be ejected (disk images, USB
+/// drives, network shares), never the boot volume.
 pub fn is_ejectable(path: &Path) -> bool {
-    path.parent() == Some(Path::new("/Volumes")) && is_browsable_mount(path)
+    #[cfg(target_os = "macos")]
+    {
+        path.parent() == Some(Path::new("/Volumes")) && is_browsable_mount(path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        is_user_mount(path) && mounted_volumes().iter().any(|v| v == path)
+    }
+}
+
+/// Mount points from the text of `/proc/self/mounts`, in file order. Spaces
+/// and other odd bytes in paths are written as octal escapes (`\040`).
+#[cfg(any(not(target_os = "macos"), test))]
+fn parse_mounts(text: &str) -> Vec<PathBuf> {
+    text.lines().filter_map(|line| line.split_whitespace().nth(1)).map(|p| PathBuf::from(unescape_mount(p))).collect()
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn unescape_mount(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = bytes
+            .get(i + 1..i + 4)
+            .filter(|d| bytes[i] == b'\\' && d.iter().all(|c| (b'0'..=b'7').contains(c)))
+            .and_then(|d| u8::try_from(d.iter().fold(0u32, |n, c| n * 8 + u32::from(c - b'0'))).ok());
+        if let Some(byte) = escaped {
+            out.push(byte);
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// True if `path` lies where Linux desktops mount user-visible volumes:
+/// one level under `/media/<user>` or `/run/media/<user>`, or directly under
+/// `/mnt` or `/media`.
+#[cfg(any(not(target_os = "macos"), test))]
+fn is_user_mount(path: &Path) -> bool {
+    let depth_under = |base: &str| path.strip_prefix(base).map(|rest| rest.components().count()).ok();
+    matches!(depth_under("/mnt"), Some(1))
+        || matches!(depth_under("/media"), Some(1 | 2))
+        || matches!(depth_under("/run/media"), Some(2))
 }
 
 /// True if `path` is itself a mount point that Finder would show. Skips
@@ -145,9 +208,35 @@ pub fn is_browsable_mount(path: &Path) -> bool {
     mount_point.to_bytes() == path.as_os_str().as_bytes() && st.f_flags & libc::MNT_DONTBROWSE as u32 == 0
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn is_browsable_mount(path: &Path) -> bool {
-    fs::read_link(path).is_err()
+#[cfg(test)]
+mod mount_tests {
+    use super::*;
+
+    #[test]
+    fn parses_mount_points() {
+        let text = "/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 /run/media/me/My\\040Disk vfat rw 0 0\nproc /proc proc rw 0 0\n";
+        let mounts = parse_mounts(text);
+        assert_eq!(mounts, [PathBuf::from("/"), PathBuf::from("/run/media/me/My Disk"), PathBuf::from("/proc")]);
+    }
+
+    #[test]
+    fn octal_escapes_stay_in_range() {
+        assert_eq!(unescape_mount("a\\040b\\134c"), "a b\\c");
+        // Not an escape: too short, not octal, or beyond one byte.
+        assert_eq!(unescape_mount("a\\04"), "a\\04");
+        assert_eq!(unescape_mount("a\\089"), "a\\089");
+        assert_eq!(unescape_mount("a\\777"), "a\\777");
+    }
+
+    #[test]
+    fn user_mounts_are_removable_media_and_mnt() {
+        for yes in ["/media/me/USB", "/run/media/me/USB", "/mnt/data", "/media/cdrom"] {
+            assert!(is_user_mount(Path::new(yes)), "{yes}");
+        }
+        for no in ["/", "/proc", "/boot/efi", "/run/media/me", "/mnt", "/mnt/a/b", "/home"] {
+            assert!(!is_user_mount(Path::new(no)), "{no}");
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

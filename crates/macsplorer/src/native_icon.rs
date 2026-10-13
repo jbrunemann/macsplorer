@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use eframe::egui::{self, ColorImage};
+use eframe::egui::ColorImage;
 
 /// Renders the Finder icon for `path` as a `size`×`size` image.
 #[cfg(target_os = "macos")]
@@ -27,7 +27,7 @@ pub fn render_symbol(name: &str, size: usize) -> Option<ColorImage> {
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None)?;
     let image = draw(&image, size)?;
     // Keep only the shape: symbols draw black, the tint comes from the caller.
-    let pixels = image.pixels.iter().map(|p| egui::Color32::from_white_alpha(p.a())).collect();
+    let pixels = image.pixels.iter().map(|p| eframe::egui::Color32::from_white_alpha(p.a())).collect();
     Some(ColorImage { source_size: image.source_size, size: image.size, pixels })
 }
 

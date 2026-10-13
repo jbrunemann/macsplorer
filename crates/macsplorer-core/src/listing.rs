@@ -200,6 +200,8 @@ pub fn free_space(path: &Path) -> Option<u64> {
     if unsafe { libc::statvfs(cpath.as_ptr(), &mut st) } != 0 {
         return None;
     }
+    // f_bavail is u32 on macOS and u64 on 64-bit Linux.
+    #[allow(clippy::useless_conversion)]
     Some(u64::from(st.f_bavail) * st.f_frsize)
 }
 

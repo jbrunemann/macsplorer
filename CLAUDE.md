@@ -1,6 +1,6 @@
 # Macsplorer
 
-A Windows Explorer–style file browser for macOS in Rust, with a Windows 2000
+A Windows Explorer–style file browser for macOS (with an experimental Linux port) in Rust, with a Windows 2000
 "Windows Classic" look. Behaviors are traced from Windows 10 build 10240
 binaries and re-implemented clean-room: write the *behavior* into `docs/`,
 never paste decompiled code into the source.
@@ -10,10 +10,11 @@ never paste decompiled code into the source.
 | Path | What |
 |---|---|
 | `crates/macsplorer-core` | UI-independent logic, all unit-tested: `listing` (read_dir, sort, sizes, custom-icon flag), `natural` (StrCmpLogicalW-style sort), `rename` (Explorer's rename selection + APFS name rules), `fileops` (paste: copy/move with "- Copy" names, xattr-preserving), `history` (back/forward), `breadcrumb`, `places`, `tree` (Folders pane model, CNscTree-like), `seti` (VSCodium file icon resolution). |
-| `crates/macsplorer` | egui/eframe 0.36 app. `app.rs` state + UI, `theme.rs` Windows Classic colors/bevels/fonts/icons/title bar, `scrollbar.rs` classic scroll bars drawn over hidden egui ones, `icons.rs` icon choice + native icon cache, `native_icon.rs` NSWorkspace icons via objc2. |
+| `crates/macsplorer` | egui/eframe 0.36 app. `app.rs` state + UI, `platform.rs` per-OS open/reveal/eject, wording and font paths, `theme.rs` Windows Classic colors/bevels/fonts/icons/title bar, `scrollbar.rs` classic scroll bars drawn over hidden egui ones, `icons.rs` icon choice + native icon cache, `native_icon.rs` NSWorkspace icons via objc2. |
 | `tools/make-icon` | Renders `assets/icon.png` + `assets/macsplorer.icns` (tiny-skia). |
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
 | `scripts/bundle-macos.sh` | Builds `target/release/Macsplorer.app`. |
+| `scripts/bundle-linux.sh` | Builds `target/release/macsplorer-linux-<arch>.tar.gz` (binary, `assets/macsplorer.desktop`, icon). |
 | `scripts/update-seti.py` | Refreshes `assets/seti` (Seti font/theme + language table) from the VS Code repo. |
 | `docs/` | Findings from the Windows binaries. `file-browser-findings.md` §4 lists untraced behaviors. |
 
@@ -23,6 +24,7 @@ never paste decompiled code into the source.
 cargo run -p macsplorer -- [folder]
 cargo test --workspace
 cargo clippy --workspace --all-targets          # keep it warning-free
+cargo clippy --workspace --all-targets --target x86_64-unknown-linux-gnu   # same for the Linux port (rustup target add first)
 cargo test -p macsplorer -- --ignored           # offscreen render → target/screenshots/window.png
 scripts/bundle-macos.sh --open
 cargo run -p make-icon                          # after changing the icon design
@@ -55,6 +57,15 @@ frame. The fixture folder is built in `app.rs` `mod screenshot`.
 - Core logic goes in `macsplorer-core` with tests; keep the app crate thin.
 - The user-facing name is "Macsplorer" (capital M): window title, About, bundle
   name. Crate, binary, file names and bundle id stay lowercase `macsplorer`.
+
+## Linux port
+
+Cross-checking from a Mac works (`cargo check|clippy --target x86_64-unknown-linux-gnu`), but it
+can't run, so Linux behavior is only exercised by the CI job on `ubuntu-latest`. OS differences
+live behind `#[cfg(target_os = "macos")]` with a Linux branch next to it: `platform.rs`
+(open/reveal/eject, `CMD` tooltip text, Tahoma paths), `trash.rs` (`trash` crate), `places.rs`
+(`/proc/self/mounts` volumes), `theme::resize_frame` (borderless-window resize handles).
+Not ported yet: Open With (`open_with::SUPPORTED`), native icons, SF Symbol emblems.
 
 ## egui 0.36 notes (newer than most examples)
 
