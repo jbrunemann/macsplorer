@@ -1282,8 +1282,7 @@ fn tree_key_action(rows: &[Row], key: Key) -> Option<Action> {
 fn tree_roots() -> Vec<Root> {
     let favs = favorites();
     let vols = volumes();
-    // Locations first, like Nautilus's sidebar.
-    Root::from_places(&vols, Section::Locations).chain(Root::from_places(&favs, Section::Favorites)).collect()
+    Root::from_places(&favs, Section::Favorites).chain(Root::from_places(&vols, Section::Locations)).collect()
 }
 
 fn select_all(ui: &Ui, id: egui::Id, text: &str) {
