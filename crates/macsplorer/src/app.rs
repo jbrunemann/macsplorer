@@ -15,6 +15,7 @@ use egui::{Align, Key, Layout, RichText, Sense, TextEdit, Ui};
 use egui_extras::{Column, TableBuilder};
 
 use macsplorer_core::breadcrumb::crumbs;
+use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{copy_into, move_into};
 use macsplorer_core::history::History;
 use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
@@ -80,6 +81,8 @@ enum Action {
     Eject(PathBuf),
     Cut,
     Copy,
+    /// Explorer's "Copy as path": the selection's quoted full paths as text.
+    CopyAsPath,
     /// Paste into a folder; `None` is the open folder.
     Paste(Option<PathBuf>),
     Delete,
@@ -290,6 +293,17 @@ impl Explorer {
         let token = paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
         self.ctx.copy_text(token.clone());
         self.clipboard = Some(Clipboard { paths, cut, token });
+    }
+
+    /// Puts the selection's quoted full paths on the system clipboard as text.
+    /// Leaves the Cut/Copy state alone, but the text is no longer the one a
+    /// paste checks for, so Cmd+V pastes nothing until the next Copy.
+    fn copy_as_path(&mut self) {
+        let paths: Vec<PathBuf> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.ctx.copy_text(copy_path::as_path_text(&paths));
     }
 
     /// Copies or moves the clipboard's items into `dest` on a worker thread.
@@ -645,6 +659,7 @@ impl Explorer {
                 Action::Eject(p) => self.eject(p),
                 Action::Cut => self.set_clipboard(true),
                 Action::Copy => self.set_clipboard(false),
+                Action::CopyAsPath => self.copy_as_path(),
                 Action::Paste(dir) => {
                     let dir = dir.unwrap_or_else(|| self.current().to_path_buf());
                     self.paste(dir);
@@ -710,7 +725,10 @@ impl Explorer {
             if in_list && i.events.iter().any(|e| matches!(e, egui::Event::Cut)) {
                 actions.push(Action::Cut);
             }
-            if in_list && i.events.iter().any(|e| matches!(e, egui::Event::Copy)) {
+            // Cmd+Option+C is Finder's "Copy as Pathname"; egui reports it as a Copy too.
+            if in_list && cmd && alt && i.key_pressed(Key::C) {
+                actions.push(Action::CopyAsPath);
+            } else if in_list && i.events.iter().any(|e| matches!(e, egui::Event::Copy)) {
                 actions.push(Action::Copy);
             }
             let pasted = i.events.iter().any(|e| matches!(e, egui::Event::Paste(text) if self.clipboard.as_ref().is_some_and(|c| &c.token == text)));
@@ -782,6 +800,9 @@ impl Explorer {
                 }
                 if ui.add_enabled(has_selection, egui::Button::new("Copy")).clicked() {
                     actions.push(Action::Copy);
+                }
+                if ui.add_enabled(has_selection, egui::Button::new("Copy as Path")).clicked() {
+                    actions.push(Action::CopyAsPath);
                 }
                 if ui.add_enabled(self.clipboard.is_some(), egui::Button::new("Paste")).clicked() {
                     actions.push(Action::Paste(None));
@@ -1169,6 +1190,9 @@ impl Explorer {
                     }
                     if ui.button("Copy").clicked() {
                         actions.push(Action::Copy);
+                    }
+                    if ui.button("Copy as Path").clicked() {
+                        actions.push(Action::CopyAsPath);
                     }
                     if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
                         actions.push(Action::Paste(Some(entry.path.clone())));

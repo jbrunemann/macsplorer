@@ -78,6 +78,25 @@ else                                                 -> StrCmpLogicalW (natural:
 
 Called from `CFSFolder::CompareIDs`, `CDrivesFolder::CompareIDs`, `CompareIDsAlphabetical`, `ILCompareRelIDs`, `CompareVariantsDirection` (column sorting) and `CDetailCategorizer::OnCompareCategory` (group headers). **Inferred:** every name-based ordering in Explorer is natural sort by default.
 
+### 2.3 Copy as path
+
+`CCopyAsPathMenu` (shell32; verb `copyaspath`, `CLSID_CopyAsPathMenu`) is a
+context-menu handler. `GetState` hides it unless the selection has
+`SFGAO_FILESYSTEM` and the view is not the Recycle Bin. `Invoke` builds an
+`IShellItemArray` from the data object and asks each item for its display
+name with `SIGDN_DESKTOPABSOLUTEPARSING` (a flag bit picks `SIGDN_URL`
+instead). The text builder wraps every path in `"` (a flag turns that off),
+joins items with a separator string (not decoded, assumed to be a line
+break) and has a "first item only" flag. The result is put on the clipboard
+with `SetClipboardData(CF_UNICODETEXT)`.
+Not traced: why Explorer shows it only with Shift held (probably an extended
+verb in the registration, not this code).
+
+Macsplorer: "Copy as Path" in the Edit and item context menus, quoted path
+per line (`core::copy_path`). Cmd+Option+C is Finder's shortcut for the same
+(Finder: Option turns "Copy" into "Copy "name" as Pathname", plain text, not
+verified here).
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
