@@ -1,9 +1,9 @@
 //! The prototype window: toolbar, breadcrumb, navigation pane, details view, status bar.
 
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
@@ -19,7 +19,7 @@ use macsplorer_core::history::History;
 use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::places::{favorites, volumes};
-use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, validate_name};
+use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
 
 use crate::icons::FileIcons;
@@ -31,6 +31,10 @@ const TREE_ROW_HEIGHT: f32 = 18.0;
 const TREE_INDENT: f32 = 19.0;
 
 type LoadResult = (PathBuf, bool, Result<Vec<Node>, String>);
+/// A details-view listing, tagged with the request it answers.
+type ListResult = (u64, Result<Vec<Entry>, String>);
+/// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
+type VisibleCache = ((u64, bool, String), Rc<[usize]>);
 
 struct Settings {
     show_extensions: bool,
@@ -46,6 +50,8 @@ struct RenameState {
     path: PathBuf,
     kind: RenameKind,
     text: String,
+    /// The extension left out of `text`, put back on commit.
+    hidden_ext: Option<String>,
     /// Selection and focus are applied on the first frame the editor exists.
     needs_init: bool,
 }
@@ -88,7 +94,18 @@ enum Pane {
 pub struct Explorer {
     history: History,
     entries: Vec<Entry>,
+    /// Bumped whenever `entries` changes or is reordered.
+    entries_version: u64,
+    /// The search-filtered rows, keyed by what they were computed from.
+    visible_cache: Option<VisibleCache>,
     load_error: Option<String>,
+    /// The details view lists folders on a worker thread so a huge or slow
+    /// folder never freezes the window. Results for anything but the latest
+    /// request (`list_request`) are dropped.
+    list_tx: Sender<ListResult>,
+    list_rx: Receiver<ListResult>,
+    list_request: u64,
+    listing: bool,
     sort: SortSpec,
     settings: Settings,
     selection: BTreeSet<PathBuf>,
@@ -119,10 +136,17 @@ pub struct Explorer {
 impl Explorer {
     pub fn new(ctx: egui::Context, start: PathBuf) -> Self {
         let (load_tx, load_rx) = channel();
+        let (list_tx, list_rx) = channel();
         let mut app = Self {
             history: History::new(start),
             entries: Vec::new(),
+            entries_version: 0,
+            visible_cache: None,
             load_error: None,
+            list_tx,
+            list_rx,
+            list_request: 0,
+            listing: false,
             sort: SortSpec::default(),
             settings: Settings { show_extensions: true, show_hidden: false, natural_sort: true, expand_to_open: true, show_folders: true },
             selection: BTreeSet::new(),
@@ -186,8 +210,33 @@ impl Explorer {
         self.history.current()
     }
 
+    /// Lists the open folder on a worker thread; `poll_lists` applies the
+    /// result. The current entries stay up until then.
     fn reload(&mut self) {
-        match list_dir(self.current(), self.settings.show_hidden) {
+        self.list_request += 1;
+        self.listing = true;
+        let (request, dir, show_hidden) = (self.list_request, self.current().to_path_buf(), self.settings.show_hidden);
+        let (tx, ctx) = (self.list_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let result = list_dir(&dir, show_hidden).map_err(|e| format!("Can't open {}: {e}", dir.display()));
+            if tx.send((request, result)).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn poll_lists(&mut self) {
+        while let Ok((request, result)) = self.list_rx.try_recv() {
+            self.listed(request, result);
+        }
+    }
+
+    fn listed(&mut self, request: u64, result: Result<Vec<Entry>, String>) {
+        if request != self.list_request {
+            return;
+        }
+        self.listing = false;
+        match result {
             Ok(mut entries) => {
                 sort_entries(&mut entries, self.sort);
                 self.entries = entries;
@@ -195,30 +244,47 @@ impl Explorer {
             }
             Err(e) => {
                 self.entries.clear();
-                self.load_error = Some(format!("Can't open {}: {e}", self.current().display()));
+                self.load_error = Some(e);
             }
         }
+        self.entries_version += 1;
         let present: BTreeSet<_> = self.entries.iter().map(|e| &e.path).collect();
         self.selection.retain(|p| present.contains(p));
     }
 
+    /// Blocks until the latest listing has arrived, for tests.
+    #[cfg(test)]
+    fn finish_listing(&mut self) {
+        while self.listing {
+            let (request, result) = self.list_rx.recv().expect("listing thread");
+            self.listed(request, result);
+        }
+    }
+
     fn resort(&mut self) {
         sort_entries(&mut self.entries, self.sort);
+        self.entries_version += 1;
         self.anchor = None;
     }
 
     /// Indices into `entries` that pass the search filter, in display order.
-    fn visible(&self) -> Vec<usize> {
-        let needle = self.search.trim().to_lowercase();
-        (0..self.entries.len())
+    /// Cached, so a large folder isn't refiltered every frame.
+    fn visible(&mut self) -> Rc<[usize]> {
+        let key = (self.entries_version, self.settings.show_extensions, self.search.trim().to_lowercase());
+        if let Some((k, rows)) = &self.visible_cache
+            && *k == key
+        {
+            return rows.clone();
+        }
+        let needle = &key.2;
+        let rows: Rc<[usize]> = (0..self.entries.len())
             .filter(|&i| {
                 needle.is_empty()
-                    || self.entries[i]
-                        .display_name(self.settings.show_extensions)
-                        .to_lowercase()
-                        .contains(&needle)
+                    || self.entries[i].display_name(self.settings.show_extensions).to_lowercase().contains(needle)
             })
-            .collect()
+            .collect();
+        self.visible_cache = Some((key, rows.clone()));
+        rows
     }
 
     fn after_navigation(&mut self) {
@@ -227,6 +293,10 @@ impl Explorer {
         self.rename = None;
         self.address_edit = None;
         self.search.clear();
+        // Don't show the previous folder's items while the new one loads.
+        self.entries.clear();
+        self.entries_version += 1;
+        self.load_error = None;
         self.reload();
         if !std::mem::take(&mut self.navigating_from_tree) {
             self.sync_tree();
@@ -302,6 +372,7 @@ impl Explorer {
             path: entry.path.clone(),
             kind: entry.kind,
             text: entry.display_name(self.settings.show_extensions).to_owned(),
+            hidden_ext: entry.hidden_extension(self.settings.show_extensions).map(str::to_owned),
             needs_init: true,
         });
     }
@@ -312,7 +383,8 @@ impl Explorer {
         let mut name = r.text.trim().to_owned();
         // With extensions hidden the user edited the stem only. Put the
         // extension back, as Explorer's SetNameOf does for editing names.
-        if !self.settings.show_extensions && entry.kind == RenameKind::File && let Some(ext) = entry.extension() {
+        // Packages too: dropping ".app" would turn an app into a folder.
+        if let Some(ext) = &r.hidden_ext {
             name = format!("{name}.{ext}");
         }
         if name == entry.name {
@@ -323,19 +395,16 @@ impl Explorer {
             return;
         }
         let target = r.path.with_file_name(&name);
-        // APFS is usually case-insensitive, so "a" -> "A" "exists" already.
-        let case_only = name.eq_ignore_ascii_case(&entry.name);
-        if target.exists() && !case_only {
-            self.status = Some(format!("There is already an item named \"{name}\" here."));
-            return;
-        }
-        match fs::rename(&r.path, &target) {
+        match rename_no_replace(&r.path, &target) {
             Ok(()) => {
                 self.status = None;
                 self.reload();
                 let loads = self.tree.refresh_path(self.history.current());
                 self.load(loads);
                 self.selection = BTreeSet::from([target]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.status = Some(format!("There is already an item named \"{name}\" here."));
             }
             Err(e) => self.status = Some(format!("Couldn't rename: {e}")),
         }
@@ -727,7 +796,7 @@ impl Explorer {
             return;
         }
         let focused = self.focus == Pane::List && window_focused(ui);
-        let Self { entries, selection, rename, sort, settings, search, icons, open_with, .. } = self;
+        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::WINDOW;
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -780,6 +849,9 @@ impl Explorer {
 
         if visible.is_empty() {
             table.body(|_| {});
+            if *listing {
+                return;
+            }
             let msg = if search.is_empty() { "This folder is empty." } else { "No items match your search." };
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -801,7 +873,7 @@ impl Explorer {
                     icons.paint(ui, icon_rect, entry);
                     ui.add_space(3.0);
                     match rename.as_mut().filter(|r| r.path == entry.path) {
-                        Some(r) => rename_editor(ui, r, settings.show_extensions, actions),
+                        Some(r) => rename_editor(ui, r, actions),
                         None => {
                             let name = entry.display_name(settings.show_extensions);
                             selectable_name(ui, name, selected, focused);
@@ -891,6 +963,7 @@ impl Explorer {
 impl eframe::App for Explorer {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.poll_loads();
+        self.poll_lists();
         self.icons.begin_frame();
         let visible = self.visible();
         let mut actions = Vec::new();
@@ -959,7 +1032,7 @@ fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<Pat
     });
 }
 
-fn rename_editor(ui: &mut Ui, r: &mut RenameState, extensions_shown: bool, actions: &mut Vec<Action>) {
+fn rename_editor(ui: &mut Ui, r: &mut RenameState, actions: &mut Vec<Action>) {
     let id = ui.make_persistent_id(("rename", &r.path));
     let frame = egui::Frame::NONE
         .fill(theme::color::WINDOW)
@@ -973,7 +1046,7 @@ fn rename_editor(ui: &mut Ui, r: &mut RenameState, extensions_shown: bool, actio
     }
     if std::mem::take(&mut r.needs_init) {
         resp.request_focus();
-        let sel = initial_selection(&r.text, r.kind, extensions_shown);
+        let sel = initial_selection(&r.text, r.kind, r.hidden_ext.is_none());
         if let Some(mut state) = TextEdit::load_state(ui.ctx(), id) {
             state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(sel.start), CCursor::new(sel.end))));
             TextEdit::store_state(ui.ctx(), id, state);
@@ -1270,6 +1343,7 @@ mod tests {
 mod screenshot {
     use super::*;
     use egui_kittest::Harness;
+    use std::fs;
 
     fn fixture() -> PathBuf {
         let dir = std::env::temp_dir().join("macsplorer-screenshot").join("My Documents");
@@ -1294,6 +1368,7 @@ mod screenshot {
             .build_eframe(|cc| {
                 theme::install(&cc.egui_ctx);
                 let mut app = Explorer::new(cc.egui_ctx.clone(), start.clone());
+                app.finish_listing();
                 setup(&mut app);
                 app
             });

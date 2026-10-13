@@ -49,8 +49,9 @@ frame. The fixture folder is built in `app.rs` `mod screenshot`.
   round its corners; the caption bar is drawn by `theme::title_bar`.
 - UI code collects `Action`s while drawing and applies them afterwards
   (`Explorer::apply`), so drawing only needs shared borrows.
-- Navigation pane folder listings run on worker threads (`Explorer::load`)
-  and come back through a channel; never block the UI thread on disk I/O.
+- Folder listings run on worker threads and come back through channels
+  (`Explorer::load` for the navigation pane, `Explorer::reload` for the
+  details view); never block the UI thread on disk I/O.
 - Core logic goes in `macsplorer-core` with tests; keep the app crate thin.
 - The user-facing name is "Macsplorer" (capital M): window title, About, bundle
   name. Crate, binary, file names and bundle id stay lowercase `macsplorer`.

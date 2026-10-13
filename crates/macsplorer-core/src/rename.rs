@@ -14,7 +14,10 @@
 //! Name validation does not copy Windows' 128-character default. It follows
 //! APFS/HFS+ instead.
 
+use std::fs;
+use std::io;
 use std::ops::Range;
+use std::path::Path;
 
 /// Longest file name APFS and HFS+ accept, in UTF-8 bytes (`NAME_MAX`).
 pub const MAX_NAME_BYTES: usize = 255;
@@ -100,10 +103,60 @@ pub fn validate_name(name: &str) -> Result<(), NameError> {
     Ok(())
 }
 
+/// Renames `from` to `to` without ever replacing another item.
+///
+/// On macOS this is one atomic `renamex_np(RENAME_EXCL)`, which still allows
+/// a case-only rename (`a` → `A`) of the same item on a case-insensitive
+/// volume but fails with `AlreadyExists` if `to` is a different item. Volumes
+/// without `RENAME_EXCL` (some network and FAT drives) fall back to checking
+/// first, which leaves a small race.
+pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
+        let (cfrom, cto) = (c(from)?, c(to)?);
+        // SAFETY: both are valid NUL-terminated paths.
+        if unsafe { libc::renamex_np(cfrom.as_ptr(), cto.as_ptr(), libc::RENAME_EXCL) } == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if !matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) {
+            return Err(err);
+        }
+    }
+    if let (Ok(a), Ok(b)) = (fs::symlink_metadata(from), fs::symlink_metadata(to)) {
+        use std::os::unix::fs::MetadataExt;
+        if (a.dev(), a.ino()) != (b.dev(), b.ino()) {
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+    }
+    fs::rename(from, to)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use RenameKind::*;
+
+    #[test]
+    fn rename_never_replaces() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-rename-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        let err = rename_no_replace(&a, &b).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&b).unwrap(), "b");
+        // Case-only renames work on case-insensitive and case-sensitive volumes.
+        rename_no_replace(&a, &dir.join("A")).unwrap();
+        let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.iter().any(|n| n == "A"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "a"), "{names:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn sel(name: &str, kind: RenameKind) -> &str {
         let r = initial_selection(name, kind, true);

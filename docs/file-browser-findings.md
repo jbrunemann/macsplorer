@@ -83,6 +83,7 @@ Called from `CFSFolder::CompareIDs`, `CDrivesFolder::CompareIDs`, `CompareIDsAlp
 | Windows | Rust/macOS |
 |---|---|
 | Rename selection rule (§2.1) | Port it directly. `NSTextView.setSelectedRange` after `beginEditing`. Use the real extension from `NSURL.pathExtension`, and only when extensions are visible. |
+| "Hide extensions" | Not traced; macsplorer's own rule (`Entry::hidden_extension`): the extension stays visible when the rest of the name has one too (`Invoice.pdf.app`, `photo.jpg.command`), so apps and scripts can't pass for documents. Hidden extensions are put back on rename, for packages as well as files. |
 | `IItemNameLimits` | On APFS/HFS+ only `/` is invalid (`:` is shown as `/` in Finder). Block `/` and NUL, cap at 255 UTF-8 bytes (`NAME_MAX`) instead of 128 chars. |
 | `StrCmpLogicalW` | `localizedStandardCompare:` (Finder's own natural sort), or a Rust natural-sort crate (`natord`, `lexical-sort`) if you need determinism across locales. Keep a "plain sort" setting that matches `NoStrCmpLogical`. |
 | `CViewSettings` per-folder/per-type view memory | Store view state keyed by folder path plus a "folder type" fallback (Documents/Pictures/Music/Videos/General) in your own SQLite/JSON file. Don't write `.DS_Store` files. |

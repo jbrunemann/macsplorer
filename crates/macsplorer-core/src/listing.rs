@@ -41,17 +41,30 @@ impl Entry {
         Path::new(&self.name).extension().and_then(|e| e.to_str())
     }
 
-    /// Display name, without the extension when extensions are hidden.
-    /// Folders always keep their full name.
-    pub fn display_name(&self, extensions_shown: bool) -> &str {
+    /// The extension the display name leaves out, if any.
+    ///
+    /// Folders always keep their full name. So does a name whose stem looks
+    /// like it has an extension of its own: `Invoice.pdf.app` and
+    /// `photo.jpg.command` show in full rather than as `Invoice.pdf` and
+    /// `photo.jpg`, so an app or script can't pass for a document.
+    pub fn hidden_extension(&self, extensions_shown: bool) -> Option<&str> {
         if extensions_shown || self.is_folder() {
-            return &self.name;
+            return None;
         }
-        Path::new(&self.name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .filter(|_| self.extension().is_some())
-            .unwrap_or(&self.name)
+        let stem = Path::new(&self.name).file_stem()?;
+        if Path::new(stem).extension().is_some() {
+            return None;
+        }
+        self.extension()
+    }
+
+    /// Display name, without the extension when extensions are hidden
+    /// (see [`hidden_extension`](Self::hidden_extension)).
+    pub fn display_name(&self, extensions_shown: bool) -> &str {
+        match self.hidden_extension(extensions_shown) {
+            Some(ext) => &self.name[..self.name.len() - ext.len() - 1],
+            None => &self.name,
+        }
     }
 
     /// Explorer-style type description: "Folder", "TXT File", "File".
@@ -257,6 +270,18 @@ mod tests {
         assert_eq!(f.display_name(false), "photo");
         assert_eq!(entry(".zshrc", RenameKind::File, Some(1)).display_name(false), ".zshrc");
         assert_eq!(entry("My.Folder", RenameKind::Folder, None).display_name(false), "My.Folder");
+        assert_eq!(entry("Safari.app", RenameKind::Package, None).display_name(false), "Safari");
+    }
+
+    #[test]
+    fn double_extensions_stay_visible() {
+        for name in ["Invoice.pdf.app", "photo.jpg.command", "a.tar.gz", "notes.txt .sh"] {
+            let kind = if name.ends_with(".app") { RenameKind::Package } else { RenameKind::File };
+            let e = entry(name, kind, None);
+            assert_eq!(e.display_name(false), name);
+            assert_eq!(e.hidden_extension(false), None);
+        }
+        assert_eq!(entry(".zshrc.bak", RenameKind::File, Some(1)).display_name(false), ".zshrc");
     }
 
     #[test]
