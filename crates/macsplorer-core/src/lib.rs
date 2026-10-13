@@ -8,6 +8,7 @@ pub mod columns;
 pub mod copy_path;
 pub mod fileops;
 pub mod history;
+pub mod isearch;
 pub mod layout;
 pub mod listing;
 pub mod marquee;

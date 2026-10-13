@@ -19,6 +19,7 @@ use macsplorer_core::columns::{self, ColumnDrag, HeaderHit};
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{copy_into, move_into};
 use macsplorer_core::history::History;
+use macsplorer_core::isearch::{self, IncrementalSearch};
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
 use macsplorer_core::marquee::{self, Marquee};
 use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
@@ -99,6 +100,10 @@ enum Action {
     Click { index: usize, toggle: bool, extend: bool },
     /// Scroll the item view so this entry is visible.
     Reveal(usize),
+    /// Characters typed in the item view at `time_ms`.
+    TypeAhead { text: String, time_ms: u64 },
+    /// A key that ends the typed text (Enter, Esc, Tab, Backspace, navigation keys).
+    EndTypeAhead,
     /// Clear the selection (a click on empty space in the view).
     Deselect,
     /// Start a marquee at this content point; `extend` (Cmd or Shift) keeps
@@ -192,6 +197,8 @@ pub struct Explorer {
     focus_item: Option<usize>,
     /// An entry to scroll into view on the next frame.
     reveal: Option<usize>,
+    /// Letters typed in the item view, which select the item they spell.
+    type_ahead: IncrementalSearch,
     nav_layout: Option<NavLayout>,
     /// The widest visible name in the List view, keyed like `visible_cache`.
     widest_name: Option<((u64, bool, String), f32)>,
@@ -264,6 +271,7 @@ impl Explorer {
             anchor: None,
             focus_item: None,
             reveal: None,
+            type_ahead: IncrementalSearch::default(),
             nav_layout: None,
             widest_name: None,
             marquee: None,
@@ -595,6 +603,7 @@ impl Explorer {
         self.selection.clear();
         self.anchor = None;
         self.focus_item = None;
+        self.type_ahead.reset();
         self.marquee = None;
         self.rename = None;
         self.address_edit = None;
@@ -791,6 +800,18 @@ impl Explorer {
                     self.click(index, toggle, extend, visible);
                 }
                 Action::Reveal(index) => self.reveal = Some(index),
+                Action::EndTypeAhead => self.type_ahead.reset(),
+                Action::TypeAhead { text, time_ms } => {
+                    let show_extensions = self.settings.show_extensions;
+                    for c in text.chars() {
+                        let focus = self.focus_item.and_then(|f| visible.iter().position(|&v| v == f));
+                        let names: Vec<&str> = visible.iter().map(|&i| self.entries[i].display_name(show_extensions)).collect();
+                        if let isearch::Outcome::Found(pos) = self.type_ahead.type_char(c, time_ms, &names, focus) {
+                            self.click(visible[pos], false, false, visible);
+                            self.reveal = Some(visible[pos]);
+                        }
+                    }
+                }
                 Action::Deselect => {
                     self.focus = Pane::List;
                     self.selection.clear();
@@ -980,7 +1001,17 @@ impl Explorer {
                 (Key::PageUp, Nav::PageUp),
                 (Key::PageDown, Nav::PageDown),
             ];
-            if cmd || alt || visible.is_empty() {
+            if [Key::Enter, Key::Escape, Key::Tab, Key::Backspace].into_iter().chain(KEYS.map(|(k, _)| k)).any(|k| i.key_pressed(k)) {
+                actions.push(Action::EndTypeAhead);
+            }
+            if cmd || visible.is_empty() {
+                return;
+            }
+            let text: String = i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.as_str()) } else { None }).collect();
+            if !text.is_empty() {
+                actions.push(Action::TypeAhead { text, time_ms: (i.time * 1000.0) as u64 });
+            }
+            if alt {
                 return;
             }
             let Some(nav) = KEYS.iter().find(|(k, _)| i.key_pressed(*k)).map(|&(_, n)| n) else { return };
@@ -2631,6 +2662,37 @@ mod clipboard {
         assert!(!dir.join("a.txt").exists());
         assert_eq!(fs::read_to_string(dir.join("sub/a.txt")).unwrap(), "hi");
         assert!(app.clipboard.is_none(), "a cut is pasted once");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn typing_selects_the_item_it_spells() {
+        let (mut app, dir) = explorer("typeahead");
+        fs::write(dir.join("apple.txt"), "").unwrap();
+        fs::write(dir.join("Banana.txt"), "").unwrap();
+        app.reload();
+        app.finish_listing();
+        let visible: Vec<usize> = (0..app.entries.len()).collect();
+        let name = |app: &Explorer| app.focus_item.map(|i| app.entries[i].name.clone());
+        let ty = |app: &mut Explorer, text: &str, time_ms| app.apply(vec![Action::TypeAhead { text: text.into(), time_ms }], &visible);
+
+        ty(&mut app, "b", 0);
+        assert_eq!(name(&app), Some("Banana.txt".into()));
+        assert_eq!(app.selection, BTreeSet::from([dir.join("Banana.txt")]));
+        assert_eq!(app.reveal, app.focus_item);
+
+        // A first letter searches after the focus and wraps; the same letter
+        // again steps on to the next match.
+        ty(&mut app, "a", 2000);
+        assert_eq!(name(&app), Some("a.txt".into()));
+        ty(&mut app, "a", 2100);
+        assert_eq!(name(&app), Some("apple.txt".into()));
+        // A key that ends the text makes the next letter a first letter again.
+        app.apply(vec![Action::EndTypeAhead], &visible);
+        ty(&mut app, "b", 2200);
+        assert_eq!(name(&app), Some("Banana.txt".into()));
+        ty(&mut app, "zz", 9000);
+        assert_eq!(app.selection.len(), 1, "no match keeps the selection");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -469,6 +469,53 @@ and "Today" and "Yesterday" stay English. Byte units and the words
 the dialog shows just one of them (Windows has a separate multi-item page,
 `_InitMultiplePrsht`).
 
+### 2.9 Type-ahead search (comctl32 v6.10 `CLVKeyboardManager`)
+
+Typing in the item view is the list view's incremental search, not something Explorer
+implements itself. Traced in `CLVKeyboardManager::OnChar` (comctl32 0x171bbf83c),
+`IsISearchTimedOut` (0x171ab4a14), `CLVItemStore::OnFindItem` (0x171a0f968) and
+`CLVItemStore::_CompareString` (0x171bacb48). The notification `LVN_INCREMENTALSEARCH`
+is `_IncrementalSearch` (0x171bc00bc, `LVN_FIRST - 63`).
+
+**Per `WM_CHAR`, observed:**
+
+1. The view keeps a typed-text buffer and the time of the last character. If more than
+   **1000 ms** (a fixed constant, not the double-click time) passed since the last one
+   (`GetMessageTime` difference), the buffer starts over. The time updates with every character,
+   whether or not it found anything.
+2. A character below `0x20` (Backspace, Tab, Enter, Esc) clears the buffer and the rest is
+   skipped. `OnKey` also clears it whenever an arrow/Home/End/Page key moved the focus.
+3. Otherwise the character is appended. A buffer of exactly one space is not a search: it
+   toggles the selection of the focused item (the Space key) and clears the buffer.
+4. The view sends `LVN_INCREMENTALSEARCH` to the owner. If it answers `-3` (handled), the view
+   does nothing more. **Unverified:** whether the shell's `CDefView` answers it; no public symbol
+   names its notify handler.
+5. Otherwise it searches (`OnFindItem` with `LVFI_STRING | LVFI_SUBSTRING | LVFI_WRAP`, flags
+   `0x26`) for the first item whose **displayed name starts with the buffer**, trying every
+   item once, wrapping at the end. Matching is `CompareStringW(LOCALE_USER_DEFAULT,
+   NORM_IGNORECASE | NORM_LINGUISTIC_CASING)` on the first *n* characters of both, so it ignores
+   case but not accents. It reads the same item text the view shows (so the extension counts
+   when it is displayed).
+6. Where the search starts:
+   - first character of the buffer: **after** the focused item;
+   - buffer made only of the same character ("aaa"): after the focused item again, and the search
+     text is that single character. Pressing one letter repeatedly cycles through the items
+     starting with it (`FUN_171ab6573` tests "all characters equal the first");
+   - any other buffer ("ab"): **at** the focused item (the code starts one before the focus and
+     `OnFindItem` begins at the next item), so extending the text keeps the current item while it
+     still matches.
+7. A match becomes the only selected item, the focus item, and is scrolled into view
+   (`EnsureVisible`). **Inferred:** with Ctrl held (bit 0 of a manager flag, source not traced) the view only moves the focus and leaves the selection.
+8. No match: nothing changes, and `MessageBeep(0)` sounds once until the buffer clears (a flag
+   next to the buffer).
+
+Macsplorer (`core::isearch`, `Explorer::keyboard` → `Action::TypeAhead`): steps 1 to 8 for the
+item view in all three view modes, matching on `Entry::display_name`, in the order shown (sort and
+search filter included). Left out: the beep, the Space toggle (a leading space is ignored), the
+Ctrl "focus only" variant, and typing in the Folders pane (the tree has its own search that
+wasn't traced). Mouse clicks don't clear the buffer; the 1 s timeout covers them. Rust's
+`to_lowercase` stands in for the locale's case folding.
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
