@@ -20,6 +20,7 @@ use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{copy_into, move_into};
 use macsplorer_core::history::History;
 use macsplorer_core::layout::{self, IconCell, IconGrid, Nav};
+use macsplorer_core::marquee::{self, Marquee};
 use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
@@ -92,6 +93,9 @@ enum Action {
     Reveal(usize),
     /// Clear the selection (a click on empty space in the view).
     Deselect,
+    /// Start a marquee at this content point; `extend` (Cmd or Shift) keeps
+    /// the selection.
+    MarqueeBegin { origin: (f32, f32), extend: bool },
     BeginRename,
     CommitRename,
     CancelRename,
@@ -175,6 +179,8 @@ pub struct Explorer {
     /// An entry to scroll into view on the next frame.
     reveal: Option<usize>,
     nav_layout: Option<NavLayout>,
+    /// The rubber band while it's being dragged in the item view.
+    marquee: Option<Marquee>,
     rename: Option<RenameState>,
     /// `Some` while the address bar shows a text field instead of crumbs.
     address_edit: Option<String>,
@@ -231,6 +237,7 @@ impl Explorer {
             focus_item: None,
             reveal: None,
             nav_layout: None,
+            marquee: None,
             rename: None,
             address_edit: None,
             address_needs_focus: false,
@@ -515,6 +522,7 @@ impl Explorer {
         self.selection.clear();
         self.anchor = None;
         self.focus_item = None;
+        self.marquee = None;
         self.rename = None;
         self.address_edit = None;
         self.search.clear();
@@ -650,6 +658,13 @@ impl Explorer {
                 Action::Deselect => {
                     self.focus = Pane::List;
                     self.selection.clear();
+                }
+                Action::MarqueeBegin { origin, extend } => {
+                    self.focus = Pane::List;
+                    if !extend {
+                        self.selection.clear();
+                    }
+                    self.marquee = Some(Marquee::new(origin));
                 }
                 Action::BeginRename => self.begin_rename(),
                 Action::CommitRename => self.commit_rename(),
@@ -1126,13 +1141,25 @@ impl Explorer {
         let can_paste = self.clipboard.is_some();
         let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
-        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, .. } = self;
+        let menu_id = ui.id().with("details-menu");
+        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::WINDOW;
         ui.spacing_mut().item_spacing.x = 0.0;
+        let pitch = LIST_ROW_HEIGHT + ui.spacing().item_spacing.y;
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let (press, mods) = ui.input(|i| (i.pointer.press_origin(), i.modifiers));
+        let extend = mods.command || mods.shift;
 
         // Under the rows, so a click on a row still reaches the row.
-        ui.interact(viewport, ui.id().with("details-bg"), Sense::click()).context_menu(|ui| background_menu(ui, can_paste, actions));
+        let bg = ui.interact(viewport, ui.id().with("details-bg"), Sense::click_and_drag());
+        if bg.clicked() {
+            if !extend {
+                actions.push(Action::Deselect);
+            }
+            actions.push(Action::Focus(Pane::List));
+        }
+        bg.context_menu(|ui| background_menu(ui, can_paste, actions));
 
         let header = |ui: &mut Ui, label: &str, column: SortColumn, right: bool, actions: &mut Vec<Action>| {
             let rect = ui.max_rect();
@@ -1172,7 +1199,7 @@ impl Explorer {
         let table = table
             .scroll_bar_visibility(hidden)
             .striped(false)
-            .sense(Sense::click())
+            .sense(Sense::click_and_drag())
             .cell_layout(Layout::left_to_right(Align::Center))
             .column(Column::initial(300.0).at_least(120.0).clip(true))
             .column(Column::initial(80.0).at_least(50.0))
@@ -1194,24 +1221,41 @@ impl Explorer {
             return;
         }
 
-        let out = table.body(|body| {
+        // Where the rows are: row 0's top on screen, the icon's left edge and
+        // the Name column's right edge. Taken from a drawn row, for the marquee.
+        let mut geometry: Option<(f32, f32, f32)> = None;
+        let out = table.body(|mut body| {
+            if marquee.is_some() {
+                let shown = body.ui_mut().clip_rect();
+                edge_scroll(body.ui_mut(), shown, LIST_ROW_HEIGHT);
+            }
             body.rows(LIST_ROW_HEIGHT, visible.len(), |mut row| {
-                let index = visible[row.index()];
+                let pos = row.index();
+                let index = visible[pos];
                 let entry = &entries[index];
                 let selected = selection.contains(&entry.path);
+                // The icon and label, the only part of the row that hits the
+                // item: elsewhere is empty space (`CListView::HandleMouse`).
+                let mut item_rect = egui::Rect::NOTHING;
+                let mut name_column = (0.0, 0.0);
 
                 row.col(|ui| {
                     ui.add_space(4.0);
                     let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
                     icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, cut.contains(&entry.path)));
                     ui.add_space(3.0);
-                    match rename.as_mut().filter(|r| r.path == entry.path) {
-                        Some(r) => rename_editor(ui, r, false, actions),
+                    let label = match rename.as_mut().filter(|r| r.path == entry.path) {
+                        Some(r) => {
+                            rename_editor(ui, r, false, actions);
+                            ui.min_rect()
+                        }
                         None => {
                             let name = entry.display_name(settings.show_extensions);
-                            selectable_name(ui, name, selected, focused);
+                            selectable_name(ui, name, selected, focused)
                         }
-                    }
+                    };
+                    item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
+                    name_column = (icon_rect.left(), ui.max_rect().right());
                 });
                 row.col(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1233,16 +1277,63 @@ impl Explorer {
                 });
 
                 let resp = row.response();
-                if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
-                    let m = resp.ctx.input(|i| i.modifiers);
-                    actions.push(Action::Click { index, toggle: m.command, extend: m.shift });
+                let top = resp.rect.top() - pos as f32 * pitch;
+                geometry.get_or_insert((top, name_column.0, name_column.1));
+                let on_item = resp.interact_pointer_pos().is_some_and(|p| item_rect.contains(p));
+                if on_item {
+                    if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
+                        actions.push(Action::Click { index, toggle: mods.command, extend: mods.shift });
+                    }
+                    if resp.double_clicked() {
+                        actions.push(Action::Open(entry.path.clone()));
+                    }
+                } else if resp.clicked() || resp.secondary_clicked() {
+                    if resp.clicked() && !extend {
+                        actions.push(Action::Deselect);
+                    }
+                    actions.push(Action::Focus(Pane::List));
                 }
-                if resp.double_clicked() {
-                    actions.push(Action::Open(entry.path.clone()));
+                if resp.secondary_clicked() {
+                    resp.ctx.data_mut(|d| d.insert_temp(menu_id, on_item.then_some(index)));
                 }
-                resp.context_menu(|ui| item_menu(ui, entry, can_paste, open_with, actions));
+                if resp.drag_started()
+                    && let Some(p) = press.filter(|p| !item_rect.contains(*p))
+                {
+                    actions.push(Action::MarqueeBegin { origin: (p.x, p.y - top), extend });
+                }
+                resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
+                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
+                    None => background_menu(ui, can_paste, actions),
+                });
             });
         });
+        // Content coordinates: screen x, y from row 0's top.
+        if let Some((top, icon_left, name_right)) = geometry {
+            if bg.drag_started()
+                && let Some(p) = press
+            {
+                actions.push(Action::MarqueeBegin { origin: (p.x, p.y - top), extend });
+            }
+            if let Some(m) = marquee.as_mut() {
+                // Select bounds: the icon and the label's highlight box, as drawn above.
+                let candidates = |r: &layout::Rect| {
+                    let first = ((r.min.1 / pitch).floor().max(0.0) as usize).min(visible.len());
+                    let last = ((r.max.1 / pitch).ceil().max(0.0) as usize).min(visible.len());
+                    (first..last)
+                        .map(|pos| {
+                            let name = entries[visible[pos]].display_name(settings.show_extensions);
+                            let w = ui.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), font.clone(), theme::color::TEXT)).size().x;
+                            let y = pos as f32 * pitch;
+                            let right = (icon_left + 16.0 + 3.0 + w + 2.0).min(name_right);
+                            (visible[pos], layout::Rect { min: (icon_left, y), max: (right, y + LIST_ROW_HEIGHT) })
+                        })
+                        .collect()
+                };
+                if !drag_marquee(ui, m, egui::pos2(0.0, top), out.inner_rect, candidates, entries, selection, anchor) {
+                    *marquee = None;
+                }
+            }
+        }
         bars.end(ui, &out);
     }
 
@@ -1270,7 +1361,7 @@ impl Explorer {
         let font = egui::TextStyle::Body.resolve(ui.style());
         let line_height = ui.fonts_mut(|f| f.row_height(&font));
         let menu_id = ui.id().with("icons-menu");
-        let Self { entries, selection, rename, settings, search, icons, open_with, listing, focus_item, .. } = self;
+        let Self { entries, selection, rename, settings, search, icons, open_with, listing, focus_item, marquee, anchor, .. } = self;
 
         let out = egui::ScrollArea::vertical()
             .id_salt("icons")
@@ -1291,10 +1382,16 @@ impl Explorer {
                     ui.scroll_to_rect(egui::Rect::from_min_size(at(grid.slot(pos)), egui::Vec2::splat(layout::SLOT)), None);
                 }
                 let shown = egui::Rect::from_min_size(origin + view.min.to_vec2(), view.size());
-                let resp = ui.interact(shown, ui.id().with("icons-hit"), Sense::click());
-                let pointer = resp.interact_pointer_pos().or(resp.hover_pos()).map(|p| (p.x - origin.x, p.y - origin.y));
+                if marquee.is_some() {
+                    edge_scroll(ui, shown, LIST_ROW_HEIGHT);
+                }
+                let resp = ui.interact(shown, ui.id().with("icons-hit"), Sense::click_and_drag());
+                let content = |p: egui::Pos2| (p.x - origin.x, p.y - origin.y);
+                let pointer = resp.interact_pointer_pos().or(resp.hover_pos()).map(content);
+                let press = resp.drag_started().then(|| ui.input(|i| i.pointer.press_origin())).flatten().map(content);
 
                 let mut hit = None;
+                let mut press_hit = false;
                 // The focused item's whole label is drawn last, over its neighbors.
                 let mut on_top = None;
                 for pos in grid.items_in(view.min.y, view.max.y) {
@@ -1309,6 +1406,7 @@ impl Explorer {
                     if pointer.is_some_and(|p| cell.hit(p)) {
                         hit = Some(pos);
                     }
+                    press_hit |= press.is_some_and(|p| cell.hit(p));
                     let renaming = rename.as_ref().is_some_and(|r| r.path == entry.path);
                     if unfolded {
                         on_top = Some((screen(cell.label), galley, selected, renaming));
@@ -1329,6 +1427,31 @@ impl Explorer {
                     ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Center)), |ui| {
                         rename_editor(ui, r, true, actions)
                     });
+                }
+                if let Some(origin) = press
+                    && !press_hit
+                {
+                    let m = ui.input(|i| i.modifiers);
+                    actions.push(Action::MarqueeBegin { origin, extend: m.command || m.shift });
+                }
+                if let Some(m) = marquee.as_mut() {
+                    // Select bounds: the image and the label (`LVIR_SELECTBOUNDS`),
+                    // laid out as drawn above.
+                    let candidates = |r: &layout::Rect| {
+                        grid.items_in(r.min.1, r.max.1)
+                            .map(|pos| {
+                                let index = visible[pos];
+                                let unfolded = focused && *focus_item == Some(index);
+                                let galley = icon_label(ui, entries[index].display_name(settings.show_extensions), &font, false, unfolded);
+                                let size = layout::label_size((galley.size().x, galley.size().y), line_height, !unfolded);
+                                let cell = IconCell::new(grid.slot(pos), size);
+                                (index, cell.image.union(&cell.label))
+                            })
+                            .collect()
+                    };
+                    if !drag_marquee(ui, m, origin, shown, candidates, entries, selection, anchor) {
+                        *marquee = None;
+                    }
                 }
                 item_clicks(ui, &resp, hit.map(|p| &entries[visible[p]]), hit.map(|p| visible[p]), selection, menu_id, actions);
                 resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
@@ -1548,6 +1671,77 @@ fn item_clicks(
     }
 }
 
+/// One frame of a marquee drag (`CLVSelectionManager::DragSelect`): moves
+/// the band to the pointer, clamped to `shown` (the visible part of the
+/// view, on screen), and selects what its edge crossed. `origin` is the
+/// screen position of the content's (0, 0). `candidates` lists the items
+/// (`entries` index and select bounds, in content coordinates) that may lie
+/// in the given rectangle. Paints the band. Returns false once the button is
+/// up, or after Escape, which clears the selection.
+#[allow(clippy::too_many_arguments)]
+fn drag_marquee(
+    ui: &Ui,
+    m: &mut Marquee,
+    origin: egui::Pos2,
+    shown: egui::Rect,
+    candidates: impl FnOnce(&layout::Rect) -> Vec<(usize, layout::Rect)>,
+    entries: &[Entry],
+    selection: &mut BTreeSet<PathBuf>,
+    anchor: &mut Option<usize>,
+) -> bool {
+    let (pointer, down, escape, mods) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down(), i.key_pressed(Key::Escape), i.modifiers));
+    if escape {
+        selection.clear();
+        return false;
+    }
+    let content = |p: egui::Pos2| (p.x - origin.x, p.y - origin.y);
+    let clip = layout::Rect { min: content(shown.min), max: content(shown.max) };
+    if let Some(p) = pointer {
+        let old = m.drag_to(content(p), clip);
+        if old != m.rect {
+            let mut inside = Vec::new();
+            for (index, bounds) in candidates(&old.union(&m.rect)) {
+                let bounds = marquee::hit_bounds(bounds);
+                let path = &entries[index].path;
+                match m.item_state(&old, &bounds, selection.contains(path), mods.command) {
+                    Some(true) => _ = selection.insert(path.clone()),
+                    Some(false) => _ = selection.remove(path),
+                    None => {}
+                }
+                if m.rect.intersects(&bounds) {
+                    inside.push((index, bounds));
+                }
+            }
+            if !mods.command && !mods.shift
+                && let Some(a) = marquee::anchor(content(p), inside)
+            {
+                *anchor = Some(a);
+            }
+        }
+    }
+    let at = |(x, y): (f32, f32)| origin + egui::vec2(x, y);
+    theme::focus_rect(&ui.painter().with_clip_rect(shown), egui::Rect::from_min_max(at(m.rect.min), at(m.rect.max)));
+    down
+}
+
+/// While a marquee is dragged with the pointer at or past the top or bottom
+/// of `shown`, scrolls the enclosing scroll area toward it
+/// (`CLVScrollingManager::ShouldScroll`). Guess: the speed, about 20
+/// `line`s a second, wasn't traced.
+fn edge_scroll(ui: &Ui, shown: egui::Rect, line: f32) {
+    let (pointer, dt) = ui.input(|i| (i.pointer.latest_pos(), i.stable_dt.min(0.1)));
+    let Some(p) = pointer else { return };
+    let dir = if p.y >= shown.bottom() - 1.0 {
+        -1.0
+    } else if p.y <= shown.top() {
+        1.0
+    } else {
+        return;
+    };
+    ui.scroll_with_delta_animation(egui::vec2(0.0, dir * 20.0 * line * dt), egui::style::ScrollAnimation::none());
+    ui.ctx().request_repaint();
+}
+
 /// Lays out a Large Icons label: centered, wrapped in `layout::LABEL_WRAP`,
 /// cut to `layout::FOLDED_LINES` lines with "…" unless `unfolded`.
 fn icon_label(ui: &Ui, text: &str, font: &egui::FontId, highlighted: bool, unfolded: bool) -> std::sync::Arc<egui::Galley> {
@@ -1618,14 +1812,17 @@ fn rename_editor(ui: &mut Ui, r: &mut RenameState, wrapping: bool, actions: &mut
 
 /// An item label that highlights only its text when selected: navy with
 /// white text when the pane has focus, button-face gray otherwise.
-fn selectable_name(ui: &mut Ui, text: &str, selected: bool, focused: bool) {
+/// Returns the highlight box.
+fn selectable_name(ui: &mut Ui, text: &str, selected: bool, focused: bool) -> egui::Rect {
     let bg = ui.painter().add(egui::Shape::Noop);
     let color = if selected && focused { theme::color::SELECTION_TEXT } else { theme::color::TEXT };
     let resp = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate().selectable(false).sense(Sense::hover()));
+    let rect = resp.rect.expand2(egui::vec2(2.0, 1.0));
     if selected {
         let fill = if focused { theme::color::SELECTION } else { theme::color::FACE };
-        ui.painter().set(bg, egui::Shape::rect_filled(resp.rect.expand2(egui::vec2(2.0, 1.0)), 0.0, fill));
+        ui.painter().set(bg, egui::Shape::rect_filled(rect, 0.0, fill));
     }
+    rect
 }
 
 /// A flat crumb in the address field that pops out when hovered.
@@ -1996,6 +2193,11 @@ mod screenshot {
     }
 
     fn shoot(name: &str, size: egui::Vec2, setup: impl FnOnce(&mut Explorer)) {
+        shoot_driven(name, size, setup, |_| {});
+    }
+
+    /// Like `shoot`, with `drive` sending input once the window has settled.
+    fn shoot_driven(name: &str, size: egui::Vec2, setup: impl FnOnce(&mut Explorer), drive: impl FnOnce(&mut Harness<'_, Explorer>)) {
         let start = fixture();
         let mut harness = Harness::builder()
             .with_size(size)
@@ -2013,6 +2215,7 @@ mod screenshot {
             harness.run();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        drive(&mut harness);
         let image = harness.render().expect("render");
         let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
         fs::create_dir_all(&out).unwrap();
@@ -2054,6 +2257,37 @@ mod screenshot {
             select(app, &["Quarterly report for the board of directors.txt"]);
             app.reveal = app.focus_item;
         });
+    }
+
+    /// Presses at `from`, moves to `to` in steps and keeps the button down.
+    fn drag(harness: &mut Harness<'_, Explorer>, from: egui::Pos2, to: egui::Pos2) {
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        for step in 1..=8 {
+            harness.hover_at(from + (to - from) * (step as f32 / 8.0));
+            harness.run();
+        }
+    }
+
+    /// A marquee dragged from empty space in Large Icons, button still down.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn marquee_icons() {
+        shoot_driven(
+            "marquee-icons",
+            egui::vec2(900.0, 560.0),
+            |app| app.settings.view = ViewMode::LargeIcons,
+            |h| drag(h, egui::pos2(880.0, 140.0), egui::pos2(520.0, 250.0)),
+        );
+    }
+
+    /// A marquee started beside a row's name in Details.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn marquee_details() {
+        shoot_driven("marquee-details", egui::vec2(900.0, 560.0), |_| {}, |h| drag(h, egui::pos2(700.0, 150.0), egui::pos2(300.0, 260.0)));
     }
 
     /// A window small enough that both panes need classic scroll bars.

@@ -190,6 +190,38 @@ fn edge(p: &Painter, r: Rect, tl: Color32, br: Color32) {
     p.line_segment([pos2(l - 0.5, b), pos2(rr + 0.5, b)], Stroke::new(1.0, br));
 }
 
+/// A dotted outline just inside `r`, like `DrawFocusRect`: 1 pt dots on
+/// alternate points of a checkerboard, so the pattern holds still while the
+/// rectangle moves. Windows XORs the dots; black is the closest egui can do.
+pub fn focus_rect(p: &Painter, r: Rect) {
+    let (x0, y0) = (r.left().round(), r.top().round());
+    let (x1, y1) = (r.right().round() - 1.0, r.bottom().round() - 1.0);
+    if x1 < x0 || y1 < y0 {
+        return;
+    }
+    let dot = |x: f32, y: f32| {
+        if (x + y).rem_euclid(2.0) == 0.0 {
+            p.rect_filled(Rect::from_min_size(pos2(x, y), vec2(1.0, 1.0)), 0.0, TEXT);
+        }
+    };
+    let mut x = x0;
+    while x <= x1 {
+        dot(x, y0);
+        if y1 > y0 {
+            dot(x, y1);
+        }
+        x += 1.0;
+    }
+    let mut y = y0 + 1.0;
+    while y < y1 {
+        dot(x0, y);
+        if x1 > x0 {
+            dot(x1, y);
+        }
+        y += 1.0;
+    }
+}
+
 /// The etched groove between rebar bands and menu sections.
 pub fn etched_hline(ui: &mut Ui) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 2.0), Sense::hover());

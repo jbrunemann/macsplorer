@@ -9,6 +9,7 @@ pub mod fileops;
 pub mod history;
 pub mod layout;
 pub mod listing;
+pub mod marquee;
 pub mod natural;
 pub mod places;
 pub mod rename;

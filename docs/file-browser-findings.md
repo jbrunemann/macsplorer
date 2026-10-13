@@ -275,6 +275,37 @@ With 32 px images that is just `SM_CXICONSPACING` × `SM_CYICONSPACING`. Those c
 - Anything else in the slot is empty space (a click there deselects / starts a marquee). Items are
   tested in z-order and the first hit wins.
 
+**Marquee selection, observed** (`CListView::HandleMouse` 0x171a31328,
+`CLVSelectionManager::DragSelect` 0x171bba69c, `_DragSelectItem` 0x171bbbb18,
+`CLVScrollingManager::ShouldScroll` 0x171bb7cf4):
+
+- **Start.** A left press where the hit test finds no item, in a multi-select view
+  (not `LVS_SINGLESEL`), that moves past the drag threshold (`CheckForDragBeginEx`) sends
+  `LVN_MARQUEEBEGIN`; unless the parent refuses, the selection is cleared when neither Ctrl nor
+  Shift is down, then the drag starts. A press that doesn't become a drag also clears the selection
+  without Ctrl/Shift. In Details without `LVS_EX_FULLROWSELECT`, a press on a subitem column counts
+  as no item. **Inferred:** column 0 to the right of the label is empty space too (the details hit
+  test itself wasn't decoded).
+- **Band.** From the press point to the pointer, normalized. The pointer end is clamped to the
+  client rect; the start is kept in content coordinates, so it scrolls with the items. Classic
+  (not double-buffered) list views draw it with `DrawFocusRect`, the dotted XOR outline; the
+  translucent band is only for `LVS_EX_DOUBLEBUFFER`.
+- **Which items change.** On every pointer move that changes the band, each item that may lie in
+  the union of the old and new band is looked at. Its test rect is `LVIR_SELECTBOUNDS` (icon plus
+  label) shrunk by a quarter of its width and a quarter of its height on every side (in List view
+  the horizontal inset is capped; in Details with full-row select there's no inset). Only items
+  whose test rect intersected exactly one of the old and new band change: without Ctrl they become
+  "selected iff inside the new band", with Ctrl their selection flips. Items the band never crossed
+  keep their state, so Shift+drag adds to the selection and an item left behind is deselected again.
+  Modifier keys are read from each move message, not from the press.
+- **Anchor.** On a move without Ctrl or Shift, the Shift+click anchor becomes the item inside the
+  new band whose test rect's top-left corner is farthest from the pointer. Focus isn't moved.
+- **End.** Any mouse button message other than a move ends the drag and keeps the selection;
+  Escape deselects everything and ends it.
+- **Auto-scroll.** While the pointer is outside the window (or at the screen edge), the view scrolls
+  a step toward it and the band is recomputed, from a timer as well as from moves. The step size
+  and rate (`OnScrollSelectSmooth`) weren't decoded.
+
 **Label unfolding, observed** (`CLVIconView::IsItemUnfolded` 0x171a30ab4, `IsItemUnfoldedPtr`
 0x171bc1bfc): only in icon view, only while a control state flag (`0x80` in the flags at
 `+0xa8`) is set, and only for the item equal to the control's focus index. **Inferred:** the flag is
@@ -305,7 +336,7 @@ decoded. **Inferred:** comctl32 v5 (Windows 2000) used the same blends.
 | `StrCmpLogicalW` | `localizedStandardCompare:` (Finder's own natural sort), or a Rust natural-sort crate (`natord`, `lexical-sort`) if you need determinism across locales. Keep a "plain sort" setting that matches `NoStrCmpLogical`. |
 | `CViewSettings` per-folder/per-type view memory | Store view state keyed by folder path plus a "folder type" fallback (Documents/Pictures/Music/Videos/General) in your own SQLite/JSON file. Don't write `.DS_Store` files. |
 | Status bar free space | **Unverified, from Windows 2000 behavior (not traced in build 10240, whose status bar only shows the item count).** With nothing selected the first pane reads `N object(s) (Disk free space: 4.65 GB)`; with a selection it reads `N object(s) selected` and drops the free space. The value is the user-available bytes on the folder's volume (`GetDiskFreeSpaceEx`, `lpFreeBytesAvailable`), formatted with `StrFormatByteSize`. macsplorer uses `statvfs` (`f_bavail * f_frsize`) on the listing worker thread. |
-| View modes (§2.4, §2.5) | Win2000 look, so follow the ListView (§2.5): 75 × 75 slots, 32 px icon centered 2 px from the top, label 3 px below, wrapped in 71 px and folded to two lines unless focused; clicks hit the image ± 8 px or the label, not the whole slot; selected icons blended 50% (25% when the view is unfocused) toward the highlight color; spatial arrow keys. List mode is traced above but deliberately not offered. From build 10240 (§2.4): selection, focus and sort survive a mode switch. Labels use Tahoma 12 px instead of 8 pt, so rows and two-line labels come out a little taller than Win2000. View mode is per window until per-folder memory exists. |
+| View modes (§2.4, §2.5) | Win2000 look, so follow the ListView (§2.5): 75 × 75 slots, 32 px icon centered 2 px from the top, label 3 px below, wrapped in 71 px and folded to two lines unless focused; clicks hit the image ± 8 px or the label, not the whole slot; selected icons blended 50% (25% when the view is unfocused) toward the highlight color; spatial arrow keys. List mode is traced above but deliberately not offered. Marquee as traced in both views; Details uses the icon plus the label's highlight box as select bounds, the band is drawn as black dots since egui can't XOR, and auto-scroll runs while the pointer is at or past the view's top or bottom edge at a guessed 20 lines a second. From build 10240 (§2.4): selection, focus and sort survive a mode switch. Labels use Tahoma 12 px instead of 8 pt, so rows and two-line labels come out a little taller than Win2000. View mode is per window until per-folder memory exists. |
 | `CTravelLog` | `Vec<Location>` with a cursor. The back/forward dropdown menu lists entries (`_ShowBackForwardMenu`). |
 | Breadcrumb (`CBreadcrumbBar`) | Each crumb is a button with a chevron dropdown listing subfolders (`_OnDropDown`). Click empty space → edit mode with the full path (`_GoToEditMode`). Crumbs are drag sources and drop targets. Collapse overflow into a root dropdown (`_AddRootDropdownItems`). |
 | `CNscTree` change notifications | FSEvents per expanded node; enumerate in the background (`_StartBackgroundEnum`). |

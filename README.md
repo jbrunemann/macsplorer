@@ -101,6 +101,7 @@ package have it) or egui's default font is used.
 - Large Icons follows the Windows 2000 list view: 75 px slots, names wrapped under the icon and cut to two lines (the focused item shows its full name), and arrow keys that move to the nearest icon in that direction. *Explorer-derived* (comctl32 `SysListView32`).
 - Folders first, natural name sorting (`file2` before `file10`). *Explorer-derived* (`StrCmpLogicalW`); turn it off under View.
 - Click, ⌘-click and ⇧-click selection, arrow keys, double-click or Enter to open (files open in their default app).
+- **Marquee selection**: drag a dotted rectangle from empty space (in Details, anywhere beside a name) to select what it touches; ⌘ toggles items, ⇧ adds to the selection, Esc clears it, and the view scrolls when you drag past its edge. *Explorer-derived* (comctl32 `CLVSelectionManager::DragSelect`).
 - Right-click an item for **Open**, **Open With**, **Show in Finder**, **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete** and **Rename**. Right-click empty space for **Paste** and **Refresh**.
 - **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does; a move never overwrites. Cut items are drawn faded until pasted.
 - **Delete** (⌦ forward delete, or ⌘⌫) moves the selection to the Trash.
@@ -147,7 +148,7 @@ output.
 
 | Crate | Purpose |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup and the Large Icons layout. Unit-tested. |
+| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons layout and marquee selection. Unit-tested. |
 | `crates/macsplorer` | The app (egui/eframe). |
 | `tools/make-icon` | Renders the app icon and `.icns`. |
 
