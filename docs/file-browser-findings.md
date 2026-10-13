@@ -378,6 +378,30 @@ the space past the last column is drawn as one more raised, empty button out to 
 of the view state (`Explorer\Streams`, a limited MRU of folders). macsplorer deliberately keeps one
 set of widths for all folders until the window closes.
 
+### 2.7 Undo (names only, not decompiled)
+
+From the public symbols, not traced further. Each finished file operation
+adds undo records to the thread's undo manager
+(`CFileOperation::_AddUndoRootsToUndoManager` in Windows.Storage;
+`SHGetThreadUndoManager`, `CUndoManager` in shell32). The manager keeps a
+stack of units (`CCommonParentUndoUnit::_PushStack` / `_PopStack` /
+`_PeekStack`), so undo reverses the newest operation first, and its size is
+bounded by memory use (`_GetMemoryUsage`, `_GetStackSize`) rather than, as
+far as the names show, a fixed count. `CUndoNode` records per item source,
+destination and name (`_GetOpSrcFolder`, `_SetItemAndName`,
+`_CheckSameName`). The Edit menu text comes from `GetFileUndoText`
+("Undo Rename", "Undo Move", ...). The undo itself runs on a worker thread
+(`_UndoThread`).
+
+Macsplorer (`core::undo`): rename, move, copy and delete are recorded and
+undone newest first from the toolbar's Undo button, Edit > Undo <operation>
+and Cmd+Z, on a worker thread. Guesses: the stack keeps the last 10
+operations; undoing a copy moves the copies to the Trash; undoing a delete
+moves the items back from the Trash (macOS: where `trashItemAtURL` said it put
+them; Linux: the newest freedesktop Trash entry with that original path); an
+undo never replaces an item that has since taken the name, and stops at the
+first item that fails. No redo (Windows 2000 had none either).
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
@@ -388,6 +412,7 @@ set of widths for all folders until the window closes.
 | `StrCmpLogicalW` | `localizedStandardCompare:` (Finder's own natural sort), or a Rust natural-sort crate (`natord`, `lexical-sort`) if you need determinism across locales. Keep a "plain sort" setting that matches `NoStrCmpLogical`. |
 | `CViewSettings` per-folder/per-type view memory | Store view state keyed by folder path plus a "folder type" fallback (Documents/Pictures/Music/Videos/General) in your own SQLite/JSON file. Don't write `.DS_Store` files. |
 | Status bar free space | **Unverified, from Windows 2000 behavior (not traced in build 10240, whose status bar only shows the item count).** With nothing selected the first pane reads `N object(s) (Disk free space: 4.65 GB)`; with a selection it reads `N object(s) selected` and drops the free space. The value is the user-available bytes on the folder's volume (`GetDiskFreeSpaceEx`, `lpFreeBytesAvailable`), formatted with `StrFormatByteSize`. macsplorer uses `statvfs` (`f_bavail * f_frsize`) on the listing worker thread. |
+| Toolbar | The Windows 2000 standard buttons Macsplorer has: Back, Forward, Up, Folders, Refresh (not on Win2000's bar), Undo, and Views, a whole-button drop-down (`BTNS_WHOLEDROPDOWN`) with the view modes. Search, History, Move To, Copy To and Delete are left out. Icons are hand-drawn after the Win2000 ones. |
 | View modes (§2.4, §2.5) | Win2000 look, so follow the ListView (§2.5): 75 × 75 slots, 32 px icon centered 2 px from the top, label 3 px below, wrapped in 71 px and folded to two lines unless focused; clicks hit the image ± 8 px or the label, not the whole slot; selected icons blended 50% (25% when the view is unfocused) toward the highlight color; spatial arrow keys. List as traced: columns as wide as the widest name + 28 px, filled top to bottom, index arrow keys; the List view's marquee auto-scrolls at the left and right edges instead (inferred, the horizontal case wasn't traced). Marquee as traced in both views; Details uses the icon plus the label's highlight box as select bounds, the band is drawn as black dots since egui can't XOR, and auto-scroll runs while the pointer is at or past the view's top or bottom edge at a guessed 20 lines a second. From build 10240 (§2.4): selection, focus and sort survive a mode switch. Labels use Tahoma 12 px instead of 8 pt, so rows and two-line labels come out a little taller than Win2000. View mode is per window until per-folder memory exists. |
 | Column header (§2.6) | Hit test and drag as traced (`macsplorer_core::columns`), always full drag. macOS has no split-open cursor, so both divider zones use the system resize cursor. Auto-size measures the cells with macsplorer's own padding (`_ComputeColumnWidthForItem` wasn't decoded) and applies the caption + 37 px minimum. The double-click is recognized on the second release (egui), not the second press. Widths are shared by all folders and last until the window closes. |
 | `CTravelLog` | `Vec<Location>` with a cursor. The back/forward dropdown menu lists entries (`_ShowBackForwardMenu`). |

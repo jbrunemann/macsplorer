@@ -106,6 +106,7 @@ package have it) or egui's default font is used.
 - Right-click an item for **Open**, **Open With**, **Show in Finder**, **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete** and **Rename**. Right-click empty space for **Paste** and **Refresh**.
 - **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does; a move never overwrites. Cut items are drawn faded until pasted.
 - **Delete** (⌦ forward delete, or ⌘⌫) moves the selection to the Trash.
+- **Undo** (toolbar button, Edit menu or ⌘Z) reverses the last rename, move, copy or delete, up to 10 steps back. Undoing a delete restores the items from the Trash.
 - **Copy as Path** (⌘⌥C) puts the selected items' quoted full paths on the clipboard. *Explorer-derived* (`CCopyAsPathMenu`).
 - **F2 / right-click → Rename**, in place. The initial selection follows Explorer's rule (name without extension, whole name for folders, dotfiles and hidden extensions). *Explorer-derived* (`SHBeginLabelEdit`). Enter or clicking away commits, Esc cancels, `/` can't be typed.
 - Back / forward / up / refresh. Right-click back or forward for the history list.
@@ -113,8 +114,8 @@ package have it) or egui's default font is used.
 - Search box filters the current folder by name.
 - **Navigation pane tree** (modeled on Explorer's `CNscTree`): Favorites and Locations roots, folders only, natural-sorted, packages left out. Children load on background threads with a "Loading…" row; chevrons appear only on folders that have subfolders. Click a name to open it, click the chevron or double-click to expand. Arrow keys follow tree conventions (← collapses or goes to the parent, → expands or goes to the first child). Refresh reloads expanded folders.
 - **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
-- Menus: File › Close; Edit › Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
-- Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane.
+- Menus: File › Close; Edit › Undo, Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
+- Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane; **Views** picks Large Icons, List or Details.
 - Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name.
 
 | Shortcut | Action |
@@ -130,12 +131,13 @@ package have it) or egui's default font is used.
 | ⌘X · ⌘C · ⌘V | Cut · Copy · Paste |
 | ⌘⌥C | Copy as Path |
 | ⌦ · ⌘⌫ | Move to Trash |
+| ⌘Z | Undo |
 
 ## Not yet
 
 File watching (FSEvents, so the list updates live), drag and drop, window persistence, pinning favorites, multiple windows and tabs.
 For file operations: no replace/skip dialog on name conflicts (copies get a
-"- Copy" name, moves stop with an error), no progress window, no undo and no
+"- Copy" name, moves stop with an error), no progress window, no redo and no
 Shift+Delete. Small Icons and Thumbnails views are still to come.
 
 ## How it's built

@@ -310,6 +310,31 @@ pub fn drop_arrow_button(ui: &mut Ui, enabled: bool) -> Response {
     resp
 }
 
+/// A button that only opens a menu, icon and ▾ in one bevel (the toolbar's
+/// Views button, `BTNS_WHOLEDROPDOWN`). `name` is for accessibility.
+pub fn tool_dropdown(ui: &mut Ui, icon: Icon, name: &str) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(6.0 + 16.0 + 4.0 + 6.0 + 4.0, 24.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    let p = ui.painter();
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    let down = open || resp.is_pointer_button_down_on();
+    if down {
+        bevel(p, rect, Bevel::SunkenThin);
+    } else if resp.hovered() {
+        bevel(p, rect, Bevel::RaisedThin);
+    }
+    let offset = if down { vec2(1.0, 1.0) } else { Vec2::ZERO };
+    let icon_rect = Rect::from_min_size(pos2(rect.left() + 6.0, rect.center().y - 8.0) + offset, vec2(16.0, 16.0));
+    paint_icon(p, icon_rect, icon, true);
+    let c = pos2(icon_rect.right() + 6.0, rect.center().y) + offset;
+    p.add(egui::Shape::convex_polygon(
+        vec![pos2(c.x - 3.0, c.y - 1.0), pos2(c.x + 3.0, c.y - 1.0), pos2(c.x, c.y + 2.0)],
+        TEXT,
+        Stroke::NONE,
+    ));
+    resp
+}
+
 /// A tiny close box used on pane headers.
 pub fn close_box(ui: &mut Ui) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::click());
@@ -483,6 +508,8 @@ pub enum Icon {
     Up,
     Refresh,
     Folders,
+    Undo,
+    Views,
     Go,
     Folder,
     FolderOpen,
@@ -550,6 +577,24 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
             p.line_segment([at(3.0, 5.0), at(3.0, 10.5)], st);
             p.line_segment([at(3.0, 10.5), at(5.0, 10.5)], st);
         }
+        Icon::Undo => {
+            // A hooked arrow bending back to the left.
+            let c = gray(TEXT);
+            if !enabled {
+                undo_arrow(p, r, vec2(s, s), HIGHLIGHT);
+            }
+            undo_arrow(p, r, Vec2::ZERO, c);
+        }
+        Icon::Views => {
+            // A window holding a few large icons, as on the Win2000 button.
+            let frame = Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0));
+            p.rect_filled(frame, 0.0, WINDOW);
+            p.rect_stroke(frame, 0.0, Stroke::new(1.0, gray(DARK)), egui::StrokeKind::Inside);
+            for (x, y) in [(3.0, 4.0), (9.0, 4.0), (3.0, 9.0), (9.0, 9.0)] {
+                p.rect_filled(Rect::from_min_max(at(x, y), at(x + 3.0, y + 3.0)), 0.0, gray(CAPTION));
+                p.hline(at(x + 3.5, 0.0).x..=at(x + 5.0, 0.0).x, at(0.0, y + 1.5).y, Stroke::new(1.0, gray(SHADOW)));
+            }
+        }
         Icon::Folder | Icon::FolderOpen => folder(p, r, enabled),
         Icon::App => {
             p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, WINDOW);
@@ -605,6 +650,22 @@ fn arrow_polygon(p: &Painter, pts: &[Pos2], fill: Color32, stroke: Color32) {
     }
     p.add(mesh);
     p.add(PathShape::closed_line(pts.to_vec(), PathStroke::new(1.0, stroke)));
+}
+
+/// The Undo arrow: an arc over the top, its head pointing down-left.
+fn undo_arrow(p: &Painter, r: Rect, shift: Vec2, color: Color32) {
+    let s = r.width() / 16.0;
+    let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s) + shift;
+    let center = at(8.5, 9.0);
+    let arc: Vec<Pos2> = (0..=12)
+        .map(|i| {
+            // From the right side (0°) up over the top to the left (≈200°).
+            let t = -std::f32::consts::PI * 1.1 * i as f32 / 12.0;
+            center + vec2(t.cos(), t.sin()) * 5.0 * s
+        })
+        .collect();
+    p.add(PathShape::line(arc, PathStroke::new(1.6 * s, color)));
+    p.add(egui::Shape::convex_polygon(vec![at(0.5, 8.0), at(7.0, 8.5), at(3.0, 13.5)], color, Stroke::NONE));
 }
 
 fn folder(p: &Painter, r: Rect, enabled: bool) {

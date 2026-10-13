@@ -16,3 +16,4 @@ pub mod places;
 pub mod rename;
 pub mod seti;
 pub mod tree;
+pub mod undo;

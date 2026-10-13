@@ -62,16 +62,21 @@ pub fn move_into(src: &Path, dir: &Path) -> io::Result<PathBuf> {
     if src.symlink_metadata()?.is_dir() && dir.starts_with(src) {
         return Err(io::Error::other("a folder can't be moved into itself"));
     }
-    match rename_no_replace(src, &dest) {
-        Ok(()) => Ok(dest),
+    move_to(src, &dest)?;
+    Ok(dest)
+}
+
+/// Moves `src` to the path `dest`, across volumes too, never replacing.
+pub fn move_to(src: &Path, dest: &Path) -> io::Result<()> {
+    match rename_no_replace(src, dest) {
+        Ok(()) => Ok(()),
         // Another volume: copy, then remove the original.
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
             if dest.symlink_metadata().is_ok() {
                 return Err(io::Error::from(io::ErrorKind::AlreadyExists));
             }
-            copy_tree(src, &dest)?;
-            if src.symlink_metadata()?.is_dir() { std::fs::remove_dir_all(src) } else { std::fs::remove_file(src) }?;
-            Ok(dest)
+            copy_tree(src, dest)?;
+            if src.symlink_metadata()?.is_dir() { std::fs::remove_dir_all(src) } else { std::fs::remove_file(src) }
         }
         Err(e) => Err(e),
     }

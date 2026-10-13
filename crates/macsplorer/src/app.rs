@@ -27,13 +27,14 @@ use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
+use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
 use crate::icons::{FileIcons, IconState};
 use crate::open_with;
 use crate::platform;
 use crate::scrollbar::{self, Bars};
 use crate::theme::{self, Bevel, Icon};
-use crate::trash::move_to_trash;
+use crate::trash::SystemTrash;
 
 const LIST_ROW_HEIGHT: f32 = 17.0;
 const LIST_HEADER_HEIGHT: f32 = 18.0;
@@ -128,6 +129,8 @@ enum Action {
     ToggleFolders,
     SelectAll,
     InvertSelection,
+    Undo,
+    SetView(ViewMode),
 }
 
 /// What Cut or Copy remembered. The paths' text is also put on the system
@@ -140,13 +143,15 @@ struct Clipboard {
     token: String,
 }
 
-/// The outcome of a paste or delete that ran on a worker thread.
+/// The outcome of a paste, delete or undo that ran on a worker thread.
 struct OpDone {
     /// Folders whose contents changed.
     dirs: Vec<PathBuf>,
     /// Items to select once they show up in the open folder.
     select: Vec<PathBuf>,
     error: Option<String>,
+    /// What Undo reverses, for the part that got done.
+    undo: Option<UndoOp>,
 }
 
 /// Which pane receives arrow keys.
@@ -214,9 +219,10 @@ pub struct Explorer {
     eject_tx: Sender<(PathBuf, Result<(), String>)>,
     eject_rx: Receiver<(PathBuf, Result<(), String>)>,
     clipboard: Option<Clipboard>,
-    /// Paste and delete run on worker threads and report back here.
+    /// Paste, delete and undo run on worker threads and report back here.
     op_tx: Sender<OpDone>,
     op_rx: Receiver<OpDone>,
+    undo: UndoStack,
     pending_select: BTreeSet<PathBuf>,
     focus: Pane,
     /// Set while navigating from a tree click, so the clicked row stays
@@ -272,6 +278,7 @@ impl Explorer {
             clipboard: None,
             op_tx,
             op_rx,
+            undo: UndoStack::default(),
             pending_select: BTreeSet::new(),
             focus: Pane::List,
             navigating_from_tree: false,
@@ -374,14 +381,20 @@ impl Explorer {
         self.status = Some(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len()));
         let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let mut done = OpDone { dirs: vec![dest.clone()], select: Vec::new(), error: None };
+            let mut done = OpDone { dirs: vec![dest.clone()], select: Vec::new(), error: None, undo: None };
+            let (mut moved, mut copies) = (Vec::new(), Vec::new());
             for src in &paths {
                 let result = if cut { move_into(src, &dest) } else { copy_into(src, &dest) };
                 match result {
                     Ok(new) => {
-                        done.select.push(new);
+                        done.select.push(new.clone());
                         if cut && let Some(parent) = src.parent() {
                             done.dirs.push(parent.to_path_buf());
+                        }
+                        if !cut {
+                            copies.push(new);
+                        } else if new != *src {
+                            moved.push((src.clone(), new));
                         }
                     }
                     Err(e) => {
@@ -395,6 +408,7 @@ impl Explorer {
                     }
                 }
             }
+            done.undo = Some(if cut { UndoOp::Move(moved) } else { UndoOp::Copy(copies) });
             if tx.send(done).is_ok() {
                 ctx.request_repaint();
             }
@@ -411,12 +425,41 @@ impl Explorer {
         let dir = self.current().to_path_buf();
         let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let mut done = OpDone { dirs: vec![dir], select: Vec::new(), error: None };
+            let mut done = OpDone { dirs: vec![dir], select: Vec::new(), error: None, undo: None };
+            let mut trashed = Vec::new();
             for path in &paths {
-                if let Err(e) = move_to_trash(path) {
+                match SystemTrash.trash(path) {
+                    Ok(t) => trashed.push(t),
+                    Err(e) => {
+                        let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                        done.error = Some(format!("Couldn't delete \"{name}\": {e}"));
+                        break;
+                    }
+                }
+            }
+            done.undo = Some(UndoOp::Delete(trashed));
+            if tx.send(done).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// Reverses the newest undoable operation on a worker thread.
+    fn undo_last(&mut self) {
+        let Some(op) = self.undo.pop() else { return };
+        self.rename = None;
+        self.status = Some(format!("Undoing {}...", op.label().to_lowercase()));
+        let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let mut done = OpDone { dirs: op.dirs(), select: Vec::new(), error: None, undo: None };
+            match op.undo(&SystemTrash) {
+                Ok(back) => done.select = back,
+                Err((path, e)) => {
                     let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                    done.error = Some(format!("Couldn't delete \"{name}\": {e}"));
-                    break;
+                    done.error = Some(match e.kind() {
+                        std::io::ErrorKind::AlreadyExists => format!("Couldn't undo: there is already an item named \"{name}\"."),
+                        _ => format!("Couldn't undo {} of \"{name}\": {e}", op.label().to_lowercase()),
+                    });
                 }
             }
             if tx.send(done).is_ok() {
@@ -428,6 +471,9 @@ impl Explorer {
     fn poll_ops(&mut self) {
         while let Ok(done) = self.op_rx.try_recv() {
             self.status = done.error;
+            if let Some(op) = done.undo {
+                self.undo.push(op);
+            }
             let current = self.current().to_path_buf();
             if done.dirs.contains(&current) {
                 self.pending_select = done.select.iter().filter(|p| p.parent() == Some(current.as_path())).cloned().collect();
@@ -653,6 +699,7 @@ impl Explorer {
         match rename_no_replace(&r.path, &target) {
             Ok(()) => {
                 self.status = None;
+                self.undo.push(UndoOp::Rename { from: r.path.clone(), to: target.clone() });
                 self.reload();
                 let loads = self.tree.refresh_path(self.history.current());
                 self.load(loads);
@@ -764,6 +811,12 @@ impl Explorer {
                         self.focus = Pane::List;
                     }
                 }
+                Action::Undo => self.undo_last(),
+                Action::SetView(mode) => {
+                    self.settings.view = mode;
+                    // Keep the focused item in sight across the switch.
+                    self.reveal = self.focus_item;
+                }
                 Action::SelectAll => {
                     self.focus = Pane::List;
                     self.selection = visible.iter().map(|&i| self.entries[i].path.clone()).collect();
@@ -807,6 +860,9 @@ impl Explorer {
             let pasted = i.events.iter().any(|e| matches!(e, egui::Event::Paste(text) if self.clipboard.as_ref().is_some_and(|c| &c.token == text)));
             if pasted {
                 actions.push(Action::Paste(None));
+            }
+            if cmd && !i.modifiers.shift && i.key_pressed(Key::Z) {
+                actions.push(Action::Undo);
             }
             if in_list && (i.key_pressed(Key::Delete) || (cmd && i.key_pressed(Key::Backspace))) {
                 actions.push(Action::Delete);
@@ -898,6 +954,11 @@ impl Explorer {
                 }
             });
             ui.menu_button("Edit", |ui| {
+                let undo = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
+                if ui.add_enabled(self.undo.peek().is_some(), egui::Button::new(undo)).clicked() {
+                    actions.push(Action::Undo);
+                }
+                ui.separator();
                 let has_selection = !self.selection.is_empty();
                 if ui.add_enabled(has_selection, egui::Button::new("Cut")).clicked() {
                     actions.push(Action::Cut);
@@ -930,13 +991,7 @@ impl Explorer {
                     }
                 });
                 ui.separator();
-                for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::List, "List"), (ViewMode::Details, "Details")] {
-                    if ui.radio_value(&mut self.settings.view, mode, label).clicked() {
-                        // Keep the focused item in sight across the switch.
-                        self.reveal = self.focus_item;
-                        ui.close();
-                    }
-                }
+                view_choices(ui, self.settings.view, actions);
                 ui.separator();
                 let mut changed = false;
                 changed |= ui.checkbox(&mut self.settings.show_extensions, "File name extensions").changed();
@@ -1007,6 +1062,16 @@ impl Explorer {
             if theme::tool_button(ui, Icon::Refresh, Some("Refresh"), true).on_hover_text(format!("Refresh ({}R)", platform::CMD)).clicked() {
                 actions.push(Action::Refresh);
             }
+            theme::etched_vline(ui, 22.0);
+            let undo = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
+            let undo_button = theme::tool_button(ui, Icon::Undo, None, self.undo.peek().is_some());
+            if undo_button.on_hover_text(format!("{undo} ({}Z)", platform::CMD)).clicked() {
+                actions.push(Action::Undo);
+            }
+            theme::etched_vline(ui, 22.0);
+            // Windows 2000's Views button is all drop-down: a click anywhere opens the menu.
+            let views = theme::tool_dropdown(ui, Icon::Views, "Views").on_hover_text("Views");
+            egui::Popup::menu(&views).show(|ui| view_choices(ui, self.settings.view, actions));
         });
     }
 
@@ -2308,6 +2373,16 @@ fn place_label(p: &Path) -> String {
     p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
+/// The view modes as radio items, for the View menu and the Views button.
+fn view_choices(ui: &mut Ui, current: ViewMode, actions: &mut Vec<Action>) {
+    for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::List, "List"), (ViewMode::Details, "Details")] {
+        if ui.radio(current == mode, label).clicked() {
+            actions.push(Action::SetView(mode));
+            ui.close();
+        }
+    }
+}
+
 fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
     match (input.strip_prefix('~'), home) {
         (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
@@ -2393,6 +2468,29 @@ mod clipboard {
             thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(app.status.is_none(), "{:?}", app.status);
+    }
+
+    #[test]
+    fn undo_reverses_rename_and_move() {
+        let (mut app, dir) = explorer("undo");
+        fs::rename(dir.join("a.txt"), dir.join("b.txt")).unwrap();
+        app.undo.push(UndoOp::Rename { from: dir.join("a.txt"), to: dir.join("b.txt") });
+        fs::create_dir(dir.join("c")).unwrap();
+        app.reload();
+        app.finish_listing();
+        app.selection = BTreeSet::from([dir.join("c")]);
+        app.apply(vec![Action::Cut, Action::Paste(Some(dir.join("sub")))], &[]);
+        wait(&mut app);
+        assert!(dir.join("sub/c").exists());
+        assert_eq!(app.undo.peek().map(UndoOp::label), Some("Move"));
+        app.apply(vec![Action::Undo], &[]);
+        wait(&mut app);
+        assert!(dir.join("c").exists() && !dir.join("sub/c").exists());
+        app.apply(vec![Action::Undo], &[]);
+        wait(&mut app);
+        assert!(dir.join("a.txt").exists() && !dir.join("b.txt").exists());
+        assert!(app.undo.peek().is_none());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2578,6 +2676,22 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn column_resize() {
         shoot_driven("column-resize", egui::vec2(900.0, 560.0), |_| {}, |h| drag(h, egui::pos2(526.0, 111.0), egui::pos2(400.0, 140.0)));
+    }
+
+    /// Undo enabled after a rename, and the Views menu open.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn views_menu() {
+        shoot_driven(
+            "views-menu",
+            egui::vec2(700.0, 300.0),
+            |app| app.undo.push(UndoOp::Rename { from: PathBuf::from("/a"), to: PathBuf::from("/b") }),
+            |h| {
+                use egui_kittest::kittest::Queryable;
+                h.get_by_label("Views").click();
+                h.run();
+            },
+        );
     }
 
     /// A window small enough that both panes need classic scroll bars.
