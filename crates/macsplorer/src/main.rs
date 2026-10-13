@@ -1,8 +1,10 @@
 mod app;
 mod icons;
+mod locale;
 mod native_icon;
 mod open_with;
 mod platform;
+mod properties;
 mod scrollbar;
 mod theme;
 mod trash;
@@ -10,6 +12,7 @@ mod trash;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    locale::install();
     let start = std::env::args_os()
         .nth(1)
         .map(std::path::PathBuf::from)

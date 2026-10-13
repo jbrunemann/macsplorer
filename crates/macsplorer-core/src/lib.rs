@@ -13,6 +13,7 @@ pub mod listing;
 pub mod marquee;
 pub mod natural;
 pub mod places;
+pub mod properties;
 pub mod rename;
 pub mod seti;
 pub mod tree;

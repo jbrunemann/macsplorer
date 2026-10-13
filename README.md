@@ -103,10 +103,12 @@ package have it) or egui's default font is used.
 - Folders first, natural name sorting (`file2` before `file10`). *Explorer-derived* (`StrCmpLogicalW`); turn it off under View.
 - Click, ⌘-click and ⇧-click selection, arrow keys, double-click or Enter to open (files open in their default app).
 - **Marquee selection**: drag a dotted rectangle from empty space (in Details, anywhere beside a name) to select what it touches; ⌘ toggles items, ⇧ adds to the selection, Esc clears it, and the view scrolls when you drag past its edge. *Explorer-derived* (comctl32 `CLVSelectionManager::DragSelect`).
-- Right-click an item for **Open**, **Open With**, **Show in Finder**, **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete** and **Rename**. Right-click empty space for **Paste** and **Refresh**.
+- Right-click an item for **Open**, **Open With**, **Show in Finder**, **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete**, **Rename** and **Properties**. Right-click empty space for **Paste**, **Refresh** and **Properties** of the open folder.
 - **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does; a move never overwrites. Cut items are drawn faded until pasted.
 - **Delete** (⌦ forward delete, or ⌘⌫) moves the selection to the Trash.
 - **Undo** (toolbar button, Edit menu or ⌘Z) reverses the last rename, move, copy or delete, up to 10 steps back. Undoing a delete restores the items from the Trash.
+- **Properties** (⌘I, File menu or right-click): the Windows 2000 General page in its own window, with name (editable, renames on OK or Apply), type (Finder's Kind, e.g. "Microsoft Excel Workbook"), location, size, and for folders the number of files and folders inside, counted in the background. Files also show created, modified and accessed dates, folders their created date. *Explorer-derived* (shell32 `CFilePropSheetPage`).
+- Dates and numbers follow the system locale (macOS Language & Region settings), in Properties, the Modified column and the status bar.
 - **Copy as Path** (⌘⌥C) puts the selected items' quoted full paths on the clipboard. *Explorer-derived* (`CCopyAsPathMenu`).
 - **F2 / right-click → Rename**, in place. The initial selection follows Explorer's rule (name without extension, whole name for folders, dotfiles and hidden extensions). *Explorer-derived* (`SHBeginLabelEdit`). Enter or clicking away commits, Esc cancels, `/` can't be typed.
 - Back / forward / up / refresh. Right-click back or forward for the history list.
@@ -114,7 +116,7 @@ package have it) or egui's default font is used.
 - Search box filters the current folder by name.
 - **Navigation pane tree** (modeled on Explorer's `CNscTree`): Favorites and Locations roots, folders only, natural-sorted, packages left out. Children load on background threads with a "Loading…" row; chevrons appear only on folders that have subfolders. Click a name to open it, click the chevron or double-click to expand. Arrow keys follow tree conventions (← collapses or goes to the parent, → expands or goes to the first child). Refresh reloads expanded folders.
 - **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
-- Menus: File › Close; Edit › Undo, Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
+- Menus: File › Properties, Close; Edit › Undo, Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
 - Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane; **Views** picks Large Icons, List or Details.
 - Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name.
 
@@ -132,6 +134,7 @@ package have it) or egui's default font is used.
 | ⌘⌥C | Copy as Path |
 | ⌦ · ⌘⌫ | Move to Trash |
 | ⌘Z | Undo |
+| ⌘I | Properties |
 
 ## Not yet
 
@@ -150,7 +153,7 @@ output.
 
 | Crate | Purpose |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons and List layouts, marquee selection and column header resizing. Unit-tested. |
+| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons and List layouts, marquee selection, column header resizing and the Properties folder size walk. Unit-tested. |
 | `crates/macsplorer` | The app (egui/eframe). |
 | `tools/make-icon` | Renders the app icon and `.icns`. |
 

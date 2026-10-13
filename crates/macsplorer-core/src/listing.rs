@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use crate::natural::{natural_cmp, plain_cmp};
@@ -133,7 +134,7 @@ pub fn has_custom_icon(_path: &Path) -> bool {
     false
 }
 
-pub(crate) fn is_package_name(name: &str) -> bool {
+pub fn is_package_name(name: &str) -> bool {
     Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
@@ -208,22 +209,54 @@ pub fn free_space(path: &Path) -> Option<u64> {
 /// Formats a byte count the way Explorer's Size column does: whole KB,
 /// rounded up, so a 1-byte file shows as "1 KB".
 pub fn format_size(bytes: u64) -> String {
-    let kb = bytes.div_ceil(1024);
-    let digits = kb.to_string();
+    format!("{} KB", group_digits(bytes.div_ceil(1024)))
+}
+
+/// The system's thousands and decimal separators, set once at startup by
+/// [`set_number_format`]. Windows takes both from the user locale
+/// (`AddCommas64` and `StrFormatByteSize` use `GetNumberFormat`).
+struct NumberFormat {
+    group: String,
+    decimal: String,
+}
+
+static NUMBER_FORMAT: OnceLock<NumberFormat> = OnceLock::new();
+
+/// Uses these separators for every number shown from now on. Only the first
+/// call counts; without one, numbers use "," and ".".
+pub fn set_number_format(group: &str, decimal: &str) {
+    let _ = NUMBER_FORMAT.set(NumberFormat { group: group.to_owned(), decimal: decimal.to_owned() });
+}
+
+fn separators() -> (&'static str, &'static str) {
+    NUMBER_FORMAT.get().map_or((",", "."), |f| (f.group.as_str(), f.decimal.as_str()))
+}
+
+/// A number with thousands separators, like shell32's `AddCommas64`: "1,624".
+pub fn group_digits(n: u64) -> String {
+    group_digits_with(n, separators().0)
+}
+
+fn group_digits_with(n: u64, separator: &str) -> String {
+    let digits = n.to_string();
     let mut grouped = String::new();
     for (i, c) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
+            grouped.push_str(separator);
         }
         grouped.push(c);
     }
-    format!("{grouped} KB")
+    grouped
 }
 
 /// Formats a byte count like Windows' `StrFormatByteSize`, used by the
 /// status bar: "512 bytes", "1.00 KB", "12.3 KB", "123 KB", "1.20 MB".
 /// Three significant digits, truncated rather than rounded.
 pub fn format_byte_size(bytes: u64) -> String {
+    format_byte_size_with(bytes, separators().1)
+}
+
+fn format_byte_size_with(bytes: u64, decimal: &str) -> String {
     if bytes < 1024 {
         return format!("{bytes} bytes");
     }
@@ -237,7 +270,8 @@ pub fn format_byte_size(bytes: u64) -> String {
     let decimals = if value < 10.0 { 2 } else if value < 100.0 { 1 } else { 0 };
     let scale = 10f64.powi(decimals);
     let truncated = (value * scale).floor() / scale;
-    format!("{truncated:.prec$} {}", units[unit], prec = decimals as usize)
+    let number = format!("{truncated:.prec$}", prec = decimals as usize).replace('.', decimal);
+    format!("{number} {}", units[unit])
 }
 
 #[cfg(test)]
@@ -359,5 +393,14 @@ mod tests {
         assert_eq!(format_byte_size(1_023_999), "999 KB");
         assert_eq!(format_byte_size(1_258_291), "1.19 MB");
         assert_eq!(format_byte_size(5_000_000_000), "4.65 GB");
+    }
+
+    #[test]
+    fn locale_separators() {
+        assert_eq!(group_digits_with(221_664_650, "."), "221.664.650");
+        assert_eq!(group_digits_with(1_624, "\u{a0}"), "1\u{a0}624");
+        assert_eq!(group_digits_with(999, "."), "999");
+        assert_eq!(format_byte_size_with(1_258_291, ","), "1,19 MB");
+        assert_eq!(format_byte_size_with(1_023_999, ","), "999 KB");
     }
 }

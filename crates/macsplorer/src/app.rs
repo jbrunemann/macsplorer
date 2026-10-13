@@ -8,7 +8,6 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
-use chrono::{DateTime, Local};
 use eframe::egui;
 use egui::text::CCursor;
 use egui::text_selection::CCursorRange;
@@ -30,8 +29,10 @@ use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_
 use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
 use crate::icons::{FileIcons, IconState};
+use crate::locale;
 use crate::open_with;
 use crate::platform;
+use crate::properties::{Outcome, Properties};
 use crate::scrollbar::{self, Bars};
 use crate::theme::{self, Bevel, Icon};
 use crate::trash::SystemTrash;
@@ -131,6 +132,8 @@ enum Action {
     InvertSelection,
     Undo,
     SetView(ViewMode),
+    /// Open the Properties dialog for an item or folder.
+    Properties(PathBuf),
 }
 
 /// What Cut or Copy remembered. The paths' text is also put on the system
@@ -231,6 +234,8 @@ pub struct Explorer {
     icons: FileIcons,
     /// The "Open With" apps for the file whose context menu is open.
     open_with: Option<(PathBuf, Vec<PathBuf>)>,
+    /// Open Properties dialogs, each in its own window.
+    properties: Vec<Properties>,
     ctx: egui::Context,
     home: Option<PathBuf>,
 }
@@ -284,6 +289,7 @@ impl Explorer {
             navigating_from_tree: false,
             icons: FileIcons::new(),
             open_with: None,
+            properties: Vec::new(),
             ctx,
             home: dirs::home_dir(),
         };
@@ -691,25 +697,87 @@ impl Explorer {
         if name == entry.name {
             return;
         }
-        if let Err(e) = validate_name(&name) {
-            self.status = Some(e.to_string());
-            return;
+        if let Some(target) = self.rename_item(&r.path, &name) {
+            self.selection = BTreeSet::from([target]);
         }
-        let target = r.path.with_file_name(&name);
-        match rename_no_replace(&r.path, &target) {
+    }
+
+    /// Renames `path` to `name` in its folder, with undo. Failures go to the
+    /// status bar. Returns the new path.
+    fn rename_item(&mut self, path: &Path, name: &str) -> Option<PathBuf> {
+        if let Err(e) = validate_name(name) {
+            self.status = Some(e.to_string());
+            return None;
+        }
+        let target = path.with_file_name(name);
+        match rename_no_replace(path, &target) {
             Ok(()) => {
                 self.status = None;
-                self.undo.push(UndoOp::Rename { from: r.path.clone(), to: target.clone() });
+                self.undo.push(UndoOp::Rename { from: path.to_path_buf(), to: target.clone() });
                 self.reload();
                 let loads = self.tree.refresh_path(self.history.current());
                 self.load(loads);
-                self.selection = BTreeSet::from([target]);
+                if self.selection.remove(path) {
+                    self.selection.insert(target.clone());
+                }
+                // The open folder (or one above it) was renamed from its Properties.
+                if let Ok(rest) = self.current().strip_prefix(path) {
+                    let moved = target.join(rest);
+                    self.navigate(moved);
+                }
+                Some(target)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 self.status = Some(format!("There is already an item named \"{name}\" here."));
+                None
             }
-            Err(e) => self.status = Some(format!("Couldn't rename: {e}")),
+            Err(e) => {
+                self.status = Some(format!("Couldn't rename: {e}"));
+                None
+            }
         }
+    }
+
+    // ---- Properties dialogs --------------------------------------------
+
+    /// What ⌘I and File > Properties show: in the item view the focused item
+    /// if it's selected, else the first selected one, else the open folder.
+    fn properties_target(&self, in_list: bool) -> PathBuf {
+        let focused = self.focus_item.and_then(|i| self.entries.get(i)).map(|e| &e.path).filter(|p| self.selection.contains(*p));
+        match focused.or_else(|| self.selection.first()) {
+            Some(path) if in_list => path.clone(),
+            _ => self.current().to_path_buf(),
+        }
+    }
+
+    fn open_properties(&mut self, path: PathBuf) {
+        let entry = self.entries.iter().find(|e| e.path == path).cloned().unwrap_or_else(|| Properties::folder_entry(&path));
+        // The root and mounted volumes can't be renamed from here.
+        let editable = path.parent().is_some() && !is_ejectable(&path);
+        self.properties.push(Properties::new(&self.ctx, entry, self.settings.show_extensions, editable));
+    }
+
+    /// Draws the open dialogs and carries out their OK, Cancel and Apply.
+    fn show_properties(&mut self, ctx: &egui::Context) {
+        let mut dialogs = std::mem::take(&mut self.properties);
+        dialogs.retain_mut(|dialog| match dialog.show(ctx, &mut self.icons) {
+            Outcome::Keep => true,
+            Outcome::Close => false,
+            Outcome::Rename { close } => {
+                let path = dialog.path().to_path_buf();
+                match self.rename_item(&path, &dialog.new_name()) {
+                    Some(target) => {
+                        dialog.renamed(target);
+                        !close
+                    }
+                    // Like a failed PSN_APPLY, the dialog stays open.
+                    None => true,
+                }
+            }
+        });
+        // Dialogs opened while these were drawn come after them.
+        dialogs.append(&mut self.properties);
+        self.properties = dialogs;
     }
 
     fn apply(&mut self, actions: Vec<Action>, visible: &[usize]) {
@@ -812,6 +880,7 @@ impl Explorer {
                     }
                 }
                 Action::Undo => self.undo_last(),
+                Action::Properties(path) => self.open_properties(path),
                 Action::SetView(mode) => {
                     self.settings.view = mode;
                     // Keep the focused item in sight across the switch.
@@ -869,6 +938,11 @@ impl Explorer {
             }
             if in_list && i.key_pressed(Key::F2) {
                 actions.push(Action::BeginRename);
+            }
+            // Finder's Get Info key (Explorer's is Alt+Enter): the focused
+            // item if it's selected, else the first selected, else the folder.
+            if cmd && i.key_pressed(Key::I) {
+                actions.push(Action::Properties(self.properties_target(in_list)));
             }
             if in_list && i.key_pressed(Key::Enter) && let Some(p) = self.selection.first() {
                 actions.push(Action::Open(p.clone()));
@@ -949,6 +1023,10 @@ impl Explorer {
     fn menu_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
+                if ui.button("Properties").clicked() {
+                    actions.push(Action::Properties(self.properties_target(self.focus == Pane::List)));
+                }
+                ui.separator();
                 if ui.button("Close").clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -1233,6 +1311,7 @@ impl Explorer {
         let header_hit = self.header_input(ui, header_rect, visible);
         let focused = self.focus == Pane::List && window_focused(ui);
         let can_paste = self.clipboard.is_some();
+        let folder = self.current().to_path_buf();
         let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("details-menu");
@@ -1254,7 +1333,7 @@ impl Explorer {
             }
             actions.push(Action::Focus(Pane::List));
         }
-        bg.context_menu(|ui| background_menu(ui, can_paste, actions));
+        bg.context_menu(|ui| background_menu(ui, &folder, can_paste, actions));
 
         let header = |ui: &mut Ui, column: usize, sort_column: SortColumn, right: bool, actions: &mut Vec<Action>| {
             let label = COLUMN_CAPTIONS[column];
@@ -1414,7 +1493,7 @@ impl Explorer {
                     }
                     resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                         Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
-                        None => background_menu(ui, can_paste, actions),
+                        None => background_menu(ui, &folder, can_paste, actions),
                     });
                 });
             })
@@ -1534,6 +1613,7 @@ impl Explorer {
         }
         let focused = self.focus == Pane::List && window_focused(ui);
         let can_paste = self.clipboard.is_some();
+        let folder = self.current().to_path_buf();
         let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let font = egui::TextStyle::Body.resolve(ui.style());
@@ -1634,7 +1714,7 @@ impl Explorer {
                 item_clicks(ui, &resp, hit.map(|p| &entries[visible[p]]), hit.map(|p| visible[p]), selection, menu_id, actions);
                 resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                     Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
-                    None => background_menu(ui, can_paste, actions),
+                    None => background_menu(ui, &folder, can_paste, actions),
                 });
             });
         bars.end(ui, &out);
@@ -1677,6 +1757,7 @@ impl Explorer {
         }
         let focused = self.focus == Pane::List && window_focused(ui);
         let can_paste = self.clipboard.is_some();
+        let folder = self.current().to_path_buf();
         let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("list-menu");
@@ -1772,7 +1853,7 @@ impl Explorer {
                 item_clicks(ui, &resp, hit.map(|p| &entries[visible[p]]), hit.map(|p| visible[p]), selection, menu_id, actions);
                 resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                     Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
-                    None => background_menu(ui, can_paste, actions),
+                    None => background_menu(ui, &folder, can_paste, actions),
                 });
             });
         bars.end(ui, &out);
@@ -1868,6 +1949,8 @@ impl eframe::App for Explorer {
             .show(ui, |ui| self.item_view(ui, &visible, &mut actions));
 
         self.apply(actions, &visible);
+        let ctx = ui.ctx().clone();
+        self.show_properties(&ctx);
     }
 }
 
@@ -1929,16 +2012,24 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
     if ui.button("Rename").clicked() {
         actions.push(Action::BeginRename);
     }
+    ui.separator();
+    if ui.button("Properties").clicked() {
+        actions.push(Action::Properties(entry.path.clone()));
+    }
 }
 
 /// The context menu for empty space in the item view.
-fn background_menu(ui: &mut Ui, can_paste: bool, actions: &mut Vec<Action>) {
+fn background_menu(ui: &mut Ui, folder: &Path, can_paste: bool, actions: &mut Vec<Action>) {
     if ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
         actions.push(Action::Paste(None));
     }
     ui.separator();
     if ui.button("Refresh").clicked() {
         actions.push(Action::Refresh);
+    }
+    ui.separator();
+    if ui.button("Properties").clicked() {
+        actions.push(Action::Properties(folder.to_path_buf()));
     }
 }
 
@@ -2136,7 +2227,7 @@ fn rename_editor(ui: &mut Ui, r: &mut RenameState, wrapping: bool, actions: &mut
 /// Returns the highlight box.
 /// The details view's Modified cell.
 fn modified_text(entry: &Entry) -> Option<String> {
-    entry.modified.map(|t| DateTime::<Local>::from(t).format("%d/%m/%Y %H:%M").to_string())
+    entry.modified.map(locale::short_date_time)
 }
 
 fn selectable_name(ui: &mut Ui, text: &str, selected: bool, focused: bool) -> egui::Rect {
@@ -2313,6 +2404,10 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
         }
         if is_ejectable(&row.key.path) && ui.button("Eject").clicked() {
             actions.push(Action::Eject(row.key.path.clone()));
+        }
+        ui.separator();
+        if ui.button("Properties").clicked() {
+            actions.push(Action::Properties(row.key.path.clone()));
         }
     });
 }
@@ -2537,11 +2632,21 @@ mod screenshot {
     use egui_kittest::Harness;
     use std::fs;
 
+    /// Built once per run: the tests run in parallel and share it.
     fn fixture() -> PathBuf {
+        static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        DIR.get_or_init(build_fixture).clone()
+    }
+
+    fn build_fixture() -> PathBuf {
+        crate::locale::install();
         let dir = std::env::temp_dir().join("macsplorer-screenshot").join("My Documents");
         let _ = fs::remove_dir_all(&dir);
-        for d in ["Projects/2026", "Pictures", "Setup.app"] {
+        for d in ["Projects/2026", "Projects/Archive", "Pictures", "Setup.app"] {
             fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        for name in ["Projects/plan.txt", "Projects/2026/budget.xlsx", "Projects/Archive/old.zip"] {
+            fs::write(dir.join(name), vec![b'x'; 400_000]).unwrap();
         }
         for name in ["main.rs", "app.py", "index.ts", "README.md", "Makefile", "Cargo.toml", "styles.css", "package.json", "photo.png", "archive.zip", "Dockerfile", "notes.txt", "report.pdf", "query.sql", "script.sh", "budget.xlsx", "data.yaml", "Quarterly report for the board of directors.txt"] {
             fs::write(dir.join(name), vec![b'x'; 1_500]).unwrap();
@@ -2692,6 +2797,58 @@ mod screenshot {
                 h.run();
             },
         );
+    }
+
+    /// The Properties dialog for `name` in the fixture, once its folder walk
+    /// has finished.
+    fn shoot_properties(shot: &str, name: &str) {
+        let path = fixture().join(name);
+        let mut harness = Harness::builder()
+            .with_size(crate::properties::SIZE)
+            .with_pixels_per_point(2.0)
+            .wgpu()
+            .build_ui_state(
+                |ui, (dialog, icons): &mut (Option<Properties>, FileIcons)| {
+                    // Fonts installed now apply from the next frame.
+                    let Some(dialog) = dialog else {
+                        theme::install(ui.ctx());
+                        let entry = list_dir(path.parent().unwrap(), false).unwrap().into_iter().find(|e| e.path == path).unwrap();
+                        *dialog = Some(Properties::new(ui.ctx(), entry, true, true));
+                        return;
+                    };
+                    // The harness's panel has a margin; the window has none.
+                    let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                    dialog.ui(&mut window, icons);
+                },
+                (None, FileIcons::new()),
+            );
+        for _ in 0..20 {
+            harness.run();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join(format!("{shot}.png"))).unwrap();
+    }
+
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn properties_folder() {
+        shoot_properties("properties-folder", "Projects");
+    }
+
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn properties_file() {
+        shoot_properties("properties-file", "Quarterly report for the board of directors.txt");
+    }
+
+    /// The type name is Finder's Kind for the file.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn properties_kind() {
+        shoot_properties("properties-kind", "budget.xlsx");
     }
 
     /// A window small enough that both panes need classic scroll bars.

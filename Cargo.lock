@@ -1926,6 +1926,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "image",
+ "libc",
  "macsplorer-core",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -1937,6 +1938,7 @@ dependencies = [
 name = "macsplorer-core"
 version = "0.3.1"
 dependencies = [
+ "chrono",
  "dirs",
  "libc",
  "serde_json",

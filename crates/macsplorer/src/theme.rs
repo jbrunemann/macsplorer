@@ -335,6 +335,38 @@ pub fn tool_dropdown(ui: &mut Ui, icon: Icon, name: &str) -> Response {
     resp
 }
 
+/// A dialog push button in `rect`. The default button (the one Return
+/// presses) has an extra black frame; pressed is a black frame with a
+/// shadow line inside; disabled text is embossed gray.
+pub fn push_button(ui: &mut Ui, rect: Rect, label: &str, enabled: bool, default: bool) -> Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let resp = ui.interact(rect, ui.id().with(("push_button", label)), sense);
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, FACE);
+    let down = enabled && resp.is_pointer_button_down_on() && resp.hovered();
+    let inner = if default {
+        p.rect_stroke(rect, 0.0, Stroke::new(1.0, DARK), egui::StrokeKind::Inside);
+        rect.shrink(1.0)
+    } else {
+        rect
+    };
+    if down {
+        p.rect_stroke(inner, 0.0, Stroke::new(1.0, DARK), egui::StrokeKind::Inside);
+        edge(p, inner.shrink(1.0), SHADOW, FACE);
+    } else {
+        bevel(p, inner, Bevel::Raised);
+    }
+    let center = rect.center() + if down { vec2(1.0, 1.0) } else { Vec2::ZERO };
+    let font = FontId::new(FONT_SIZE, FontFamily::Proportional);
+    if enabled {
+        p.text(center, Align2::CENTER_CENTER, label, font, TEXT);
+    } else {
+        p.text(center + vec2(1.0, 1.0), Align2::CENTER_CENTER, label, font.clone(), HIGHLIGHT);
+        p.text(center, Align2::CENTER_CENTER, label, font, SHADOW);
+    }
+    resp
+}
+
 /// A tiny close box used on pane headers.
 pub fn close_box(ui: &mut Ui) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::click());
@@ -356,6 +388,16 @@ pub fn close_box(ui: &mut Ui) -> Response {
 /// The gradient caption with minimize / maximize / close, replacing the
 /// hidden macOS title bar. Dragging it moves the window; double-click zooms.
 pub fn title_bar(ui: &mut Ui, title: &str) {
+    caption(ui, title, false);
+}
+
+/// A dialog's caption: no icon and only a close button. Win2000 property
+/// sheets also have "?" (context help), left out as there is no help.
+pub fn dialog_title_bar(ui: &mut Ui, title: &str) {
+    caption(ui, title, true);
+}
+
+fn caption(ui: &mut Ui, title: &str, dialog: bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::click_and_drag());
     let (active, maximized) = ui.ctx().input(|i| (i.viewport().focused.unwrap_or(true), i.viewport().maximized.unwrap_or(false)));
     let (left, right, text) = if active {
@@ -382,15 +424,16 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
     } else {
         2.0
     };
-    let icon = Rect::from_min_size(pos2(rect.left() + icon_left, rect.top() + 1.0), vec2(16.0, 16.0));
-    paint_icon(p, icon, Icon::FolderOpen, true);
+    let icon = Rect::from_min_size(pos2(rect.left() + icon_left, rect.top() + 1.0), vec2(if dialog { 0.0 } else { 16.0 }, 16.0));
+    if !dialog {
+        paint_icon(p, icon, Icon::FolderOpen, true);
+    }
     if cfg!(target_os = "macos") {
         let close_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(icon.right(), rect.bottom()));
         if ui.interact(close_area, ui.id().with("caption_icon"), Sense::click()).clicked() {
             ui.ctx().send_viewport_cmd(ViewportCommand::Close);
         }
     }
-    p.text(pos2(icon.right() + 3.0, rect.center().y), Align2::LEFT_CENTER, title, bold(FONT_SIZE), text);
 
     // Caption buttons, right to left: close, (gap), maximize, minimize.
     let btn = vec2(16.0, 14.0);
@@ -398,8 +441,17 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
     let close = Rect::from_min_size(pos2(rect.right() - 2.0 - btn.x, y), btn);
     let max = close.translate(vec2(-btn.x - 2.0, 0.0));
     let min = max.translate(vec2(-btn.x, 0.0));
+
+    // A title too long for the caption ends in an ellipsis before the buttons.
+    let text_left = icon.right() + 3.0;
+    let text_right = if dialog { close.left() } else { min.left() } - 4.0;
+    let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), bold(FONT_SIZE), text);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - text_left).max(0.0));
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    p.galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, text);
     let ctx = ui.ctx().clone();
-    for (r, kind) in [(min, Caption::Minimize), (max, if maximized { Caption::Restore } else { Caption::Maximize }), (close, Caption::Close)] {
+    let buttons = [(min, Caption::Minimize), (max, if maximized { Caption::Restore } else { Caption::Maximize }), (close, Caption::Close)];
+    for (r, kind) in buttons.into_iter().skip(if dialog { 2 } else { 0 }) {
         let b = ui.interact(r, ui.id().with(("caption", kind as u8)), Sense::click());
         caption_button(ui.painter(), r, kind, b.is_pointer_button_down_on());
         if b.clicked() {
@@ -415,7 +467,7 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
     if resp.drag_started_by(egui::PointerButton::Primary) {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
     }
-    if resp.double_clicked() {
+    if resp.double_clicked() && !dialog {
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
 }

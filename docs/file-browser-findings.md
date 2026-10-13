@@ -402,6 +402,73 @@ them; Linux: the newest freedesktop Trash entry with that original path); an
 undo never replaces an item that has since taken the name, and stops at the
 first item that fails. No redo (Windows 2000 had none either).
 
+### 2.8 Properties, General page (shell32 `CFilePropSheetPage`)
+
+Decompiled with Ghidra. The dialog strings and layout live in
+`shell32.dll.mui`, which isn't in this setup, so the wording and layout
+come from a Windows 2000 screenshot of a folder's Properties.
+
+Observed:
+
+- `_InitSingleFilePrsht` fills the page: the item's icon, the name in an
+  edit box, the type name (`SHGetFileInfoW`, the registered name such as
+  "Microsoft Excel Worksheet"), and Location, which is the full path with its
+  last part removed (`PathRemoveFileSpecW`). Location is set with
+  `SetDlgItemTextWithToolTip`, so a path too long for the box shows its
+  full text as a tooltip.
+- `_UpdateSizeField`, files: Size is a message built from
+  `StrFormatByteSizeW` and `AddCommas64`, "211 MB (221,664,650 bytes)". A
+  zero size uses a different string id (0x1016 instead of 0x1017).
+  Created, Modified and Accessed follow. On a volume whose file system
+  name contains "FAT", Accessed is shown without the time.
+- `_UpdateSizeField`, folders: only Created is set directly. Size and
+  Contains come from `CFolderContentsInfo::CreateSizeThread`.
+- `CFolderContentsInfo::SizeThreadProc` walks the items on a worker
+  thread. Files add their size and count as files. Folders go through
+  `FolderSize`, a `CShellTreeWalker` whose `CFolderSizeTreeWalkerCB`
+  adds each found file to the totals (`FoundFile`) and counts each entered
+  subfolder (`EnterFolder`). The walk stops when the dialog clears its
+  "keep going" flag. The thread starts a 250 ms `SetTimer` on the dialog
+  and posts a final `WM_TIMER` when done. The dialog proc answers each
+  `WM_TIMER` with `_UpdateSizeCount`, which rewrites Size and Contains
+  (string 0x2207, "1,624 Files, 169 Folders").
+- `SetDateTimeTextEx` leaves the line blank when the `FILETIME` is zero.
+  Otherwise it calls `SHFormatDateTimeW` with flags 0x1c (`FDTF_RELATIVE |
+  FDTF_LONGDATE | FDTF_LONGTIME`), or 0x14 (no time) for Accessed on FAT:
+  "Yesterday, November 21, 2025, 2:39:49 PM".
+- OK and Apply rename the item through `_ApplyRename` (`PSN_APPLY`).
+
+Macsplorer (`core::properties`, `app/properties.rs`): one General tab in
+its own borderless window, opened from Properties at the bottom of the item,
+empty-space and Folders pane context menus, File > Properties and Cmd+I
+(Finder's Get Info key, instead of Alt+Enter). Left out on purpose: the
+Sharing and Security tabs, Size on disk, Opens with, Attributes and
+Advanced, and the caption's "?" button. Metadata is read and folders are
+walked on a worker thread, and the totals are shown every 250 ms as in
+Windows. A rename from the dialog goes through the same checks and undo as
+an in-place rename. When a rename fails, the dialog stays open and the
+error goes to the status bar instead of a message box. Guesses: the walk
+counts hidden items, doesn't count the folder itself, and treats symlinks
+as files without following them. Packages (`.app`) get the folder page.
+Apply is enabled only while the name differs from the current one (Windows
+enables it on any edit). The type name of files and packages is Finder's
+Kind (`NSURLLocalizedTypeDescriptionKey`, read on the worker thread), which
+plays the role of `SHGetFileInfoW`'s registered name; plain folders keep
+"File Folder", and Linux falls back to "XLSX File" style names.
+
+Dates and numbers follow the system locale, as Windows takes them from the
+user locale (`app/locale.rs`). On macOS a date line is `NSDateFormatter`'s
+full date, with the weekday replaced by the relative formatter's word for
+today or yesterday, then ", " and the medium time. The Details view's
+Modified column uses the short date and short time. Thousands and decimal
+separators come from `NSLocale` and apply everywhere (Size column, status
+bar, Properties). On Linux the C library's `LC_NUMERIC` and `LC_TIME` are
+used: the weekday and short date (`%A, %x`) stand in for the long date,
+and "Today" and "Yesterday" stay English. Byte units and the words
+("bytes", "Files", "Folders") stay English. With several items selected
+the dialog shows just one of them (Windows has a separate multi-item page,
+`_InitMultiplePrsht`).
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
