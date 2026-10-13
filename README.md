@@ -5,24 +5,17 @@
 <h1 align="center">Macsplorer</h1>
 
 <p align="center">
-  <strong>The Windows 2000 Explorer you remember, as a native-feeling file browser for macOS.</strong><br>
-  Written in Rust. Always-on folder tree, a real address bar, classic bevels and Tahoma.
+  <strong>The Windows 2000 Explorer you remember, as a native file browser for macOS and Linux.</strong><br>
+  Written in Rust. Always-on folder tree, a real address bar, classic bevels and Tahoma font.
 </p>
 
 <p align="center">
   <img src="docs/window.png" alt="Macsplorer showing a folder with the Folders tree, details view and status bar" width="900">
 </p>
 
-Macsplorer is a file browser for people who think better with a folder tree
-on the left, the full path on top and a details list in the middle. It looks
-like Windows 2000 "Windows Classic", behaves like Explorer where that matters,
-and still opens your files with the apps you already use on your Mac.
+Macsplorer is a file browser for people who think better with a folder tree on the left, the full path on top and a details list in the middle. It looks like Windows 2000 "Windows Classic", behaves like Explorer where that matters, and still opens your files with the apps you already use.
 
-> **Status: early prototype.** You can browse, search, sort, rename and open
-> files. Copy, move, delete and drag and drop are not built yet, so keep
-> Finder around for those (see [Not yet](#not-yet)).
-
-## Why use it next to Finder
+## Why use it
 
 - **A real folder tree.** The Folders pane stays on screen and follows you:
   the tree expands to and selects the folder you're in. Finder's sidebar is
@@ -104,17 +97,21 @@ package have it) or egui's default font is used.
 
 ## Features
 
-- Details view with Name / Date modified / Type / Size columns; click a header to sort, click again to reverse.
+- **Large Icons** and **Details** views (View menu). Details has Name / Size / Type / Modified columns; click a header to sort, click again to reverse.
+- Large Icons follows the Windows 2000 list view: 75 px slots, names wrapped under the icon and cut to two lines (the focused item shows its full name), and arrow keys that move to the nearest icon in that direction. *Explorer-derived* (comctl32 `SysListView32`).
 - Folders first, natural name sorting (`file2` before `file10`). *Explorer-derived* (`StrCmpLogicalW`); turn it off under View.
 - Click, ⌘-click and ⇧-click selection, arrow keys, double-click or Enter to open (files open in their default app).
-- Right-click a file for **Open With**, **Show in Finder** and **Rename**.
+- Right-click an item for **Open**, **Open With**, **Show in Finder**, **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete** and **Rename**. Right-click empty space for **Paste** and **Refresh**.
+- **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does; a move never overwrites. Cut items are drawn faded until pasted.
+- **Delete** (⌦ forward delete, or ⌘⌫) moves the selection to the Trash.
+- **Copy as Path** (⌘⌥C) puts the selected items' quoted full paths on the clipboard. *Explorer-derived* (`CCopyAsPathMenu`).
 - **F2 / right-click → Rename**, in place. The initial selection follows Explorer's rule (name without extension, whole name for folders, dotfiles and hidden extensions). *Explorer-derived* (`SHBeginLabelEdit`). Enter or clicking away commits, Esc cancels, `/` can't be typed.
 - Back / forward / up / refresh. Right-click back or forward for the history list.
 - Breadcrumb address bar: click a segment to go there, `›` for a subfolder menu, click empty space or ⌘L to type a path (`~` works).
 - Search box filters the current folder by name.
 - **Navigation pane tree** (modeled on Explorer's `CNscTree`): Favorites and Locations roots, folders only, natural-sorted, packages left out. Children load on background threads with a "Loading…" row; chevrons appear only on folders that have subfolders. Click a name to open it, click the chevron or double-click to expand. Arrow keys follow tree conventions (← collapses or goes to the parent, → expands or goes to the first child). Refresh reloads expanded folders.
 - **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
-- Menus: File › Close; Edit › Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
+- Menus: File › Close; Edit › Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
 - Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane.
 - Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name.
 
@@ -128,30 +125,36 @@ package have it) or egui's default font is used.
 | F2 | Rename |
 | Enter | Open |
 | ⌘A | Select all |
+| ⌘X · ⌘C · ⌘V | Cut · Copy · Paste |
+| ⌘⌥C | Copy as Path |
+| ⌦ · ⌘⌫ | Move to Trash |
 
 ## Not yet
 
-File watching (FSEvents, so the list updates live), copy / move / delete,
-drag and drop, more views (Large Icons, List), column and window persistence,
-pinning favorites, multiple windows and tabs.
+File watching (FSEvents, so the list updates live), drag and drop, column and window persistence, pinning favorites, multiple windows and tabs.
+For file operations: no replace/skip dialog on name conflicts (copies get a
+"- Copy" name, moves stop with an error), no progress window, no undo and no
+Shift+Delete. Small Icons and Thumbnails views are still to come; List view is
+left out on purpose.
 
 ## How it's built
 
 Behaviors marked "Explorer-derived" were traced from Windows 10 build 10240
-binaries (`ExplorerFrame.dll`, `shell32.dll`, `Windows.Storage.dll`) and are
-documented with their evidence in [`docs/`](docs/). The code is written from
-those behavioral notes, not copied from decompiled output.
+binaries (`ExplorerFrame.dll`, `shell32.dll`, `Windows.Storage.dll`,
+`comctl32.dll`) and are documented with their evidence in [`docs/`](docs/).
+The code is written from those behavioral notes, not copied from decompiled
+output.
 
 | Crate | Purpose |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, history, breadcrumbs, sidebar places. Unit-tested. |
+| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup and the Large Icons layout. Unit-tested. |
 | `crates/macsplorer` | The app (egui/eframe). |
 | `tools/make-icon` | Renders the app icon and `.icns`. |
 
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets
-cargo test -p macsplorer -- --ignored   # renders the window offscreen to target/screenshots/window.png
+cargo test -p macsplorer -- --ignored   # renders the window offscreen to target/screenshots/*.png
 cargo run -p make-icon                  # regenerates assets/icon.png and macsplorer.icns
 ```
 
