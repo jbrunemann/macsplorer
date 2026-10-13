@@ -1,0 +1,8 @@
+[package]
+name = "make-icon"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+tiny-skia = "0.12.0"

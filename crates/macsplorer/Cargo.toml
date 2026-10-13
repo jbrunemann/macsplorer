@@ -1,0 +1,20 @@
+[package]
+name = "macsplorer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = "0.4.45"
+dirs = "7.0.0"
+eframe = "0.36.2"
+egui_extras = "0.36.2"
+macsplorer-core = { version = "0.1.0", path = "../macsplorer-core" }
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext", "objc2-core-foundation"] }

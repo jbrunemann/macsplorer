@@ -1,0 +1,9 @@
+[package]
+name = "macsplorer-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dirs = "7.0.0"
+libc = "0.2.190"
+serde_json = "1.0.154"
