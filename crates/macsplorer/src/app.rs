@@ -23,6 +23,7 @@ use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, va
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
 
 use crate::icons::FileIcons;
+use crate::open_with;
 use crate::theme::{self, Bevel, Icon};
 
 const LIST_ROW_HEIGHT: f32 = 17.0;
@@ -54,6 +55,8 @@ struct RenameState {
 enum Action {
     Navigate(PathBuf),
     Open(PathBuf),
+    /// Open a file with an app; `None` asks the user to pick one.
+    OpenWith(PathBuf, Option<PathBuf>),
     Click { index: usize, toggle: bool, extend: bool },
     BeginRename,
     CommitRename,
@@ -107,6 +110,8 @@ pub struct Explorer {
     /// selected instead of jumping to another root that has the same folder.
     navigating_from_tree: bool,
     icons: FileIcons,
+    /// The "Open With" apps for the file whose context menu is open.
+    open_with: Option<(PathBuf, Vec<PathBuf>)>,
     ctx: egui::Context,
     home: Option<PathBuf>,
 }
@@ -133,6 +138,7 @@ impl Explorer {
             focus: Pane::List,
             navigating_from_tree: false,
             icons: FileIcons::new(),
+            open_with: None,
             ctx,
             home: dirs::home_dir(),
         };
@@ -245,6 +251,25 @@ impl Explorer {
         }
     }
 
+    fn open_with(&mut self, path: PathBuf, app: Option<PathBuf>) {
+        let Some(app) = app else {
+            // Like Windows' "Choose Program..." dialog. Runs off the UI
+            // thread since the picker blocks until the user answers.
+            thread::spawn(move || {
+                let script = "POSIX path of (choose application with prompt \"Choose the program you want to use to open this file:\" as alias)";
+                let Ok(out) = Command::new("osascript").arg("-e").arg(script).output() else { return };
+                let app = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+                if out.status.success() && !app.is_empty() {
+                    let _ = Command::new("open").arg("-a").arg(app).arg(path).spawn();
+                }
+            });
+            return;
+        };
+        if let Err(e) = Command::new("open").arg("-a").arg(&app).arg(&path).spawn() {
+            self.status = Some(format!("Couldn't open {} with {}: {e}", path.display(), open_with::app_name(&app)));
+        }
+    }
+
     fn click(&mut self, index: usize, toggle: bool, extend: bool, visible: &[usize]) {
         let path = self.entries[index].path.clone();
         let pos = visible.iter().position(|&i| i == index);
@@ -321,6 +346,7 @@ impl Explorer {
             match action {
                 Action::Navigate(p) => self.navigate(p),
                 Action::Open(p) => self.open(p),
+                Action::OpenWith(p, app) => self.open_with(p, app),
                 Action::Click { index, toggle, extend } => {
                     self.focus = Pane::List;
                     self.click(index, toggle, extend, visible);
@@ -701,7 +727,7 @@ impl Explorer {
             return;
         }
         let focused = self.focus == Pane::List && window_focused(ui);
-        let Self { entries, selection, rename, sort, settings, search, icons, .. } = self;
+        let Self { entries, selection, rename, sort, settings, search, icons, open_with, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::WINDOW;
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -797,7 +823,7 @@ impl Explorer {
                 row.col(|ui| {
                     ui.add_space(6.0);
                     if let Some(t) = entry.modified {
-                        ui.label(DateTime::<Local>::from(t).format("%-m/%-d/%Y %-I:%M %p").to_string());
+                        ui.label(DateTime::<Local>::from(t).format("%d/%m/%Y %H:%M").to_string());
                     }
                 });
 
@@ -812,6 +838,9 @@ impl Explorer {
                 resp.context_menu(|ui| {
                     if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
                         actions.push(Action::Open(entry.path.clone()));
+                    }
+                    if entry.kind == RenameKind::File {
+                        open_with_menu(ui, &entry.path, open_with, actions);
                     }
                     if ui.button("Show in Finder").clicked() {
                         actions.push(Action::RevealInFinder(entry.path.clone()));
@@ -908,6 +937,28 @@ impl eframe::App for Explorer {
 
 /// The in-place rename box: white with a thin black frame, like a classic
 /// list view label edit. Initial selection comes from the Explorer rule.
+/// The "Open With" submenu: the file's apps, then "Choose Program...".
+/// The app list is looked up once per file and kept while the menu is open.
+fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, actions: &mut Vec<Action>) {
+    ui.menu_button("Open With", |ui| {
+        if cache.as_ref().is_none_or(|(p, _)| p != path) {
+            *cache = Some((path.to_path_buf(), open_with::apps_for(path)));
+        }
+        let apps = cache.as_ref().map_or(&[][..], |(_, apps)| apps.as_slice());
+        for app in apps {
+            if ui.button(open_with::app_name(app)).clicked() {
+                actions.push(Action::OpenWith(path.to_path_buf(), Some(app.clone())));
+            }
+        }
+        if !apps.is_empty() {
+            ui.separator();
+        }
+        if ui.button("Choose Program...").clicked() {
+            actions.push(Action::OpenWith(path.to_path_buf(), None));
+        }
+    });
+}
+
 fn rename_editor(ui: &mut Ui, r: &mut RenameState, extensions_shown: bool, actions: &mut Vec<Action>) {
     let id = ui.make_persistent_id(("rename", &r.path));
     let frame = egui::Frame::NONE
