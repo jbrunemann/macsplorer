@@ -13,7 +13,7 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Add Intel target
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
@@ -25,7 +25,7 @@ jobs:
         run: |
           ditto -c -k --sequesterRsrc --keepParent target/release/Macsplorer.app Macsplorer-macOS.zip
           shasum -a 256 Macsplorer-macOS.zip > Macsplorer-macOS.zip.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Macsplorer-macOS
           path: Macsplorer-macOS.zip*
