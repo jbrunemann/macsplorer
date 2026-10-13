@@ -1212,7 +1212,30 @@ impl Explorer {
             return;
         }
         ui.spacing_mut().item_spacing.x = 0.0;
-        for crumb in crumbs(self.current(), self.home.as_deref()) {
+        ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
+        // When the path is too long, the leading crumbs fold into a "«"
+        // button that lists them, and the tail stays visible, as in Explorer.
+        let all = crumbs(self.current(), self.home.as_deref());
+        let widths: Vec<f32> = all.iter().map(|c| crumb_width(ui, &c.label) + crumb_width(ui, "›")).collect();
+        let mut room = ui.available_width();
+        let mut first = all.len();
+        while first > 0 && widths[first - 1] <= room - if first > 1 { crumb_width(ui, "«") } else { 0.0 } {
+            room -= widths[first - 1];
+            first -= 1;
+        }
+        // The current folder always stays, even if it has to be clipped.
+        let first = first.min(all.len().saturating_sub(1));
+        if first > 0 {
+            let overflow = crumb_button(ui, "«");
+            egui::Popup::menu(&overflow).show(|ui| {
+                for crumb in &all[..first] {
+                    if ui.button(&crumb.label).clicked() {
+                        actions.push(Action::Navigate(crumb.path.clone()));
+                    }
+                }
+            });
+        }
+        for crumb in &all[first..] {
             if crumb_button(ui, &crumb.label).clicked() {
                 actions.push(Action::Navigate(crumb.path.clone()));
             }
@@ -2243,6 +2266,11 @@ fn selectable_name(ui: &mut Ui, text: &str, selected: bool, focused: bool) -> eg
 }
 
 /// A flat crumb in the address field that pops out when hovered.
+fn crumb_width(ui: &Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::TEXT).size().x + 6.0
+}
+
 fn crumb_button(ui: &mut Ui, text: &str) -> egui::Response {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::TEXT);
