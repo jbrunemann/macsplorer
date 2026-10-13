@@ -10,7 +10,7 @@ never paste decompiled code into the source.
 | Path | What |
 |---|---|
 | `crates/macsplorer-core` | UI-independent logic, all unit-tested: `listing` (read_dir, sort, sizes, custom-icon flag), `natural` (StrCmpLogicalW-style sort), `rename` (Explorer's rename selection + APFS name rules), `history` (back/forward), `breadcrumb`, `places`, `tree` (Folders pane model, CNscTree-like), `seti` (VSCodium file icon resolution). |
-| `crates/macsplorer` | egui/eframe 0.36 app. `app.rs` state + UI, `theme.rs` Windows Classic colors/bevels/fonts/icons/title bar, `icons.rs` icon choice + native icon cache, `native_icon.rs` NSWorkspace icons via objc2. |
+| `crates/macsplorer` | egui/eframe 0.36 app. `app.rs` state + UI, `theme.rs` Windows Classic colors/bevels/fonts/icons/title bar, `scrollbar.rs` classic scroll bars drawn over hidden egui ones, `icons.rs` icon choice + native icon cache, `native_icon.rs` NSWorkspace icons via objc2. |
 | `tools/make-icon` | Renders `assets/icon.png` + `assets/macsplorer.icns` (tiny-skia). |
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
 | `scripts/bundle-macos.sh` | Builds `target/release/Macsplorer.app`. |
@@ -92,6 +92,6 @@ licenses.
 - More Win2000 views: Large Icons, List, the "Web view" left info panel.
 - Type column with language names ("Rust Source") and image thumbnails.
 - Trace remaining Explorer behaviors listed in `docs/file-browser-findings.md` §4.
-- Scroll bar arrows / 3D thumb (egui limitation), column header filler to the right edge.
+- Column header filler to the right edge; classic scroll bars for the breadcrumb chevron popup.
 - Persist settings, column widths and window size; pinning favorites; tabs/multiple windows.
 - Replace the placeholder bundle id `dev.macsplorer.app` once the user picks one.

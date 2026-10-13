@@ -96,7 +96,8 @@ pub fn install(ctx: &egui::Context) {
         s.interact_size.y = 18.0;
         s.menu_margin = egui::Margin::same(2);
         s.window_margin = egui::Margin::same(3);
-        // Classic scroll bars: always visible, opaque, no edge fade.
+        // egui scroll bars, for areas not using `scrollbar::Bars`: opaque,
+        // no edge fade.
         s.scroll = egui::style::ScrollStyle {
             bar_width: 16.0,
             bar_inner_margin: 0.0,

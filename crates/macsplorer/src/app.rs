@@ -24,6 +24,7 @@ use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_
 
 use crate::icons::FileIcons;
 use crate::open_with;
+use crate::scrollbar::{self, Bars};
 use crate::theme::{self, Bevel, Icon};
 
 const LIST_ROW_HEIGHT: f32 = 17.0;
@@ -764,7 +765,10 @@ impl Explorer {
         let guides = tree_guides(&rows);
         let scroll = self.tree.take_scroll_request();
         let focused = self.focus == Pane::Tree && window_focused(ui);
-        egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+        let (bars, viewport) = Bars::begin(ui, ui.id().with("tree-bars"), ui.max_rect(), true, TREE_ROW_HEIGHT);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
+        let hidden = scrollbar::hidden(&mut ui);
+        let out = egui::ScrollArea::both().auto_shrink(false).scroll_bar_visibility(hidden).show(&mut ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut section = None;
             for (row, guide) in rows.iter().zip(&guides) {
@@ -780,6 +784,7 @@ impl Explorer {
                 tree_row(ui, row, guide, scroll, focused, actions);
             }
         });
+        bars.end(&mut ui, &out);
     }
 
     // ---- details view --------------------------------------------------
@@ -788,8 +793,12 @@ impl Explorer {
         let rect = ui.available_rect_before_wrap();
         let inner = theme::sunken_field(ui.painter(), rect);
         ui.allocate_rect(rect, Sense::hover());
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
+        // The vertical bar runs beside the column header too, as in a
+        // Windows list view, so it is carved out of the whole field.
+        let (bars, viewport) = Bars::begin(ui, ui.id().with("details-bars"), inner, [false, true], LIST_ROW_HEIGHT);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
         let ui = &mut ui;
+        let hidden = scrollbar::hidden(ui);
 
         if let Some(err) = &self.load_error {
             ui.centered_and_justified(|ui| ui.label(err));
@@ -833,6 +842,7 @@ impl Explorer {
         };
 
         let table = TableBuilder::new(ui)
+            .scroll_bar_visibility(hidden)
             .striped(false)
             .sense(Sense::click())
             .cell_layout(Layout::left_to_right(Align::Center))
@@ -848,7 +858,8 @@ impl Explorer {
             });
 
         if visible.is_empty() {
-            table.body(|_| {});
+            let out = table.body(|_| {});
+            bars.end(ui, &out);
             if *listing {
                 return;
             }
@@ -861,7 +872,7 @@ impl Explorer {
             return;
         }
 
-        table.body(|body| {
+        let out = table.body(|body| {
             body.rows(LIST_ROW_HEIGHT, visible.len(), |mut row| {
                 let index = visible[row.index()];
                 let entry = &entries[index];
@@ -924,6 +935,7 @@ impl Explorer {
                 });
             });
         });
+        bars.end(ui, &out);
     }
 
     fn status_bar(&self, ui: &mut Ui, visible: &[usize]) {
@@ -1359,10 +1371,10 @@ mod screenshot {
         dir
     }
 
-    fn shoot(name: &str, setup: impl FnOnce(&mut Explorer)) {
+    fn shoot(name: &str, size: egui::Vec2, setup: impl FnOnce(&mut Explorer)) {
         let start = fixture();
         let mut harness = Harness::builder()
-            .with_size(egui::vec2(900.0, 560.0))
+            .with_size(size)
             .with_pixels_per_point(2.0)
             .wgpu()
             .build_eframe(|cc| {
@@ -1386,9 +1398,16 @@ mod screenshot {
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
     fn window() {
-        shoot("window", |app| {
+        shoot("window", egui::vec2(900.0, 560.0), |app| {
             let pick = app.entries.iter().find(|e| e.name == "main.rs").map(|e| e.path.clone());
             app.selection.extend(pick);
         });
+    }
+
+    /// A window small enough that both panes need classic scroll bars.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn scroll_bars() {
+        shoot("scroll-bars", egui::vec2(560.0, 300.0), |_| {});
     }
 }
