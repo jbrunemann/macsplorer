@@ -97,7 +97,7 @@ fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
     let meta = src.symlink_metadata()?;
     if meta.is_symlink() {

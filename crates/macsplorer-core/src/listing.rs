@@ -260,7 +260,7 @@ fn read_xattr(path: &Path, name: &std::ffi::CStr) -> Option<Vec<u8>> {
     #[cfg(target_os = "macos")]
     let n = unsafe { libc::getxattr(cpath.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
     // SAFETY: as above.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     let n = unsafe { libc::getxattr(cpath.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
     let n = usize::try_from(n).ok()?;
     buf.truncate(n);
@@ -276,7 +276,7 @@ pub fn comment(path: &Path) -> Option<String> {
 }
 
 /// The freedesktop.org comment attribute, which Dolphin and Nautilus edit.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn comment(path: &Path) -> Option<String> {
     let data = read_xattr(path, c"user.xdg.comment")?;
     Some(String::from_utf8_lossy(&data).into_owned()).filter(|s| !s.is_empty())

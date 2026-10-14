@@ -313,7 +313,7 @@ fn is_fat_volume(path: &Path) -> bool {
     matches!(name.to_bytes(), b"msdos" | b"exfat")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn is_fat_volume(path: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
     const MSDOS_SUPER_MAGIC: i64 = 0x4d44;

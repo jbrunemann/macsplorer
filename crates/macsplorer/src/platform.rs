@@ -1,6 +1,6 @@
 //! The few things that differ per OS: opening and revealing files, ejecting
-//! volumes, wording, and where fonts live. macOS uses `open`/`diskutil`;
-//! everything else is treated as a freedesktop Linux desktop.
+//! volumes, wording, and where fonts live. macOS uses `open`/`diskutil`,
+//! Linux the freedesktop tools.
 
 use std::io;
 use std::path::Path;
@@ -24,7 +24,7 @@ pub const TAHOMA_BOLD: &[&str] = &["/System/Library/Fonts/Supplemental/Tahoma Bo
 
 /// Linux has no Tahoma of its own: use one the user installed (fonts folder,
 /// Wine, a Windows partition).
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub const TAHOMA: &[&str] = &[
     "/usr/share/fonts/truetype/tahoma/tahoma.ttf",
     "/usr/share/fonts/truetype/msttcorefonts/Tahoma.ttf",
@@ -33,7 +33,7 @@ pub const TAHOMA: &[&str] = &[
     "/usr/share/wine/fonts/tahoma.ttf",
     "/usr/lib/wine/fonts/tahoma.ttf",
 ];
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub const TAHOMA_BOLD: &[&str] = &[
     "/usr/share/fonts/truetype/tahoma/tahomabd.ttf",
     "/usr/share/fonts/truetype/msttcorefonts/Tahoma_Bold.ttf",
@@ -101,7 +101,7 @@ pub fn reveal(path: &Path) {
     {
         let _ = Command::new("open").arg("-R").arg(path).status();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         // The freedesktop FileManager1 interface selects the item; without
         // it (or without dbus-send), open the containing folder instead.
@@ -126,7 +126,7 @@ pub fn eject(volume: &Path) -> Result<(), String> {
     let attempts: [(&str, &[&str]); 1] = [("diskutil", &["eject"])];
     // gio goes through the desktop's mount service (udisks), so it works for
     // removable drives without root; umount covers a plain mount.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     let attempts: [(&str, &[&str]); 2] = [("gio", &["mount", "--eject"]), ("umount", &[])];
 
     let mut last = String::from("no tool available to eject");
@@ -143,7 +143,7 @@ pub fn eject(volume: &Path) -> Result<(), String> {
 }
 
 /// Percent-encodes a path for a `file://` URI, keeping `/`.
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn percent_encode(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for b in path.bytes() {

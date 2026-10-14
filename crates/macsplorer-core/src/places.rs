@@ -131,7 +131,7 @@ fn mounted_volumes() -> Vec<PathBuf> {
 
 /// Removable media and manual mounts, the places desktop file managers list:
 /// `/media/<user>/x`, `/run/media/<user>/x` (udisks) and `/mnt/x`.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn mounted_volumes() -> Vec<PathBuf> {
     let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     parse_mounts(&mounts).into_iter().filter(|p| is_user_mount(p)).collect()
@@ -144,7 +144,7 @@ pub fn is_ejectable(path: &Path) -> bool {
     {
         path.parent() == Some(Path::new("/Volumes")) && is_browsable_mount(path)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         is_user_mount(path) && mounted_volumes().iter().any(|v| v == path)
     }
@@ -152,12 +152,12 @@ pub fn is_ejectable(path: &Path) -> bool {
 
 /// Mount points from the text of `/proc/self/mounts`, in file order. Spaces
 /// and other odd bytes in paths are written as octal escapes (`\040`).
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn parse_mounts(text: &str) -> Vec<PathBuf> {
     text.lines().filter_map(|line| line.split_whitespace().nth(1)).map(|p| PathBuf::from(unescape_mount(p))).collect()
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn unescape_mount(field: &str) -> String {
     let bytes = field.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -181,7 +181,7 @@ fn unescape_mount(field: &str) -> String {
 /// True if `path` lies where Linux desktops mount user-visible volumes:
 /// one level under `/media/<user>` or `/run/media/<user>`, or directly under
 /// `/mnt` or `/media`.
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn is_user_mount(path: &Path) -> bool {
     let depth_under = |base: &str| path.strip_prefix(base).map(|rest| rest.components().count()).ok();
     matches!(depth_under("/mnt"), Some(1))

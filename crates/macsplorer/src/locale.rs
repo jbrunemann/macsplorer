@@ -132,7 +132,7 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 mod imp {
     use std::ffi::{CStr, CString};
     use std::time::{SystemTime, UNIX_EPOCH};
