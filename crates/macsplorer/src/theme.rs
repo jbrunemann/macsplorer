@@ -352,6 +352,13 @@ pub fn focus_rect(p: &Painter, r: Rect) {
     }
 }
 
+/// egui's menu style with roomier items: its own horizontal padding is 2 px,
+/// which leaves the last letter of a label touching the edge of the menu.
+pub fn menu_style(style: &mut egui::Style) {
+    egui::containers::menu::menu_style(style);
+    style.spacing.button_padding.x = 8.0;
+}
+
 /// The etched groove between rebar bands and menu sections.
 pub fn etched_hline(ui: &mut Ui) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 2.0), Sense::hover());

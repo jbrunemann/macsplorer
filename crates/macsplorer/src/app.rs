@@ -1151,7 +1151,7 @@ impl Explorer {
     // ---- menu bar, toolbar and address bar --------------------------------
 
     fn menu_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        egui::MenuBar::new().ui(ui, |ui| {
+        egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(theme::menu_style)).ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Properties").clicked() {
                     actions.push(Action::ItemProperties(self.properties_target(self.focus == Pane::List)));
@@ -1249,7 +1249,7 @@ impl Explorer {
                 actions.push(Action::Back);
             }
             let arrow = theme::drop_arrow_button(ui, self.history.can_go_back());
-            egui::Popup::menu(&arrow).show(|ui| {
+            egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
                 for (i, p) in self.history.back_entries().take(12) {
                     if ui.button(place_label(p)).clicked() {
                         actions.push(Action::HistoryJump(i));
@@ -1261,7 +1261,7 @@ impl Explorer {
                 actions.push(Action::Forward);
             }
             let arrow = theme::drop_arrow_button(ui, self.history.can_go_forward());
-            egui::Popup::menu(&arrow).show(|ui| {
+            egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
                 for (i, p) in self.history.forward_entries().take(12) {
                     if ui.button(place_label(p)).clicked() {
                         actions.push(Action::HistoryJump(i));
@@ -1289,7 +1289,7 @@ impl Explorer {
             theme::etched_vline(ui, 22.0);
             // Windows 2000's Views button is all drop-down: a click anywhere opens the menu.
             let views = theme::tool_dropdown(ui, Icon::Views, "Views").on_hover_text("Views");
-            egui::Popup::menu(&views).show(|ui| view_choices(ui, self.settings.view, actions));
+            egui::Popup::menu(&views).style(theme::menu_style).show(|ui| view_choices(ui, self.settings.view, actions));
         });
     }
 
@@ -1367,7 +1367,7 @@ impl Explorer {
         let first = first.min(all.len().saturating_sub(1));
         if first > 0 {
             let overflow = crumb_button(ui, "«");
-            egui::Popup::menu(&overflow).show(|ui| {
+            egui::Popup::menu(&overflow).style(theme::menu_style).show(|ui| {
                 for crumb in &all[..first] {
                     if ui.button(&crumb.label).clicked() {
                         actions.push(Action::Navigate(crumb.path.clone()));
@@ -1381,7 +1381,7 @@ impl Explorer {
             }
             // Explorer's chevron: a menu of the crumb's subfolders.
             let chevron = crumb_button(ui, "›");
-            egui::Popup::menu(&chevron).show(|ui| {
+            egui::Popup::menu(&chevron).style(theme::menu_style).show(|ui| {
                 let folders = subfolders(&crumb.path, self.settings.show_hidden);
                 if let Some(path) = scrolled_menu(ui, &folders) {
                     actions.push(Action::Navigate(path));
@@ -1494,7 +1494,7 @@ impl Explorer {
             }
             actions.push(Action::Focus(Pane::List));
         }
-        bg.context_menu(|ui| background_menu(ui, &folder, can_paste, actions));
+        egui::Popup::context_menu(&bg).style(theme::menu_style).show(|ui| background_menu(ui, &folder, can_paste, actions));
 
         let header = |ui: &mut Ui, column: Column, actions: &mut Vec<Action>| {
             let label = column.caption();
@@ -1529,7 +1529,7 @@ impl Explorer {
             if resp.clicked() {
                 actions.push(Action::Sort(column));
             }
-            resp.context_menu(|ui| header_menu(ui, columns, actions));
+            egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| header_menu(ui, columns, actions));
         };
 
         // Where the rows are: row 0's top on screen, the icon's left edge and
@@ -1565,7 +1565,7 @@ impl Explorer {
                     ui.painter().rect_filled(rect, 0.0, theme::color::face());
                     theme::bevel(ui.painter(), rect, Bevel::Raised);
                     let resp = ui.interact(rect, ui.id().with("header-rest"), Sense::click());
-                    resp.context_menu(|ui| header_menu(ui, columns, actions));
+                    egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| header_menu(ui, columns, actions));
                 });
             });
 
@@ -1655,7 +1655,7 @@ impl Explorer {
                     {
                         actions.push(Action::MarqueeBegin { origin: (p.x, p.y - top), extend });
                     }
-                    resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
+                    egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                         Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
                         None => background_menu(ui, &folder, can_paste, actions),
                     });
@@ -1888,7 +1888,7 @@ impl Explorer {
                     }
                 }
                 item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
-                resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
+                egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                     Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
                     None => background_menu(ui, &folder, can_paste, actions),
                 });
@@ -2029,7 +2029,7 @@ impl Explorer {
                     }
                 }
                 item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
-                resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
+                egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                     Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
                     None => background_menu(ui, &folder, can_paste, actions),
                 });
@@ -2635,7 +2635,7 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
     if resp.double_clicked() && !on_box && row.expandable {
         actions.push(Action::TreeToggle(row.key.clone()));
     }
-    resp.context_menu(|ui| {
+    egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| {
         if row.expandable {
             let label = if row.expanded { "Collapse" } else { "Expand" };
             if ui.button(RichText::new(label).font(theme::bold(theme::FONT_SIZE))).clicked() {
