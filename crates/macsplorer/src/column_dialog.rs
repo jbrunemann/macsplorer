@@ -106,7 +106,7 @@ impl ColumnDialog {
     pub fn ui(&mut self, ui: &mut Ui) -> Outcome {
         let (outer, _) = ui.allocate_exact_size(SIZE, Sense::hover());
         let p = ui.painter();
-        p.rect_filled(outer, 0.0, theme::color::FACE);
+        p.rect_filled(outer, 0.0, theme::color::face());
         theme::bevel(p, outer, Bevel::Raised);
         let inner = outer.shrink(FRAME);
         let mut caption = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
@@ -120,14 +120,14 @@ impl ColumnDialog {
             f.layout(
                 "Select the details you want to display for the files in this folder.".to_owned(),
                 font.clone(),
-                theme::color::TEXT,
+                theme::color::text(),
                 right - left,
             )
         });
         let intro_height = intro.size().y;
-        ui.painter().galley(pos2(left, y), intro, theme::color::TEXT);
+        ui.painter().galley(pos2(left, y), intro, theme::color::text());
         y += intro_height + 10.0;
-        ui.painter().text(pos2(left, y), egui::Align2::LEFT_TOP, "Details:", font.clone(), theme::color::TEXT);
+        ui.painter().text(pos2(left, y), egui::Align2::LEFT_TOP, "Details:", font.clone(), theme::color::text());
         y += 17.0;
 
         let buttons_x = right - BUTTON.x;
@@ -201,13 +201,13 @@ impl ColumnDialog {
             let (column, checked) = self.rows[i];
             let check = Rect::from_min_size(pos2(row.left() + 3.0, row.center().y - 6.5), vec2(13.0, 13.0));
             theme::check_box(&painter, check, checked, true);
-            let galley = ui.fonts_mut(|f| f.layout_no_wrap(column.caption().to_owned(), font.clone(), theme::color::TEXT));
+            let galley = ui.fonts_mut(|f| f.layout_no_wrap(column.caption().to_owned(), font.clone(), theme::color::text()));
             let label = Rect::from_min_size(pos2(check.right() + 4.0, row.top() + 1.0), vec2(galley.size().x + 4.0, ROW_HEIGHT - 2.0));
             let selected = i == self.selected;
             if selected {
-                painter.rect_filled(label, 0.0, theme::color::SELECTION);
+                painter.rect_filled(label, 0.0, theme::color::selection());
             }
-            let text = if selected { theme::color::SELECTION_TEXT } else { theme::color::TEXT };
+            let text = if selected { theme::color::selection_text() } else { theme::color::text() };
             painter.galley_with_override_text_color(pos2(label.left() + 2.0, label.center().y - galley.size().y / 2.0), galley, text);
             if selected {
                 theme::focus_rect(&painter, label);
@@ -231,9 +231,9 @@ impl ColumnDialog {
     /// change sets the selected column's width on OK.
     fn width_box(&mut self, ui: &mut Ui, left: f32, top: f32, font: &egui::FontId) {
         let label = "Width of selected column (in pixels):";
-        let text_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme::color::TEXT).size().x);
+        let text_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme::color::text()).size().x);
         let field = Rect::from_min_size(pos2(left + text_w + 8.0, top), vec2(40.0, 21.0));
-        ui.painter().text(pos2(left, field.center().y), egui::Align2::LEFT_CENTER, label, font.clone(), theme::color::TEXT);
+        ui.painter().text(pos2(left, field.center().y), egui::Align2::LEFT_CENTER, label, font.clone(), theme::color::text());
         let text_rect = theme::sunken_field(ui.painter(), field);
         let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect.shrink2(vec2(2.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
         let resp = edit.add(TextEdit::singleline(&mut self.width_text).frame(egui::Frame::NONE).desired_width(f32::INFINITY).char_limit(3));

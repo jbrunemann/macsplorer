@@ -48,6 +48,12 @@ frame. The fixture folder is built in `app.rs` `mod screenshot`.
   Win2000 paper page (`theme::paint_page`) with the Seti glyph as an emblem;
   apps/packages/Finder custom icons use the real macOS icon; folders are the
   yellow Win2000 folder (the user folders Finder gives a sidebar glyph carry that SF Symbol as an emblem).
+- Dark mode (View menu, remembered by a marker file in the config dir) is not
+  from the Windows binaries: build 10240 has no dark mode code, Explorer got it in
+  Windows 10 1809. `theme::color` are functions that read the palette flag, so
+  never cache a color across frames; icon art that must stay the same in both
+  (folders, the paper page) uses the constants there. `SHOT_DARK=1` renders the
+  screenshot tests dark.
 - The window is borderless (`with_decorations(false)`) so macOS doesn't
   round its corners; the caption bar is drawn by `theme::title_bar`.
 - UI code collects `Action`s while drawing and applies them afterwards

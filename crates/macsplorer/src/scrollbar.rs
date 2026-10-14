@@ -13,8 +13,8 @@ use eframe::egui;
 use egui::scroll_area::{ScrollAreaOutput, ScrollBarVisibility};
 use egui::{Color32, Id, Mesh, Painter, Rangef, Rect, Sense, Stroke, Ui, Vec2, Vec2b, pos2, vec2};
 
-use crate::theme::color::{FACE, HIGHLIGHT, SHADOW, TEXT};
-use crate::theme::{Bevel, bevel};
+use crate::theme::color::{face, highlight, shadow, text};
+use crate::theme::{self, Bevel, bevel};
 
 /// `SM_CXVSCROLL` / `SM_CYHSCROLL`.
 pub const WIDTH: f32 = 16.0;
@@ -26,7 +26,9 @@ const FIRST_DELAY: f64 = 0.25;
 const REPEAT_DELAY: f64 = 0.05;
 
 /// The track while a page click is held: `COLOR_3DFACE` / white, inverted.
-const INVERTED_FACE: Color32 = Color32::from_rgb(0xFF - 0xD4, 0xFF - 0xD0, 0xFF - 0xC8);
+fn inverted_face() -> Color32 {
+    if theme::is_dark() { Color32::from_rgb(0xFF - 0x2B, 0xFF - 0x2B, 0xFF - 0x2B) } else { Color32::from_rgb(0xFF - 0xD4, 0xFF - 0xD0, 0xFF - 0xC8) }
+}
 
 /// Classic bars around a `ScrollArea`: [`Bars::begin`] carves the bars out
 /// of the given rect, the caller shows its scroll area in the returned
@@ -98,7 +100,7 @@ impl Bars {
             }
         }
         if show.x && show.y {
-            ui.painter().rect_filled(Rect::from_min_max(viewport.max, outer.max), 0.0, FACE);
+            ui.painter().rect_filled(Rect::from_min_max(viewport.max, outer.max), 0.0, face());
         }
     }
 }
@@ -268,13 +270,13 @@ fn bar(ui: &mut Ui, id: Id, rect: Rect, d: usize, offset: &mut f32, m: Metrics) 
 fn paint(ui: &Ui, layout: &Layout, active: Option<Part>) {
     let p = ui.painter();
     let d = layout.d;
-    dither(p, layout.rect(layout.track), FACE, HIGHLIGHT);
+    dither(p, layout.rect(layout.track), face(), highlight());
     if let Some(seg) = active.and_then(|part| layout.page_segment(part)) {
-        dither(p, layout.rect(seg), INVERTED_FACE, Color32::BLACK);
+        dither(p, layout.rect(seg), inverted_face(), if theme::is_dark() { Color32::WHITE } else { Color32::BLACK });
     }
     if let Some(thumb) = layout.thumb {
         let r = layout.rect(thumb);
-        p.rect_filled(r, 0.0, FACE);
+        p.rect_filled(r, 0.0, face());
         bevel(p, r, Bevel::Raised);
     }
     let (up, down) = if d == 1 { (Dir::Up, Dir::Down) } else { (Dir::Left, Dir::Right) };
@@ -293,9 +295,9 @@ enum Dir {
 /// `DrawFrameControl(DFC_SCROLL)`: a raised button, or flat with a shadow
 /// border and the glyph nudged by a pixel while pressed.
 fn arrow_button(p: &Painter, r: Rect, dir: Dir, pressed: bool) {
-    p.rect_filled(r, 0.0, FACE);
+    p.rect_filled(r, 0.0, face());
     if pressed {
-        p.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, SHADOW), egui::StrokeKind::Middle);
+        p.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, shadow()), egui::StrokeKind::Middle);
     } else {
         bevel(p, r, Bevel::Raised);
     }
@@ -312,7 +314,7 @@ fn arrow_button(p: &Painter, r: Rect, dir: Dir, pressed: bool) {
             Dir::Left => Rect::from_min_max(pos2(c.x - 2.0 + i as f32, c.y - half), pos2(c.x - 1.0 + i as f32, c.y + half + 1.0)),
             Dir::Right => Rect::from_min_max(pos2(c.x + 1.0 - i as f32, c.y - half), pos2(c.x + 2.0 - i as f32, c.y + half + 1.0)),
         };
-        p.rect_filled(row, 0.0, TEXT);
+        p.rect_filled(row, 0.0, text());
     }
 }
 

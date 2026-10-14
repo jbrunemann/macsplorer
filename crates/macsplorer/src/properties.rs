@@ -357,7 +357,7 @@ impl Properties {
         let title = self.title();
         let (outer, _) = ui.allocate_exact_size(self.size(), Sense::hover());
         let p = ui.painter();
-        p.rect_filled(outer, 0.0, theme::color::FACE);
+        p.rect_filled(outer, 0.0, theme::color::face());
         theme::bevel(p, outer, Bevel::Raised);
         let inner = outer.shrink(FRAME);
         let mut caption = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
@@ -410,7 +410,7 @@ impl Properties {
                 Group::Rows(rows) => {
                     for (label, value) in rows {
                         let row = Rect::from_min_max(pos2(left, y), pos2(page.right() - 12.0, y + ROW_HEIGHT));
-                        ui.painter().text(pos2(row.left(), row.center().y), egui::Align2::LEFT_CENTER, label, font.clone(), theme::color::TEXT);
+                        ui.painter().text(pos2(row.left(), row.center().y), egui::Align2::LEFT_CENTER, label, font.clone(), theme::color::text());
                         let value_rect = Rect::from_min_max(pos2(page.left() + VALUE_X, row.top()), row.max);
                         // Long values (a deep Location) end in "..." with the full
                         // text as a tooltip, like SetDlgItemTextWithToolTip.
@@ -423,15 +423,15 @@ impl Properties {
                 Group::Permissions(bits) => {
                     for (who, row_bits) in ["Owner:", "Group:", "Others:"].into_iter().zip(bits) {
                         let center = y + ROW_HEIGHT / 2.0;
-                        ui.painter().text(pos2(left, center), egui::Align2::LEFT_CENTER, who, font.clone(), theme::color::TEXT);
+                        ui.painter().text(pos2(left, center), egui::Align2::LEFT_CENTER, who, font.clone(), theme::color::text());
                         for (n, (on, name)) in row_bits.into_iter().zip(["Read", "Write", "Execute"]).enumerate() {
                             let check = Rect::from_min_size(pos2(page.left() + VALUE_X + n as f32 * BOX_STEP, center - 6.5), vec2(13.0, 13.0));
                             theme::check_box(ui.painter(), check, on, editable);
                             let at = pos2(check.right() + 4.0, center);
-                            let galley = ui.painter().layout_no_wrap(name.to_owned(), font.clone(), theme::color::TEXT);
+                            let galley = ui.painter().layout_no_wrap(name.to_owned(), font.clone(), theme::color::text());
                             let hit = Rect::from_min_max(check.min, pos2(at.x + galley.size().x + 2.0, check.max.y)).expand2(vec2(0.0, 4.0));
                             if editable {
-                                ui.painter().galley(pos2(at.x, center - galley.size().y / 2.0), galley, theme::color::TEXT);
+                                ui.painter().galley(pos2(at.x, center - galley.size().y / 2.0), galley, theme::color::text());
                                 let click = ui.interact(hit, egui::Id::new(("permission", who, n)), Sense::click());
                                 if click.clicked() {
                                     // Row and column of the box in the grid.
@@ -442,8 +442,8 @@ impl Properties {
                                 }
                             } else {
                                 // Disabled text is embossed: a white copy one pixel down-right.
-                                ui.painter().text(at + vec2(1.0, 1.0), egui::Align2::LEFT_CENTER, name, font.clone(), theme::color::HIGHLIGHT);
-                                ui.painter().text(at, egui::Align2::LEFT_CENTER, name, font.clone(), theme::color::GRAY_TEXT);
+                                ui.painter().text(at + vec2(1.0, 1.0), egui::Align2::LEFT_CENTER, name, font.clone(), theme::color::highlight());
+                                ui.painter().text(at, egui::Align2::LEFT_CENTER, name, font.clone(), theme::color::gray_text());
                             }
                         }
                         y += ROW_HEIGHT;
@@ -530,28 +530,28 @@ fn tab_page(ui: &Ui, page: Rect, label: &str) {
     let p = ui.painter();
     theme::bevel(p, page, Bevel::Raised);
     let font = egui::TextStyle::Body.resolve(ui.style());
-    let text_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme::color::TEXT).size().x);
+    let text_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme::color::text()).size().x);
     let tab = Rect::from_min_max(pos2(page.left(), page.top() - TAB_HEIGHT), pos2(page.left() + text_w + 16.0, page.top() + 1.0));
     let (l, t, r) = (tab.left() + 0.5, tab.top() + 0.5, tab.right() - 0.5);
     let line = |a: egui::Pos2, b: egui::Pos2, c| p.line_segment([a, b], egui::Stroke::new(1.0, c));
     // Open the page's top edge under the tab, then draw the tab's sides.
-    p.rect_filled(Rect::from_min_max(pos2(tab.left() + 1.0, page.top()), pos2(tab.right() - 2.0, page.top() + 2.0)), 0.0, theme::color::FACE);
-    p.rect_filled(Rect::from_min_max(pos2(tab.left() + 1.0, tab.top() + 1.0), pos2(tab.right() - 2.0, page.top())), 0.0, theme::color::FACE);
-    line(pos2(l, page.top() + 1.0), pos2(l, t + 2.0), theme::color::HIGHLIGHT);
-    line(pos2(l + 1.0, t + 1.0), pos2(l + 1.0, t + 1.0) + vec2(0.5, 0.0), theme::color::HIGHLIGHT);
-    line(pos2(l + 2.0, t), pos2(r - 2.0, t), theme::color::HIGHLIGHT);
-    line(pos2(r - 1.0, t + 2.0), pos2(r - 1.0, page.top() + 1.0), theme::color::SHADOW);
-    line(pos2(r, t + 2.0), pos2(r, page.top() + 1.0), theme::color::DARK);
-    line(pos2(r - 1.0, t + 1.0), pos2(r - 1.0, t + 1.0) + vec2(0.5, 0.0), theme::color::DARK);
-    p.text(pos2(tab.center().x, tab.center().y - 1.0), egui::Align2::CENTER_CENTER, label, font, theme::color::TEXT);
+    p.rect_filled(Rect::from_min_max(pos2(tab.left() + 1.0, page.top()), pos2(tab.right() - 2.0, page.top() + 2.0)), 0.0, theme::color::face());
+    p.rect_filled(Rect::from_min_max(pos2(tab.left() + 1.0, tab.top() + 1.0), pos2(tab.right() - 2.0, page.top())), 0.0, theme::color::face());
+    line(pos2(l, page.top() + 1.0), pos2(l, t + 2.0), theme::color::highlight());
+    line(pos2(l + 1.0, t + 1.0), pos2(l + 1.0, t + 1.0) + vec2(0.5, 0.0), theme::color::highlight());
+    line(pos2(l + 2.0, t), pos2(r - 2.0, t), theme::color::highlight());
+    line(pos2(r - 1.0, t + 2.0), pos2(r - 1.0, page.top() + 1.0), theme::color::shadow());
+    line(pos2(r, t + 2.0), pos2(r, page.top() + 1.0), theme::color::dark());
+    line(pos2(r - 1.0, t + 1.0), pos2(r - 1.0, t + 1.0) + vec2(0.5, 0.0), theme::color::dark());
+    p.text(pos2(tab.center().x, tab.center().y - 1.0), egui::Align2::CENTER_CENTER, label, font, theme::color::text());
 }
 
 /// The etched groove between groups of rows.
 fn etched_line(ui: &Ui, page: Rect, y: f32) {
     let x = (page.left() + 14.0)..=(page.right() - 12.0);
     let p = ui.painter();
-    p.hline(x.clone(), y + 0.5, egui::Stroke::new(1.0, theme::color::SHADOW));
-    p.hline(x, y + 1.5, egui::Stroke::new(1.0, theme::color::HIGHLIGHT));
+    p.hline(x.clone(), y + 0.5, egui::Stroke::new(1.0, theme::color::shadow()));
+    p.hline(x, y + 1.5, egui::Stroke::new(1.0, theme::color::highlight()));
 }
 
 #[cfg(test)]

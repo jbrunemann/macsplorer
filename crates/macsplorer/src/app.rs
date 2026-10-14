@@ -146,6 +146,7 @@ enum Action {
     InvertSelection,
     Undo,
     SetView(ViewMode),
+    SetDark(bool),
     /// Open the Properties dialog for an item or folder.
     Properties(PathBuf),
     /// Properties for an item of the list: with several items selected, one
@@ -977,6 +978,11 @@ impl Explorer {
                 Action::Undo => self.undo_last(),
                 Action::Properties(path) => self.open_properties(path),
                 Action::ItemProperties(path) => self.open_item_properties(path),
+                Action::SetDark(dark) => {
+                    theme::set_dark(&self.ctx, dark);
+                    theme::store_dark_preference(dark);
+                    self.icons.palette_changed();
+                }
                 Action::SetView(mode) => {
                     self.settings.view = mode;
                     // Keep the focused item in sight across the switch.
@@ -1197,6 +1203,11 @@ impl Explorer {
                 changed |= ui.checkbox(&mut self.settings.show_extensions, "File name extensions").changed();
                 changed |= ui.checkbox(&mut self.settings.show_hidden, "Hidden files and folders").changed();
                 ui.checkbox(&mut self.settings.color_names, "Special files in color");
+                let mut dark = theme::is_dark();
+                if ui.checkbox(&mut dark, "Dark mode").changed() {
+                    actions.push(Action::SetDark(dark));
+                    ui.close();
+                }
                 if ui.checkbox(&mut self.settings.expand_to_open, "Expand to open folder").changed() && self.settings.expand_to_open {
                     self.sync_tree();
                 }
@@ -1461,7 +1472,7 @@ impl Explorer {
         let shown = self.columns.visible();
         let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, columns, header_left, .. } = self;
         // Classic list views don't highlight rows on hover.
-        ui.visuals_mut().widgets.hovered.bg_fill = theme::color::WINDOW;
+        ui.visuals_mut().widgets.hovered.bg_fill = theme::color::window();
         ui.spacing_mut().item_spacing.x = 0.0;
         let pitch = LIST_ROW_HEIGHT + ui.spacing().item_spacing.y;
         let font = egui::TextStyle::Body.resolve(ui.style());
@@ -1487,7 +1498,7 @@ impl Explorer {
             let sense = if header_hit.divider().is_some() { Sense::hover() } else { Sense::click() };
             let resp = ui.interact(rect, ui.id().with(label), sense);
             let p = ui.painter();
-            p.rect_filled(rect, 0.0, theme::color::FACE);
+            p.rect_filled(rect, 0.0, theme::color::face());
             let down = resp.is_pointer_button_down_on();
             theme::bevel(p, rect, if down { Bevel::SunkenThin } else { Bevel::Raised });
             let off = if down { 1.0 } else { 0.0 };
@@ -1497,7 +1508,7 @@ impl Explorer {
             } else {
                 (egui::pos2(rect.left() + 6.0 + off, rect.center().y + off), egui::Align2::LEFT_CENTER)
             };
-            let text = p.text(pos, align, label, font, theme::color::TEXT);
+            let text = p.text(pos, align, label, font, theme::color::text());
             if sort.column == column {
                 // A small sort triangle beside the caption.
                 let x = if right { text.left() - 10.0 } else { text.right() + 6.0 };
@@ -1507,7 +1518,7 @@ impl Explorer {
                 } else {
                     vec![egui::pos2(c.x - 3.0, c.y - 2.0), egui::pos2(c.x + 3.0, c.y - 2.0), egui::pos2(c.x, c.y + 2.0)]
                 };
-                p.add(egui::Shape::convex_polygon(pts, theme::color::SHADOW, egui::Stroke::NONE));
+                p.add(egui::Shape::convex_polygon(pts, theme::color::shadow(), egui::Stroke::NONE));
             }
             if resp.clicked() {
                 actions.push(Action::Sort(column));
@@ -1545,7 +1556,7 @@ impl Explorer {
                 }
                 row.col(|ui| {
                     let rect = ui.max_rect();
-                    ui.painter().rect_filled(rect, 0.0, theme::color::FACE);
+                    ui.painter().rect_filled(rect, 0.0, theme::color::face());
                     theme::bevel(ui.painter(), rect, Bevel::Raised);
                     let resp = ui.interact(rect, ui.id().with("header-rest"), Sense::click());
                     resp.context_menu(|ui| header_menu(ui, columns, actions));
@@ -1661,7 +1672,7 @@ impl Explorer {
                     (first..last)
                         .map(|pos| {
                             let name = entries[visible[pos]].display_name(settings.show_extensions);
-                            let w = ui.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), font.clone(), theme::color::TEXT)).size().x;
+                            let w = ui.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), font.clone(), theme::color::text())).size().x;
                             let y = pos as f32 * pitch;
                             let right = (icon_left + 16.0 + 3.0 + w + 2.0).min(name_right);
                             (visible[pos], layout::Rect { min: (icon_left, y), max: (right, y + LIST_ROW_HEIGHT) })
@@ -1730,7 +1741,7 @@ impl Explorer {
     /// `_ValidateMinWidth`). Cell padding is ours, matching how cells draw.
     fn auto_width(&self, ui: &Ui, column: Column, visible: &[usize]) -> f32 {
         let font = egui::TextStyle::Body.resolve(ui.style());
-        let width = |text: String| ui.fonts_mut(|f| f.layout_no_wrap(text, font.clone(), theme::color::TEXT).size().x);
+        let width = |text: String| ui.fonts_mut(|f| f.layout_no_wrap(text, font.clone(), theme::color::text()).size().x);
         // Caption plus 6 px each side (3 × SM_CXEDGE), plus 25.
         let caption = width(column.caption().into()) + 12.0 + 25.0;
         visible
@@ -1859,7 +1870,7 @@ impl Explorer {
                             .map(|pos| {
                                 let index = visible[pos];
                                 let unfolded = focused && *focus_item == Some(index);
-                                let galley = icon_label(ui, entries[index].display_name(settings.show_extensions), &font, theme::color::TEXT, unfolded);
+                                let galley = icon_label(ui, entries[index].display_name(settings.show_extensions), &font, theme::color::text(), unfolded);
                                 let size = layout::label_size((galley.size().x, galley.size().y), line_height, !unfolded);
                                 let cell = IconCell::new(grid.slot(pos), size);
                                 (index, cell.image.union(&cell.label))
@@ -1895,7 +1906,7 @@ impl Explorer {
                     .iter()
                     .map(|&i| {
                         let name = self.entries[i].display_name(self.settings.show_extensions).to_owned();
-                        ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), theme::color::TEXT).size().x)
+                        ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), theme::color::text()).size().x)
                     })
                     .fold(0.0, f32::max);
                 self.widest_name = Some((key, w));
@@ -1929,7 +1940,7 @@ impl Explorer {
             let (x, y) = columns.cell(pos);
             let icon = layout::Rect::from_min_size((x, y + (row_height - layout::SMALL_ICON) / 2.0), (layout::SMALL_ICON, layout::SMALL_ICON));
             let name = entries[visible[pos]].display_name(settings.show_extensions).to_owned();
-            let text = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), theme::color::TEXT).size().x);
+            let text = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), theme::color::text()).size().x);
             let width = (text + 2.0 * layout::LABEL_PAD_X).min(columns.column_width - layout::SMALL_ICON);
             (icon, layout::Rect::from_min_size((x + layout::SMALL_ICON, y), (width, row_height)))
         };
@@ -2047,9 +2058,9 @@ impl Explorer {
         for r in [left, mid, right] {
             theme::bevel(p, r, Bevel::SunkenThin);
         }
-        let color = if self.status.is_some() { egui::Color32::from_rgb(0x80, 0, 0) } else { theme::color::TEXT };
+        let color = if self.status.is_some() { theme::color::error_text() } else { theme::color::text() };
         p.with_clip_rect(left.shrink(2.0)).text(egui::pos2(left.left() + 4.0, left.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), color);
-        p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::TEXT);
+        p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
         let icon = egui::Rect::from_min_size(egui::pos2(right.left() + 4.0, right.center().y - 8.0), egui::vec2(16.0, 16.0));
         theme::paint_icon(p, icon, Icon::Drive, true);
         p.with_clip_rect(right.shrink(2.0)).text(
@@ -2057,7 +2068,7 @@ impl Explorer {
             egui::Align2::LEFT_CENTER,
             &self.computer_name,
             font,
-            theme::color::TEXT,
+            theme::color::text(),
         );
     }
 }
@@ -2076,12 +2087,12 @@ impl eframe::App for Explorer {
 
         // The window frame: a raised 3D border around everything.
         let outer = ui.max_rect();
-        ui.painter().rect_filled(outer, 0.0, theme::color::FACE);
+        ui.painter().rect_filled(outer, 0.0, theme::color::face());
         theme::bevel(ui.painter(), outer, Bevel::Raised);
         theme::resize_frame(ui, outer);
         let mut root = ui.new_child(egui::UiBuilder::new().max_rect(outer.shrink(4.0)).layout(Layout::top_down(Align::Min)));
         let ui = &mut root;
-        let plain = egui::Frame::NONE.fill(theme::color::FACE);
+        let plain = egui::Frame::NONE.fill(theme::color::face());
 
         egui::Panel::top("chrome").frame(plain).show_separator_line(false).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
@@ -2213,7 +2224,7 @@ fn empty_message(ui: &mut Ui, search: &str) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        ui.label(RichText::new(msg).color(theme::color::GRAY_TEXT));
+        ui.label(RichText::new(msg).color(theme::color::gray_text()));
     });
 }
 
@@ -2348,13 +2359,13 @@ fn icon_label(ui: &Ui, text: &str, font: &egui::FontId, color: egui::Color32, un
 fn name_color(entry: &Entry, settings: &Settings, highlighted: bool) -> egui::Color32 {
     use macsplorer_core::highlight::{Highlight, classify};
     if highlighted {
-        return theme::color::SELECTION_TEXT;
+        return theme::color::selection_text();
     }
     match classify(entry).filter(|_| settings.color_names) {
-        Some(Highlight::Executable) => theme::color::EXECUTABLE,
-        Some(Highlight::Link) => theme::color::LINK,
-        Some(Highlight::Archive | Highlight::BrokenLink) => theme::color::ARCHIVE,
-        None => theme::color::TEXT,
+        Some(Highlight::Executable) => theme::color::executable(),
+        Some(Highlight::Link) => theme::color::link(),
+        Some(Highlight::Archive | Highlight::BrokenLink) => theme::color::archive(),
+        None => theme::color::text(),
     }
 }
 
@@ -2362,12 +2373,12 @@ fn name_color(entry: &Entry, settings: &Settings, highlighted: bool) -> egui::Co
 /// color (button face while the view isn't focused).
 fn paint_label(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, selected: bool, focused: bool) {
     if selected {
-        ui.painter().rect_filled(rect, 0.0, if focused { theme::color::SELECTION } else { theme::color::FACE });
+        ui.painter().rect_filled(rect, 0.0, if focused { theme::color::selection() } else { theme::color::face() });
     }
     // Centered galleys are laid out around x = 0; left-aligned ones start there.
     let x = if galley.job.halign == Align::Center { rect.center().x } else { rect.left() + layout::LABEL_PAD_X };
     let y = rect.top() + (rect.height() - galley.size().y) / 2.0;
-    ui.painter().with_clip_rect(rect).galley(egui::pos2(x, y), galley, theme::color::TEXT);
+    ui.painter().with_clip_rect(rect).galley(egui::pos2(x, y), galley, theme::color::text());
 }
 
 /// `wrapping` makes it the Large Icons box: centered text wrapped in the
@@ -2375,8 +2386,8 @@ fn paint_label(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, 
 fn rename_editor(ui: &mut Ui, r: &mut RenameState, wrapping: bool, actions: &mut Vec<Action>) {
     let id = ui.make_persistent_id(("rename", &r.path));
     let frame = egui::Frame::NONE
-        .fill(theme::color::WINDOW)
-        .stroke(egui::Stroke::new(1.0, theme::color::TEXT))
+        .fill(theme::color::window())
+        .stroke(egui::Stroke::new(1.0, theme::color::text()))
         .inner_margin(egui::Margin::symmetric(2, 0));
     let edit = if wrapping {
         TextEdit::multiline(&mut r.text)
@@ -2459,7 +2470,7 @@ fn selectable_name(ui: &mut Ui, text: &str, color: egui::Color32, selected: bool
     let resp = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate().selectable(false).sense(Sense::hover()));
     let rect = resp.rect.expand2(egui::vec2(2.0, 1.0));
     if selected {
-        let fill = if focused { theme::color::SELECTION } else { theme::color::FACE };
+        let fill = if focused { theme::color::selection() } else { theme::color::face() };
         ui.painter().set(bg, egui::Shape::rect_filled(rect, 0.0, fill));
     }
     rect
@@ -2468,19 +2479,19 @@ fn selectable_name(ui: &mut Ui, text: &str, color: egui::Color32, selected: bool
 /// A flat crumb in the address field that pops out when hovered.
 fn crumb_width(ui: &Ui, text: &str) -> f32 {
     let font = egui::TextStyle::Body.resolve(ui.style());
-    ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::TEXT).size().x + 6.0
+    ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::text()).size().x + 6.0
 }
 
 fn crumb_button(ui: &mut Ui, text: &str) -> egui::Response {
     let font = egui::TextStyle::Body.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::TEXT);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::text());
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(galley.size().x + 6.0, 16.0), Sense::click());
     if resp.is_pointer_button_down_on() {
         theme::bevel(ui.painter(), rect, Bevel::SunkenThin);
     } else if resp.hovered() {
         theme::bevel(ui.painter(), rect, Bevel::RaisedThin);
     }
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, theme::color::TEXT);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, theme::color::text());
     resp
 }
 
@@ -2537,13 +2548,13 @@ fn tree_guides(rows: &[Row]) -> Vec<Guide> {
 /// only its text.
 fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll: bool, focused: bool, actions: &mut Vec<Action>) {
     let font = egui::TextStyle::Body.resolve(ui.style());
-    let text_w = ui.painter().layout_no_wrap(row.label.clone(), font.clone(), theme::color::TEXT).size().x;
+    let text_w = ui.painter().layout_no_wrap(row.label.clone(), font.clone(), theme::color::text()).size().x;
     let x0 = ui.max_rect().left() + 2.0;
     let label_x = x0 + (row.depth + 1) as f32 * TREE_INDENT + 16.0 + 4.0;
     let width = (label_x - ui.max_rect().left() + text_w + 6.0).max(ui.available_width());
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TREE_ROW_HEIGHT), Sense::click());
     let p = ui.painter();
-    let line = egui::Stroke::new(1.0, theme::color::TREE_LINE);
+    let line = egui::Stroke::new(1.0, theme::color::tree_line());
     // Single-pixel dots on even pixel coordinates, so the pattern lines up
     // between rows and stays crisp whatever the row's fractional offset.
     let dotted = |a: egui::Pos2, b: egui::Pos2| {
@@ -2569,9 +2580,9 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
 
     let boxr = egui::Rect::from_center_size(egui::pos2(cx, mid_y), egui::vec2(9.0, 9.0));
     if row.expandable {
-        p.rect_filled(boxr, 0.0, theme::color::WINDOW);
+        p.rect_filled(boxr, 0.0, theme::color::window());
         p.rect_stroke(boxr, 0.0, line, egui::StrokeKind::Inside);
-        let s = egui::Stroke::new(1.0, theme::color::TEXT);
+        let s = egui::Stroke::new(1.0, theme::color::text());
         p.hline(boxr.left() + 2.0..=boxr.right() - 2.0, mid_y, s);
         if !row.expanded {
             p.vline(cx, boxr.top() + 2.0..=boxr.bottom() - 2.0, s);
@@ -2580,7 +2591,7 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
 
     let icon_rect = egui::Rect::from_min_size(egui::pos2(x0 + (row.depth + 1) as f32 * TREE_INDENT, rect.center().y - 8.0), egui::vec2(16.0, 16.0));
     if row.placeholder {
-        p.text(egui::pos2(icon_rect.left(), rect.center().y), egui::Align2::LEFT_CENTER, &row.label, font, theme::color::GRAY_TEXT);
+        p.text(egui::pos2(icon_rect.left(), rect.center().y), egui::Align2::LEFT_CENTER, &row.label, font, theme::color::gray_text());
         return;
     }
     if row.depth == 0 && row.section == Section::Locations {
@@ -2590,11 +2601,11 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
     }
     let text_rect = egui::Rect::from_min_size(egui::pos2(label_x - 2.0, rect.center().y - 7.0), egui::vec2(text_w + 4.0, 14.0));
     let text_color = if row.selected {
-        let fill = if focused { theme::color::SELECTION } else { theme::color::FACE };
+        let fill = if focused { theme::color::selection() } else { theme::color::face() };
         p.rect_filled(text_rect, 0.0, fill);
-        if focused { theme::color::SELECTION_TEXT } else { theme::color::TEXT }
+        if focused { theme::color::selection_text() } else { theme::color::text() }
     } else {
-        theme::color::TEXT
+        theme::color::text()
     };
     p.text(egui::pos2(label_x, rect.center().y), egui::Align2::LEFT_CENTER, &row.label, font, text_color);
     if row.selected && scroll {
@@ -2703,7 +2714,7 @@ const MENU_MAX_HEIGHT: f32 = 400.0;
 fn scrolled_menu(ui: &mut Ui, items: &[(String, PathBuf)]) -> Option<PathBuf> {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let (pad, spacing, min_height) = (ui.spacing().button_padding, ui.spacing().item_spacing.y, ui.spacing().interact_size.y);
-    let text_width = items.iter().map(|(name, _)| ui.painter().layout_no_wrap(name.clone(), font.clone(), theme::color::TEXT).size().x).fold(0.0, f32::max);
+    let text_width = items.iter().map(|(name, _)| ui.painter().layout_no_wrap(name.clone(), font.clone(), theme::color::text()).size().x).fold(0.0, f32::max);
     let row = (ui.fonts_mut(|f| f.row_height(&font)) + 2.0 * pad.y).max(min_height) + spacing;
     let content = row * items.len() as f32 - spacing;
     let height = content.min(MENU_MAX_HEIGHT);
@@ -2971,6 +2982,8 @@ mod screenshot {
             .wgpu()
             .build_eframe(|cc| {
                 theme::install(&cc.egui_ctx);
+                // `SHOT_DARK=1 cargo test -p macsplorer -- --ignored` renders the dark palette.
+                theme::set_dark(&cc.egui_ctx, std::env::var_os("SHOT_DARK").is_some());
                 let mut app = Explorer::new(cc.egui_ctx.clone(), start.clone());
                 app.finish_listing();
                 setup(&mut app);

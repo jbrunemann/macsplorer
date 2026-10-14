@@ -2,6 +2,7 @@
 //! title bar, toolbar buttons and 16×16 icons, all drawn with egui.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 use egui::epaint::{Mesh, PathShape, PathStroke};
@@ -12,38 +13,129 @@ use egui::{
 
 use crate::platform;
 
-/// Windows Classic system colors (`GetSysColor` defaults on Windows 2000).
+static DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn is_dark() -> bool {
+    DARK_MODE.load(Ordering::Relaxed)
+}
+
+/// The marker file for the dark mode choice; the app has no settings file.
+fn dark_preference_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("macsplorer").join("dark-mode"))
+}
+
+pub fn load_dark_preference() -> bool {
+    dark_preference_path().is_some_and(|p| p.exists())
+}
+
+pub fn store_dark_preference(dark: bool) {
+    let Some(path) = dark_preference_path() else { return };
+    if dark {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, "");
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Windows Classic system colors (`GetSysColor` defaults on Windows 2000),
+/// or the same roles in a dark palette. The dark one is not from Windows 2000
+/// (it had none, and neither do the build 10240 binaries; Explorer's dark mode
+/// came with Windows 10 1809): it keeps the Classic bevels on dark grays,
+/// like Windows 10's dark Explorer keeps its flat layout on dark grays.
 pub mod color {
-    use super::Color32;
+    use super::{Color32, is_dark};
 
-    pub const FACE: Color32 = Color32::from_rgb(0xD4, 0xD0, 0xC8); // COLOR_3DFACE
-    pub const HIGHLIGHT: Color32 = Color32::WHITE; // COLOR_3DHILIGHT
-    pub const LIGHT: Color32 = Color32::from_rgb(0xD4, 0xD0, 0xC8); // COLOR_3DLIGHT
-    pub const SHADOW: Color32 = Color32::from_rgb(0x80, 0x80, 0x80); // COLOR_3DSHADOW
-    pub const DARK: Color32 = Color32::from_rgb(0x40, 0x40, 0x40); // COLOR_3DDKSHADOW
-    pub const WINDOW: Color32 = Color32::WHITE;
-    pub const TEXT: Color32 = Color32::BLACK;
-    pub const GRAY_TEXT: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
-    pub const SELECTION: Color32 = Color32::from_rgb(0x0A, 0x24, 0x6A); // COLOR_HIGHLIGHT
-    pub const SELECTION_TEXT: Color32 = Color32::WHITE;
-    pub const CAPTION: Color32 = Color32::from_rgb(0x0A, 0x24, 0x6A);
-    pub const CAPTION_GRADIENT: Color32 = Color32::from_rgb(0xA6, 0xCA, 0xF0);
-    pub const CAPTION_INACTIVE: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
-    pub const CAPTION_INACTIVE_GRADIENT: Color32 = Color32::from_rgb(0xC0, 0xC0, 0xC0);
-    pub const CAPTION_INACTIVE_TEXT: Color32 = Color32::from_rgb(0xD4, 0xD0, 0xC8);
-    pub const TREE_LINE: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
+    fn pick(light: Color32, dark: Color32) -> Color32 {
+        if is_dark() { dark } else { light }
+    }
 
+    const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
+        Color32::from_rgb(r, g, b)
+    }
+
+    pub fn face() -> Color32 {
+        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x2B, 0x2B, 0x2B)) // COLOR_3DFACE
+    }
+    pub fn highlight() -> Color32 {
+        pick(Color32::WHITE, rgb(0x5A, 0x5A, 0x5A)) // COLOR_3DHILIGHT
+    }
+    pub fn light() -> Color32 {
+        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x3E, 0x3E, 0x3E)) // COLOR_3DLIGHT
+    }
+    pub fn shadow() -> Color32 {
+        pick(rgb(0x80, 0x80, 0x80), rgb(0x18, 0x18, 0x18)) // COLOR_3DSHADOW
+    }
+    pub fn dark() -> Color32 {
+        pick(rgb(0x40, 0x40, 0x40), Color32::BLACK) // COLOR_3DDKSHADOW
+    }
+    pub fn window() -> Color32 {
+        pick(Color32::WHITE, rgb(0x19, 0x19, 0x19))
+    }
+    pub fn text() -> Color32 {
+        pick(Color32::BLACK, rgb(0xF2, 0xF2, 0xF2))
+    }
+    pub fn gray_text() -> Color32 {
+        rgb(0x80, 0x80, 0x80)
+    }
+    pub fn selection() -> Color32 {
+        pick(rgb(0x0A, 0x24, 0x6A), rgb(0x2B, 0x56, 0x9A)) // COLOR_HIGHLIGHT
+    }
+    pub fn selection_text() -> Color32 {
+        Color32::WHITE
+    }
+    pub fn active_caption() -> Color32 {
+        pick(rgb(0x0A, 0x24, 0x6A), rgb(0x10, 0x1C, 0x38))
+    }
+    pub fn caption_gradient() -> Color32 {
+        pick(rgb(0xA6, 0xCA, 0xF0), rgb(0x3A, 0x62, 0x9C))
+    }
+    pub fn caption_inactive() -> Color32 {
+        pick(rgb(0x80, 0x80, 0x80), rgb(0x24, 0x24, 0x24))
+    }
+    pub fn caption_inactive_gradient() -> Color32 {
+        pick(rgb(0xC0, 0xC0, 0xC0), rgb(0x3A, 0x3A, 0x3A))
+    }
+    pub fn caption_inactive_text() -> Color32 {
+        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x90, 0x90, 0x90))
+    }
+    /// A checked toolbar button: Windows draws it with a dither of face and
+    /// white, approximated by a flat in-between color.
+    pub fn checked_face() -> Color32 {
+        pick(rgb(0xEA, 0xE8, 0xE3), rgb(0x3F, 0x3F, 0x3F))
+    }
+    pub fn tree_line() -> Color32 {
+        pick(rgb(0x80, 0x80, 0x80), rgb(0x6A, 0x6A, 0x6A))
+    }
+
+    // Special file names, after Ubuntu's `ls` colors in the dark shades of
+    // the 16-color palette, which read on a white list; the bright shades
+    // on a dark one.
+    pub fn executable() -> Color32 {
+        pick(rgb(0x00, 0x80, 0x00), rgb(0x4C, 0xD9, 0x4C))
+    }
+    pub fn link() -> Color32 {
+        pick(rgb(0x00, 0x80, 0x80), rgb(0x4C, 0xD6, 0xD6))
+    }
+    pub fn archive() -> Color32 {
+        pick(rgb(0x80, 0x00, 0x00), rgb(0xFF, 0x6B, 0x6B))
+    }
+    /// The status bar message for a failed operation.
+    pub fn error_text() -> Color32 {
+        pick(rgb(0x80, 0x00, 0x00), rgb(0xFF, 0x6B, 0x6B))
+    }
+
+    // The same in both palettes: icon art.
     pub const FOLDER: Color32 = Color32::from_rgb(0xF5, 0xD4, 0x6B);
     pub const FOLDER_DARK: Color32 = Color32::from_rgb(0x9C, 0x7A, 0x1E);
     pub const FOLDER_LIGHT: Color32 = Color32::from_rgb(0xFF, 0xF1, 0xB8);
     pub const ARROW: Color32 = Color32::from_rgb(0x2E, 0x8B, 0x2E);
     pub const ARROW_DARK: Color32 = Color32::from_rgb(0x14, 0x50, 0x14);
-
-    // Special file names, after Ubuntu's `ls` colors in the dark shades of
-    // the 16-color palette, which read on a white list.
-    pub const EXECUTABLE: Color32 = Color32::from_rgb(0x00, 0x80, 0x00);
-    pub const LINK: Color32 = Color32::from_rgb(0x00, 0x80, 0x80);
-    pub const ARCHIVE: Color32 = Color32::from_rgb(0x80, 0x00, 0x00);
+    /// The sheet of a document icon and its outline stay a white page.
+    pub const PAPER: Color32 = Color32::WHITE;
+    pub const PAPER_EDGE: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
 }
 use color::*;
 
@@ -119,41 +211,55 @@ pub fn install(ctx: &egui::Context) {
             ..egui::style::ScrollStyle::solid()
         };
 
+    });
+    apply_visuals(ctx);
+}
+
+/// Switches between the light and dark palette and restyles egui. The app's
+/// own painting reads the palette every frame, so it follows by repainting.
+pub fn set_dark(ctx: &egui::Context, dark: bool) {
+    DARK_MODE.store(dark, Ordering::Relaxed);
+    apply_visuals(ctx);
+    ctx.request_repaint();
+}
+
+fn apply_visuals(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
         let v = &mut style.visuals;
-        *v = egui::Visuals::light();
-        v.panel_fill = FACE;
-        v.window_fill = FACE;
-        v.window_stroke = Stroke::new(1.0, SHADOW);
+        *v = if is_dark() { egui::Visuals::dark() } else { egui::Visuals::light() };
+        v.panel_fill = face();
+        v.window_fill = face();
+        v.window_stroke = Stroke::new(1.0, shadow());
         v.window_shadow = Shadow::NONE;
         v.popup_shadow = Shadow { offset: [2, 2], blur: 0, spread: 0, color: Color32::from_black_alpha(90) };
         v.window_corner_radius = CornerRadius::ZERO;
         v.menu_corner_radius = CornerRadius::ZERO;
-        v.extreme_bg_color = WINDOW;
-        v.text_edit_bg_color = Some(WINDOW);
-        v.faint_bg_color = WINDOW;
+        v.extreme_bg_color = window();
+        v.text_edit_bg_color = Some(window());
+        v.faint_bg_color = window();
         v.striped = false;
-        v.hyperlink_color = SELECTION;
+        v.hyperlink_color = selection();
         v.override_text_color = None;
-        v.selection.bg_fill = SELECTION;
-        v.selection.stroke = Stroke::new(1.0, SELECTION_TEXT);
+        v.selection.bg_fill = selection();
+        v.selection.stroke = Stroke::new(1.0, selection_text());
         v.interact_cursor = None;
-        v.text_cursor.stroke = Stroke::new(1.0, TEXT);
+        v.text_cursor.stroke = Stroke::new(1.0, text());
 
         let w = &mut v.widgets;
         for wv in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
             wv.corner_radius = CornerRadius::ZERO;
             wv.expansion = 0.0;
-            wv.bg_fill = FACE;
-            wv.weak_bg_fill = FACE;
-            wv.fg_stroke = Stroke::new(1.0, TEXT);
-            wv.bg_stroke = Stroke::new(1.0, SHADOW);
+            wv.bg_fill = face();
+            wv.weak_bg_fill = face();
+            wv.fg_stroke = Stroke::new(1.0, text());
+            wv.bg_stroke = Stroke::new(1.0, shadow());
         }
-        w.noninteractive.bg_stroke = Stroke::new(1.0, SHADOW);
+        w.noninteractive.bg_stroke = Stroke::new(1.0, shadow());
         // Menu items and other egui-drawn hovers use the classic navy highlight.
         for wv in [&mut w.hovered, &mut w.active, &mut w.open] {
-            wv.bg_fill = SELECTION;
-            wv.weak_bg_fill = SELECTION;
-            wv.fg_stroke = Stroke::new(1.0, SELECTION_TEXT);
+            wv.bg_fill = selection();
+            wv.weak_bg_fill = selection();
+            wv.fg_stroke = Stroke::new(1.0, selection_text());
             wv.bg_stroke = Stroke::NONE;
         }
     });
@@ -176,10 +282,10 @@ pub enum Bevel {
 /// Draws a Windows Classic 3D edge just inside `r`.
 pub fn bevel(p: &Painter, r: Rect, kind: Bevel) {
     let (outer_tl, outer_br, inner) = match kind {
-        Bevel::Raised => (HIGHLIGHT, DARK, Some((LIGHT, SHADOW))),
-        Bevel::Sunken => (SHADOW, HIGHLIGHT, Some((DARK, LIGHT))),
-        Bevel::RaisedThin => (HIGHLIGHT, SHADOW, None),
-        Bevel::SunkenThin => (SHADOW, HIGHLIGHT, None),
+        Bevel::Raised => (highlight(), dark(), Some((light(), shadow()))),
+        Bevel::Sunken => (shadow(), highlight(), Some((dark(), light()))),
+        Bevel::RaisedThin => (highlight(), shadow(), None),
+        Bevel::SunkenThin => (shadow(), highlight(), None),
     };
     edge(p, r, outer_tl, outer_br);
     if let Some((tl, br)) = inner {
@@ -220,7 +326,7 @@ pub fn focus_rect(p: &Painter, r: Rect) {
     }
     let dot = |x: f32, y: f32| {
         if (x + y).rem_euclid(2.0) == 0.0 {
-            dot(p, pos2(x, y), TEXT);
+            dot(p, pos2(x, y), text());
         }
     };
     let mut x = x0;
@@ -245,30 +351,30 @@ pub fn focus_rect(p: &Painter, r: Rect) {
 pub fn etched_hline(ui: &mut Ui) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 2.0), Sense::hover());
     let p = ui.painter();
-    p.hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, SHADOW));
-    p.hline(r.x_range(), r.top() + 1.5, Stroke::new(1.0, HIGHLIGHT));
+    p.hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, shadow()));
+    p.hline(r.x_range(), r.top() + 1.5, Stroke::new(1.0, highlight()));
 }
 
 pub fn etched_vline(ui: &mut Ui, height: f32) {
     let (r, _) = ui.allocate_exact_size(vec2(6.0, height), Sense::hover());
     let x = r.center().x.floor();
     let p = ui.painter();
-    p.vline(x + 0.5, r.y_range(), Stroke::new(1.0, SHADOW));
-    p.vline(x + 1.5, r.y_range(), Stroke::new(1.0, HIGHLIGHT));
+    p.vline(x + 0.5, r.y_range(), Stroke::new(1.0, shadow()));
+    p.vline(x + 1.5, r.y_range(), Stroke::new(1.0, highlight()));
 }
 
 /// A classic 13 × 13 check box at `rect`'s top left: a sunken white well,
 /// gray when disabled, with the 7 × 7 check mark when `checked`.
 pub fn check_box(p: &Painter, rect: Rect, checked: bool, enabled: bool) {
     let r = Rect::from_min_size(rect.min, vec2(13.0, 13.0));
-    p.rect_filled(r, 0.0, if enabled { WINDOW } else { FACE });
+    p.rect_filled(r, 0.0, if enabled { window() } else { face() });
     bevel(p, r, Bevel::Sunken);
     if !checked {
         return;
     }
     // Each column of the mark is three pixels tall.
     const TOPS: [f32; 7] = [2.0, 3.0, 4.0, 3.0, 2.0, 1.0, 0.0];
-    let color = if enabled { TEXT } else { SHADOW };
+    let color = if enabled { text() } else { shadow() };
     for (x, top) in TOPS.iter().enumerate() {
         for y in 0..3 {
             dot(p, r.min + vec2(3.0 + x as f32, 3.0 + top + y as f32), color);
@@ -278,7 +384,7 @@ pub fn check_box(p: &Painter, rect: Rect, checked: bool, enabled: bool) {
 
 /// Paints a white sunken field into `rect` and returns the area inside the bevel.
 pub fn sunken_field(p: &Painter, rect: Rect) -> Rect {
-    p.rect_filled(rect, 0.0, WINDOW);
+    p.rect_filled(rect, 0.0, window());
     bevel(p, rect, Bevel::Sunken);
     rect.shrink(2.0)
 }
@@ -288,9 +394,9 @@ pub fn sunken_field(p: &Painter, rect: Rect) -> Rect {
 /// A flat toolbar button: raised when hot, sunken when pressed (IE5 coolbar).
 pub fn tool_button(ui: &mut Ui, icon: Icon, label: Option<&str>, enabled: bool) -> Response {
     let font = TextStyle::Button.resolve(ui.style());
-    let galley = label.map(|l| ui.painter().layout_no_wrap(l.into(), font.clone(), if enabled { TEXT } else { GRAY_TEXT }));
+    let galley = label.map(|l| ui.painter().layout_no_wrap(l.into(), font.clone(), if enabled { text() } else { gray_text() }));
     // Disabled text is embossed: a white copy one pixel down-right.
-    let emboss = label.filter(|_| !enabled).map(|l| ui.painter().layout_no_wrap(l.into(), font, HIGHLIGHT));
+    let emboss = label.filter(|_| !enabled).map(|l| ui.painter().layout_no_wrap(l.into(), font, highlight()));
     let text_w = galley.as_ref().map_or(0.0, |g| g.size().x + 4.0);
     let size = vec2(6.0 + 16.0 + text_w + 6.0, 24.0);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
@@ -308,9 +414,9 @@ pub fn tool_button(ui: &mut Ui, icon: Icon, label: Option<&str>, enabled: bool) 
     if let Some(g) = galley {
         let pos = pos2(icon_rect.right() + 4.0, rect.center().y - g.size().y / 2.0) + offset;
         if let Some(e) = emboss {
-            p.galley(pos + vec2(1.0, 1.0), e, HIGHLIGHT);
+            p.galley(pos + vec2(1.0, 1.0), e, highlight());
         }
-        p.galley(pos, g, TEXT);
+        p.galley(pos, g, text());
     }
     resp
 }
@@ -323,7 +429,7 @@ pub fn tool_toggle(ui: &mut Ui, icon: Icon, label: &str, checked: bool) -> Respo
     // Checked buttons get the classic light dither behind a sunken edge.
     let bg = ui.painter().add(egui::Shape::Noop);
     let resp = tool_button(ui, icon, Some(label), true);
-    ui.painter().set(bg, egui::Shape::rect_filled(resp.rect, 0.0, Color32::from_rgb(0xEA, 0xE8, 0xE3)));
+    ui.painter().set(bg, egui::Shape::rect_filled(resp.rect, 0.0, checked_face()));
     bevel(ui.painter(), resp.rect, Bevel::SunkenThin);
     resp
 }
@@ -339,7 +445,7 @@ pub fn drop_arrow_button(ui: &mut Ui, enabled: bool) -> Response {
         bevel(p, rect, Bevel::RaisedThin);
     }
     let c = rect.center();
-    let color = if enabled { TEXT } else { GRAY_TEXT };
+    let color = if enabled { text() } else { gray_text() };
     p.add(egui::Shape::convex_polygon(
         vec![pos2(c.x - 3.0, c.y - 1.0), pos2(c.x + 3.0, c.y - 1.0), pos2(c.x, c.y + 2.0)],
         color,
@@ -367,7 +473,7 @@ pub fn tool_dropdown(ui: &mut Ui, icon: Icon, name: &str) -> Response {
     let c = pos2(icon_rect.right() + 6.0, rect.center().y) + offset;
     p.add(egui::Shape::convex_polygon(
         vec![pos2(c.x - 3.0, c.y - 1.0), pos2(c.x + 3.0, c.y - 1.0), pos2(c.x, c.y + 2.0)],
-        TEXT,
+        text(),
         Stroke::NONE,
     ));
     resp
@@ -380,27 +486,27 @@ pub fn push_button(ui: &mut Ui, rect: Rect, label: &str, enabled: bool, default:
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let resp = ui.interact(rect, ui.id().with(("push_button", label)), sense);
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, FACE);
+    p.rect_filled(rect, 0.0, face());
     let down = enabled && resp.is_pointer_button_down_on() && resp.hovered();
     let inner = if default {
-        p.rect_stroke(rect, 0.0, Stroke::new(1.0, DARK), egui::StrokeKind::Inside);
+        p.rect_stroke(rect, 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
         rect.shrink(1.0)
     } else {
         rect
     };
     if down {
-        p.rect_stroke(inner, 0.0, Stroke::new(1.0, DARK), egui::StrokeKind::Inside);
-        edge(p, inner.shrink(1.0), SHADOW, FACE);
+        p.rect_stroke(inner, 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
+        edge(p, inner.shrink(1.0), shadow(), face());
     } else {
         bevel(p, inner, Bevel::Raised);
     }
     let center = rect.center() + if down { vec2(1.0, 1.0) } else { Vec2::ZERO };
     let font = FontId::new(FONT_SIZE, FontFamily::Proportional);
     if enabled {
-        p.text(center, Align2::CENTER_CENTER, label, font, TEXT);
+        p.text(center, Align2::CENTER_CENTER, label, font, text());
     } else {
-        p.text(center + vec2(1.0, 1.0), Align2::CENTER_CENTER, label, font.clone(), HIGHLIGHT);
-        p.text(center, Align2::CENTER_CENTER, label, font, SHADOW);
+        p.text(center + vec2(1.0, 1.0), Align2::CENTER_CENTER, label, font.clone(), highlight());
+        p.text(center, Align2::CENTER_CENTER, label, font, shadow());
     }
     resp
 }
@@ -415,7 +521,7 @@ pub fn close_box(ui: &mut Ui) -> Response {
         bevel(p, rect, Bevel::RaisedThin);
     }
     let r = rect.shrink(4.0);
-    let s = Stroke::new(1.0, TEXT);
+    let s = Stroke::new(1.0, text());
     p.line_segment([r.left_top(), r.right_bottom()], s);
     p.line_segment([r.right_top(), r.left_bottom()], s);
     resp
@@ -439,9 +545,9 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::click_and_drag());
     let (active, maximized) = ui.ctx().input(|i| (i.viewport().focused.unwrap_or(true), i.viewport().maximized.unwrap_or(false)));
     let (left, right, text) = if active {
-        (CAPTION, CAPTION_GRADIENT, Color32::WHITE)
+        (active_caption(), caption_gradient(), Color32::WHITE)
     } else {
-        (CAPTION_INACTIVE, CAPTION_INACTIVE_GRADIENT, CAPTION_INACTIVE_TEXT)
+        (caption_inactive(), caption_inactive_gradient(), caption_inactive_text())
     };
     let p = ui.painter();
     let mut mesh = Mesh::default();
@@ -554,19 +660,19 @@ enum Caption {
 }
 
 fn caption_button(p: &Painter, r: Rect, kind: Caption, down: bool) {
-    p.rect_filled(r, 0.0, FACE);
+    p.rect_filled(r, 0.0, face());
     if down {
-        p.rect_stroke(r, 0.0, Stroke::new(1.0, DARK), egui::StrokeKind::Inside);
-        edge(p, r.shrink(1.0), SHADOW, FACE);
+        p.rect_stroke(r, 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
+        edge(p, r.shrink(1.0), shadow(), face());
     } else {
         bevel(p, r, Bevel::Raised);
     }
     let o = if down { vec2(1.0, 1.0) } else { Vec2::ZERO };
     let g = r.shrink2(vec2(4.0, 3.0)).translate(o);
-    let s = Stroke::new(1.0, TEXT);
+    let s = Stroke::new(1.0, text());
     match kind {
         Caption::Minimize => {
-            p.rect_filled(Rect::from_min_max(pos2(g.left(), g.bottom() - 2.0), pos2(g.left() + 6.0, g.bottom())), 0.0, TEXT);
+            p.rect_filled(Rect::from_min_max(pos2(g.left(), g.bottom() - 2.0), pos2(g.left() + 6.0, g.bottom())), 0.0, text());
         }
         Caption::Maximize => {
             p.rect_stroke(g, 0.0, s, egui::StrokeKind::Inside);
@@ -576,13 +682,13 @@ fn caption_button(p: &Painter, r: Rect, kind: Caption, down: bool) {
             let back = Rect::from_min_size(g.left_top() + vec2(2.0, 0.0), vec2(6.0, 5.0));
             let front = Rect::from_min_size(g.left_top() + vec2(0.0, 3.0), vec2(6.0, 5.0));
             p.rect_stroke(back, 0.0, s, egui::StrokeKind::Inside);
-            p.rect_filled(front, 0.0, FACE);
+            p.rect_filled(front, 0.0, face());
             p.rect_stroke(front, 0.0, s, egui::StrokeKind::Inside);
             p.hline(front.x_range(), front.top() + 1.5, s);
         }
         Caption::Close => {
             let c = g.shrink2(vec2(0.5, 0.0));
-            let s = Stroke::new(1.6, TEXT);
+            let s = Stroke::new(1.6, text());
             p.line_segment([c.left_top(), c.right_bottom()], s);
             p.line_segment([c.right_top(), c.left_bottom()], s);
         }
@@ -616,7 +722,7 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
         let points: Vec<Pos2> = pts.iter().map(|&(x, y)| at(x, y)).collect();
         p.add(PathShape::convex_polygon(points, fill, PathStroke::new(1.0, stroke)));
     };
-    let gray = |c: Color32| if enabled { c } else { SHADOW };
+    let gray = |c: Color32| if enabled { c } else { shadow() };
     match icon {
         Icon::Back | Icon::Forward | Icon::Go => {
             let pts: &[(f32, f32)] = if icon == Icon::Go {
@@ -628,18 +734,18 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
                 if icon == Icon::Forward { pts.iter().map(|&(x, y)| (16.0 - x, y)).collect() } else { pts.to_vec() };
             if !enabled {
                 let emboss: Vec<(f32, f32)> = pts.iter().map(|&(x, y)| (x + 1.0, y + 1.0)).collect();
-                arrow_polygon(p, &emboss.iter().map(|&(x, y)| at(x, y)).collect::<Vec<_>>(), HIGHLIGHT, HIGHLIGHT);
+                arrow_polygon(p, &emboss.iter().map(|&(x, y)| at(x, y)).collect::<Vec<_>>(), highlight(), highlight());
             }
             arrow_polygon(p, &pts.iter().map(|&(x, y)| at(x, y)).collect::<Vec<_>>(), gray(ARROW), gray(ARROW_DARK));
         }
         Icon::Up => {
             folder(p, r, enabled);
-            let c = gray(TEXT);
+            let c = gray(text());
             poly(&[(8.0, 4.0), (12.0, 8.0), (4.0, 8.0)], c, c);
             p.rect_filled(Rect::from_min_max(at(7.0, 8.0), at(9.0, 12.0)), 0.0, c);
         }
         Icon::Refresh => {
-            let c = gray(Color32::from_rgb(0x1F, 0x4E, 0xB4));
+            let c = gray(if is_dark() { Color32::from_rgb(0x5B, 0x8F, 0xF0) } else { Color32::from_rgb(0x1F, 0x4E, 0xB4) });
             let center = at(8.0, 8.0);
             for (start, end) in [(0.15f32, 0.45f32), (0.65, 0.95)] {
                 let arc: Vec<Pos2> = (0..=10)
@@ -662,40 +768,40 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
         }
         Icon::Folders => {
             folder(p, Rect::from_min_size(at(5.0, 5.0), r.size() * 0.7), enabled);
-            let st = Stroke::new(1.0, gray(TEXT));
+            let st = Stroke::new(1.0, gray(text()));
             p.rect_stroke(Rect::from_min_max(at(1.0, 1.0), at(5.0, 5.0)), 0.0, st, egui::StrokeKind::Inside);
             p.line_segment([at(3.0, 5.0), at(3.0, 10.5)], st);
             p.line_segment([at(3.0, 10.5), at(5.0, 10.5)], st);
         }
         Icon::Undo => {
             // A hooked arrow bending back to the left.
-            let c = gray(TEXT);
+            let c = gray(text());
             if !enabled {
-                undo_arrow(p, r, vec2(s, s), HIGHLIGHT);
+                undo_arrow(p, r, vec2(s, s), highlight());
             }
             undo_arrow(p, r, Vec2::ZERO, c);
         }
         Icon::Views => {
             // A window holding a few large icons, as on the Win2000 button.
             let frame = Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0));
-            p.rect_filled(frame, 0.0, WINDOW);
-            p.rect_stroke(frame, 0.0, Stroke::new(1.0, gray(DARK)), egui::StrokeKind::Inside);
+            p.rect_filled(frame, 0.0, window());
+            p.rect_stroke(frame, 0.0, Stroke::new(1.0, gray(dark())), egui::StrokeKind::Inside);
             for (x, y) in [(3.0, 4.0), (9.0, 4.0), (3.0, 9.0), (9.0, 9.0)] {
-                p.rect_filled(Rect::from_min_max(at(x, y), at(x + 3.0, y + 3.0)), 0.0, gray(CAPTION));
-                p.hline(at(x + 3.5, 0.0).x..=at(x + 5.0, 0.0).x, at(0.0, y + 1.5).y, Stroke::new(1.0, gray(SHADOW)));
+                p.rect_filled(Rect::from_min_max(at(x, y), at(x + 3.0, y + 3.0)), 0.0, gray(active_caption()));
+                p.hline(at(x + 3.5, 0.0).x..=at(x + 5.0, 0.0).x, at(0.0, y + 1.5).y, Stroke::new(1.0, gray(shadow())));
             }
         }
         Icon::Folder | Icon::FolderOpen => folder(p, r, enabled),
         Icon::App => {
-            p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, WINDOW);
-            p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 5.0)), 0.0, CAPTION);
-            p.rect_stroke(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, Stroke::new(1.0, DARK), egui::StrokeKind::Inside);
+            p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, window());
+            p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 5.0)), 0.0, active_caption());
+            p.rect_stroke(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
         }
         Icon::Drive => {
             let body = Rect::from_min_max(at(1.0, 5.0), at(15.0, 12.0));
             p.rect_filled(body, 0.0, Color32::from_rgb(0xC0, 0xC0, 0xC0));
-            p.rect_filled(Rect::from_min_max(at(1.0, 10.0), at(15.0, 12.0)), 0.0, SHADOW);
-            p.rect_stroke(body, 0.0, Stroke::new(1.0, DARK), egui::StrokeKind::Inside);
+            p.rect_filled(Rect::from_min_max(at(1.0, 10.0), at(15.0, 12.0)), 0.0, shadow());
+            p.rect_stroke(body, 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
             p.rect_filled(Rect::from_min_max(at(11.0, 7.0), at(13.0, 8.5)), 0.0, Color32::from_rgb(0x20, 0xC0, 0x20));
         }
     }
@@ -708,12 +814,12 @@ pub fn paint_page(p: &Painter, r: Rect, lines: bool) {
     let s = r.width() / 16.0;
     let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s);
     let sheet: Vec<Pos2> = [(2.5, 0.5), (10.0, 0.5), (13.5, 4.0), (13.5, 15.5), (2.5, 15.5)].iter().map(|&(x, y)| at(x, y)).collect();
-    p.add(PathShape::convex_polygon(sheet, WINDOW, PathStroke::new(1.0, SHADOW)));
+    p.add(PathShape::convex_polygon(sheet, PAPER, PathStroke::new(1.0, PAPER_EDGE)));
     // The folded corner: a light gray triangle with an outline.
     p.add(egui::Shape::convex_polygon(
         vec![at(10.0, 0.5), at(13.5, 4.0), at(10.0, 4.0)],
         Color32::from_rgb(0xE4, 0xE4, 0xE4),
-        Stroke::new(1.0, SHADOW),
+        Stroke::new(1.0, PAPER_EDGE),
     ));
     if lines {
         for y in [6.5, 8.5, 10.5, 12.5] {
@@ -761,7 +867,7 @@ fn undo_arrow(p: &Painter, r: Rect, shift: Vec2, color: Color32) {
 fn folder(p: &Painter, r: Rect, enabled: bool) {
     let s = r.width() / 16.0;
     let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s);
-    let (fill, dark, light) = if enabled { (FOLDER, FOLDER_DARK, FOLDER_LIGHT) } else { (FACE, SHADOW, HIGHLIGHT) };
+    let (fill, dark, light) = if enabled { (FOLDER, FOLDER_DARK, FOLDER_LIGHT) } else { (face(), shadow(), highlight()) };
     // Tab, then body.
     p.add(egui::Shape::convex_polygon(
         vec![at(1.5, 3.5), at(6.0, 3.5), at(7.5, 5.0), at(7.5, 6.0), at(1.5, 6.0)],

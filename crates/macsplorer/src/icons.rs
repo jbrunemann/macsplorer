@@ -64,9 +64,9 @@ impl IconState {
     fn blend(self) -> Option<(Color32, f32)> {
         match self {
             Self::Normal => None,
-            Self::Selected => Some((theme::color::SELECTION, 0.5)),
-            Self::SelectedInactive => Some((theme::color::SELECTION, 0.25)),
-            Self::Cut => Some((theme::color::WINDOW, 0.5)),
+            Self::Selected => Some((theme::color::selection(), 0.5)),
+            Self::SelectedInactive => Some((theme::color::selection(), 0.25)),
+            Self::Cut => Some((theme::color::window(), 0.5)),
         }
     }
 }
@@ -111,6 +111,13 @@ impl FileIcons {
             eprintln!("macsplorer: Seti icon theme unavailable: {e}");
         }
         Self { seti: seti.ok(), native: HashMap::new(), symbols: HashMap::new(), budget: NATIVE_PER_FRAME }
+    }
+
+    /// The selection tint depends on the palette: drop the blended variants.
+    pub fn palette_changed(&mut self) {
+        for native in self.native.values_mut().flatten() {
+            native.textures.clear();
+        }
     }
 
     pub fn begin_frame(&mut self) {
@@ -174,7 +181,7 @@ impl FileIcons {
             let center = egui::pos2(rect.left() + FOLDER_EMBLEM_CENTER.0 * scale, rect.top() + FOLDER_EMBLEM_CENTER.1 * scale);
             let target = Rect::from_center_size(center, egui::Vec2::splat(FOLDER_EMBLEM_SIZE * scale));
             let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            ui.painter().image(tex.id(), target, uv, theme::color::CAPTION);
+            ui.painter().image(tex.id(), target, uv, theme::color::active_caption());
         }
     }
 
@@ -272,7 +279,7 @@ mod tests {
 
     #[test]
     fn blend_keeps_alpha_and_transparency() {
-        let navy = theme::color::SELECTION;
+        let navy = theme::color::selection();
         assert_eq!(blend_color(Color32::TRANSPARENT, navy, 0.5), Color32::TRANSPARENT);
         assert_eq!(blend_color(Color32::WHITE, Color32::BLACK, 0.5), Color32::from_rgb(128, 128, 128));
         assert_eq!(blend_color(Color32::WHITE, navy, 0.0), Color32::WHITE);
