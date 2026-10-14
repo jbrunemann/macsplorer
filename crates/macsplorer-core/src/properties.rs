@@ -7,10 +7,12 @@ use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::SystemTime;
 
 use chrono::NaiveDate;
 
+use crate::dirscan::{scan, Scratch};
 use crate::listing::{format_byte_size, group_digits};
 
 /// One item's facts for the General page, read off the UI thread.
@@ -133,28 +135,84 @@ impl FolderSize {
     /// Walks everything below `dir`: hidden items count, the folder itself
     /// doesn't, symlinks count as files and aren't followed (a guess; the
     /// tree walker's flags weren't traced), unreadable folders are skipped.
+    /// Several threads walk at once, which Explorer doesn't do; the walk is
+    /// mostly file system latency; more than 8 to 12 threads stopped helping.
     pub fn measure(&self, dir: &Path) {
-        let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
-        'walk: while let Some(dir) = stack.pop() {
-            let Ok(items) = fs::read_dir(&dir) else { continue };
-            for item in items {
-                if self.cancelled.load(Ordering::Relaxed) {
-                    break 'walk;
-                }
-                let Ok(item) = item else { continue };
-                let Ok(kind) = item.file_type() else { continue };
-                if kind.is_dir() {
-                    self.folders.fetch_add(1, Ordering::Relaxed);
-                    stack.push(item.path());
-                } else {
-                    // DirEntry::metadata doesn't follow symlinks.
-                    let len = item.metadata().map_or(0, |m| m.len());
-                    self.bytes.fetch_add(len, Ordering::Relaxed);
-                    self.files.fetch_add(1, Ordering::Relaxed);
-                }
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(4, 16);
+        self.measure_with_threads(dir, threads);
+    }
+
+    /// [`measure`](Self::measure) with a given number of threads.
+    pub fn measure_with_threads(&self, dir: &Path, threads: usize) {
+        let queue = Queue { state: Mutex::new((vec![dir.to_path_buf()], 1)), wake: Condvar::new() };
+        std::thread::scope(|scope| {
+            for _ in 0..threads.max(1) {
+                scope.spawn(|| self.work(&queue));
+            }
+        });
+        self.done.store(true, Ordering::Release);
+    }
+
+    /// One walker thread: takes folders off the queue until none are left
+    /// or queued and every other thread is out of work too.
+    fn work(&self, queue: &Queue) {
+        let mut scratch = Scratch::default();
+        let mut subfolders = Vec::new();
+        while let Some(dir) = queue.take() {
+            if !self.cancelled.load(Ordering::Relaxed) {
+                let (mut bytes, mut files) = (0, 0);
+                let _ = scan(&dir, &mut scratch, |item| {
+                    if item.is_dir {
+                        subfolders.push(dir.join(item.name));
+                    } else {
+                        bytes += item.len;
+                        files += 1;
+                    }
+                });
+                self.bytes.fetch_add(bytes, Ordering::Relaxed);
+                self.files.fetch_add(files, Ordering::Relaxed);
+                self.folders.fetch_add(subfolders.len() as u64, Ordering::Relaxed);
+            }
+            queue.finish(&mut subfolders);
+        }
+    }
+}
+
+/// The folders still to walk, and how many are queued or being walked.
+struct Queue {
+    state: Mutex<(Vec<PathBuf>, usize)>,
+    wake: Condvar,
+}
+
+impl Queue {
+    /// The next folder, waiting for one if the others are busy; `None` once
+    /// the whole walk is over.
+    fn take(&self) -> Option<PathBuf> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if let Some(dir) = state.0.pop() {
+                return Some(dir);
+            }
+            if state.1 == 0 {
+                return None;
+            }
+            state = self.wake.wait(state).unwrap();
+        }
+    }
+
+    /// Reports a folder as walked and queues the folders found in it.
+    fn finish(&self, found: &mut Vec<PathBuf>) {
+        let mut state = self.state.lock().unwrap();
+        let added = found.len();
+        state.1 = state.1 + added - 1;
+        state.0.append(found);
+        if state.1 == 0 {
+            self.wake.notify_all();
+        } else if added > 0 {
+            for _ in 0..added.min(8) {
+                self.wake.notify_one();
             }
         }
-        self.done.store(true, Ordering::Release);
     }
 }
 
