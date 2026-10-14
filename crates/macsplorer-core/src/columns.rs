@@ -236,47 +236,31 @@ impl ColumnSet {
         self.order = order;
     }
 
-    /// The layout as stored in the settings file: every column in list order
-    /// with whether it is shown and how wide it is, so hidden columns keep
-    /// their place and width too.
+    /// The layout as stored in the settings file: the shown columns, left
+    /// to right, each with its width. Hidden columns aren't stored.
     pub fn to_json(&self) -> Value {
-        Value::Array(
-            self.order
-                .iter()
-                .map(|&c| json!({ "column": c.key(), "shown": self.is_visible(c), "width": self.width(c) }))
-                .collect(),
-        )
+        Value::Array(self.visible().into_iter().map(|c| json!({ "column": c.key(), "width": self.width(c) })).collect())
     }
 
     /// The layout stored by [`Self::to_json`]. Anything unreadable is
-    /// skipped: unknown or repeated columns, a missing or absurd width. A
-    /// column the file doesn't mention (one added since) goes at the end,
-    /// hidden, and Name is always shown. `None` if the value isn't a list.
+    /// skipped: unknown or repeated columns, a missing or absurd width (the
+    /// column's default is used). An entry with `"shown": false`, as an
+    /// earlier version wrote, counts as hidden. Name is always shown. `None`
+    /// if the value isn't a list.
     pub fn from_json(value: &Value) -> Option<ColumnSet> {
-        let entries = value.as_array()?;
         let mut set = ColumnSet::default();
-        let mut order = Vec::new();
         let mut shown = Vec::new();
-        for entry in entries {
+        for entry in value.as_array()? {
             let Some(column) = entry.get("column").and_then(Value::as_str).and_then(Column::from_key) else { continue };
-            if order.contains(&column) {
+            if shown.contains(&column) || entry.get("shown").and_then(Value::as_bool) == Some(false) {
                 continue;
             }
-            order.push(column);
-            shown.push(entry.get("shown").and_then(Value::as_bool).unwrap_or(Column::DEFAULT.contains(&column)));
+            shown.push(column);
             if let Some(width) = entry.get("width").and_then(Value::as_f64).filter(|w| w.is_finite()) {
                 set.widths[column.index()] = width.clamp(0.0, MAX_STORED_WIDTH) as f32;
             }
         }
-        for column in Column::ALL {
-            if !order.contains(&column) {
-                order.push(column);
-                shown.push(false);
-            }
-            set.shown[column.index()] = shown[order.iter().position(|&c| c == column)?];
-        }
-        set.shown[Column::Name.index()] = true;
-        set.order = order;
+        set.set_visible(&shown);
         Some(set)
     }
 
@@ -386,6 +370,12 @@ mod tests {
 
     const W: [f32; 3] = [100.0, 50.0, 20.0];
 
+    impl ColumnSet {
+        fn widths(&self) -> Vec<f32> {
+            Column::ALL.iter().map(|&c| self.width(c)).collect()
+        }
+    }
+
     fn names(v: &[Column]) -> Vec<&'static str> {
         v.iter().map(|c| c.caption()).collect()
     }
@@ -434,12 +424,20 @@ mod tests {
         let mut set = ColumnSet::default();
         set.set_visible(&[Column::Name, Column::Created, Column::Size, Column::Owner]);
         set.set_width(Column::Name, 410.0);
-        set.set_width(Column::Group, 33.0);
+        set.set_width(Column::Owner, 33.0);
         let back = ColumnSet::from_json(&set.to_json()).unwrap();
-        assert_eq!(back, set);
         assert_eq!(names(&back.visible()), ["Name", "Created", "Size", "Owner"]);
+        assert_eq!(back.widths(), set.widths());
         assert_eq!(back.width(Column::Name), 410.0);
-        assert_eq!(back.width(Column::Group), 33.0);
+        assert_eq!(back.width(Column::Owner), 33.0);
+    }
+
+    #[test]
+    fn only_shown_columns_are_stored() {
+        let json = ColumnSet::default().to_json();
+        let stored: Vec<_> = json.as_array().unwrap().iter().map(|e| e["column"].as_str().unwrap()).collect();
+        assert_eq!(stored, ["name", "size", "modified", "attributes"]);
+        assert_eq!(json[0], json!({ "column": "name", "width": 300.0 }));
     }
 
     #[test]
@@ -449,38 +447,52 @@ mod tests {
     }
 
     #[test]
+    fn hidden_columns_come_back_hidden_with_default_widths() {
+        let mut set = ColumnSet::default();
+        set.set_width(Column::Type, 12.0);
+        let back = ColumnSet::from_json(&set.to_json()).unwrap();
+        assert!(!back.is_visible(Column::Type));
+        assert_eq!(back.width(Column::Type), Column::Type.default_width());
+        // They are all still in the header menu or under More...
+        assert_eq!(back.menu().0.len(), 8);
+    }
+
+    #[test]
     fn unreadable_entries_are_skipped() {
         let value = json!([
-            { "column": "size", "shown": true, "width": 55 },
-            { "column": "bogus", "shown": true },
-            { "column": "size", "shown": false, "width": 1 },
+            { "column": "size", "width": 55 },
+            { "column": "bogus" },
+            { "column": "size", "width": 1 },
             { "column": "modified", "width": "wide" },
             "nonsense",
-            { "column": "type", "shown": true, "width": -5 },
-            { "column": "created", "shown": true, "width": 1e9 },
+            { "column": "type", "width": -5 },
+            { "column": "created", "width": 1e9 },
         ]);
         let set = ColumnSet::from_json(&value).unwrap();
-        // Name was never mentioned: it is added, shown, after the listed ones.
-        assert_eq!(names(&set.visible()), ["Size", "Modified", "Type", "Created", "Name"]);
+        // Name was never mentioned: it is added in front, shown.
+        assert_eq!(names(&set.visible()), ["Name", "Size", "Modified", "Type", "Created"]);
         assert_eq!(set.width(Column::Size), 55.0);
         assert_eq!(set.width(Column::Type), 0.0);
         assert_eq!(set.width(Column::Created), 4000.0);
-        // No usable width keeps the default; no "shown" falls back to the default set.
         assert_eq!(set.width(Column::Modified), Column::Modified.default_width());
-        assert!(set.is_visible(Column::Modified));
     }
 
     #[test]
-    fn name_is_shown_even_if_the_file_hides_it() {
-        let set = ColumnSet::from_json(&json!([{ "column": "name", "shown": false }])).unwrap();
-        assert!(set.is_visible(Column::Name));
+    fn entries_marked_hidden_by_the_earlier_format_stay_hidden() {
+        let value = json!([
+            { "column": "name", "shown": true, "width": 200 },
+            { "column": "size", "shown": false, "width": 80 },
+            { "column": "owner", "shown": true, "width": 90 },
+        ]);
+        let set = ColumnSet::from_json(&value).unwrap();
+        assert_eq!(names(&set.visible()), ["Name", "Owner"]);
     }
 
     #[test]
-    fn columns_the_file_lacks_are_added_hidden() {
-        let set = ColumnSet::from_json(&json!([{ "column": "name", "shown": true }, { "column": "size", "shown": true }])).unwrap();
+    fn name_is_shown_even_if_the_file_leaves_it_out() {
+        let set = ColumnSet::from_json(&json!([{ "column": "name", "shown": false }, { "column": "size" }])).unwrap();
         assert_eq!(names(&set.visible()), ["Name", "Size"]);
-        assert_eq!(set.menu().0.len(), 8);
+        assert!(ColumnSet::from_json(&json!([])).unwrap().is_visible(Column::Name));
     }
 
     #[test]
