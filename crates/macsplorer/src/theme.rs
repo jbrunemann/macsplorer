@@ -36,7 +36,7 @@ pub mod color {
     }
 
     pub fn face() -> Color32 {
-        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x2A, 0x2C, 0x31)) // COLOR_3DFACE
+        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x28, 0x28, 0x2C)) // COLOR_3DFACE
     }
     /// Menus and dialogs sit above the panels: in the dark palette they are
     /// lighter, as there are no shadows to lift them.
@@ -56,10 +56,10 @@ pub mod color {
         pick(rgb(0x40, 0x40, 0x40), rgb(0x08, 0x09, 0x0B)) // COLOR_3DDKSHADOW
     }
     pub fn window() -> Color32 {
-        pick(Color32::WHITE, rgb(0x17, 0x19, 0x1D))
+        pick(Color32::WHITE, rgb(0x1D, 0x1D, 0x20))
     }
     pub fn text() -> Color32 {
-        pick(Color32::BLACK, rgb(0xE6, 0xE8, 0xEC))
+        pick(Color32::BLACK, Color32::WHITE)
     }
     pub fn gray_text() -> Color32 {
         pick(rgb(0x80, 0x80, 0x80), rgb(0x84, 0x88, 0x91))
