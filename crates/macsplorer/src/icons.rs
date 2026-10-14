@@ -98,6 +98,8 @@ pub struct FileIcons {
     native: HashMap<(PathBuf, usize), Option<Native>>,
     /// Tintable SF Symbol masks for the known folders, by rendered pixel size.
     symbols: HashMap<(KnownFolder, usize), Option<TextureHandle>>,
+    /// The 16 px icons of the apps in the "Open With" menu, by path and pixel size.
+    menu: HashMap<(PathBuf, usize), Option<TextureHandle>>,
     budget: usize,
 }
 
@@ -110,7 +112,7 @@ impl FileIcons {
         if let Err(e) = &seti {
             eprintln!("macsplorer: Seti icon theme unavailable: {e}");
         }
-        Self { seti: seti.ok(), native: HashMap::new(), symbols: HashMap::new(), budget: NATIVE_PER_FRAME }
+        Self { seti: seti.ok(), native: HashMap::new(), symbols: HashMap::new(), menu: HashMap::new(), budget: NATIVE_PER_FRAME }
     }
 
     /// The selection tint depends on the palette: drop the blended variants.
@@ -127,6 +129,21 @@ impl FileIcons {
     /// Forgets rendered native icons (an app update can change its icon).
     pub fn clear_native(&mut self) {
         self.native.clear();
+        self.menu.clear();
+    }
+
+    /// The Finder icon of the app at `app`, 16 points square, for a menu
+    /// entry. Rendered on first use, `None` if the system has none.
+    pub fn menu_icon(&mut self, ctx: &egui::Context, app: &Path) -> Option<egui::TextureId> {
+        let px = (16.0 * ctx.pixels_per_point()).round() as usize;
+        self.menu
+            .entry((app.to_path_buf(), px))
+            .or_insert_with(|| {
+                let img = native_icon::render(app, px)?;
+                Some(ctx.load_texture(format!("menu-icon:{}:{px}", app.display()), img, TextureOptions::LINEAR))
+            })
+            .as_ref()
+            .map(TextureHandle::id)
     }
 
     pub fn paint(&mut self, ui: &Ui, rect: Rect, entry: &Entry, state: IconState) {

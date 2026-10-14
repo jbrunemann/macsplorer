@@ -1696,7 +1696,7 @@ impl Explorer {
                         actions.push(Action::MarqueeBegin { origin: (p.x, p.y - top), extend });
                     }
                     egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
-                        Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
+                        Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, actions),
                         None => background_menu(ui, &folder, can_paste, actions),
                     });
                 });
@@ -1929,7 +1929,7 @@ impl Explorer {
                 }
                 item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
                 egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
-                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
+                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, actions),
                     None => background_menu(ui, &folder, can_paste, actions),
                 });
             });
@@ -2070,7 +2070,7 @@ impl Explorer {
                 }
                 item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
                 egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
-                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
+                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, actions),
                     None => background_menu(ui, &folder, can_paste, actions),
                 });
             });
@@ -2187,18 +2187,21 @@ impl eframe::App for Explorer {
     }
 }
 
-/// The in-place rename box: white with a thin black frame, like a classic
-/// list view label edit. Initial selection comes from the Explorer rule.
 /// The "Open With" submenu: the file's apps, then "Choose Program...".
 /// The app list is looked up once per file and kept while the menu is open.
-fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, actions: &mut Vec<Action>) {
+fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
     ui.menu_button("Open With", |ui| {
         if cache.as_ref().is_none_or(|(p, _)| p != path) {
             *cache = Some((path.to_path_buf(), open_with::apps_for(path)));
         }
         let apps = cache.as_ref().map_or(&[][..], |(_, apps)| apps.as_slice());
         for app in apps {
-            if ui.button(open_with::app_name(app)).clicked() {
+            let name = open_with::app_name(app);
+            let button = match icons.menu_icon(ui.ctx(), app) {
+                Some(icon) => egui::Button::image_and_text(egui::Image::new((icon, egui::vec2(16.0, 16.0))), name),
+                None => egui::Button::new(name),
+            };
+            if ui.add(button).clicked() {
                 actions.push(Action::OpenWith(path.to_path_buf(), Some(app.clone())));
             }
         }
@@ -2212,12 +2215,12 @@ fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<Pat
 }
 
 /// The context menu for an item.
-fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option<(PathBuf, Vec<PathBuf>)>, actions: &mut Vec<Action>) {
+fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
     if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
         actions.push(Action::Open(entry.path.clone()));
     }
     if open_with::SUPPORTED && entry.kind == RenameKind::File {
-        open_with_menu(ui, &entry.path, open_with, actions);
+        open_with_menu(ui, &entry.path, open_with, icons, actions);
     }
     if ui.button(platform::REVEAL_LABEL).clicked() {
         actions.push(Action::RevealInFinder(entry.path.clone()));
@@ -2428,6 +2431,8 @@ fn paint_label(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, 
     ui.painter().with_clip_rect(rect).galley(egui::pos2(x, y), galley, theme::color::text());
 }
 
+/// The in-place rename box: white with a thin black frame, like a classic
+/// list view label edit. Initial selection comes from the Explorer rule.
 /// `wrapping` makes it the Large Icons box: centered text wrapped in the
 /// label width, Enter still commits.
 fn rename_editor(ui: &mut Ui, r: &mut RenameState, wrapping: bool, actions: &mut Vec<Action>) {
@@ -3189,6 +3194,33 @@ mod screenshot {
                 h.run();
             }
             h.run();
+        });
+    }
+
+    /// An item's context menu with the Open With submenu open, app icons beside the names.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    #[cfg(target_os = "macos")]
+    fn open_with_menu() {
+        shoot_driven("open-with-menu", egui::vec2(900.0, 500.0), |_| {}, |h| {
+            let pos = egui::pos2(275.0, 378.0);
+            h.hover_at(pos);
+            h.run();
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
+                h.run();
+            }
+            h.run();
+            let item = egui::pos2(315.0, 202.0);
+            h.hover_at(item);
+            h.run();
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+                h.run();
+            }
+            for _ in 0..5 {
+                h.run();
+            }
         });
     }
 
