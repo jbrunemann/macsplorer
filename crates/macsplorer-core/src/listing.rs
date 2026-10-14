@@ -143,7 +143,9 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
         let link = match (symlink, broken) {
             (true, true) => Some(Link::Broken),
             (true, false) => Some(Link::Symlink),
-            _ => (flags & K_IS_ALIAS != 0).then_some(Link::Alias),
+            // An alias is always a file. Copy tools sometimes leave the flag
+            // on a real folder, which must still open as one.
+            _ => (!meta.is_dir() && flags & K_IS_ALIAS != 0).then_some(Link::Alias),
         };
         out.push(Entry {
             size: (kind == RenameKind::File).then_some(meta.len()),
@@ -558,6 +560,31 @@ mod tests {
         };
         assert_eq!(rc, 0);
         assert!(has_custom_icon(&file));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn alias_flag_ignored_on_folders() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-alias-{}", std::process::id()));
+        fs::create_dir_all(dir.join("folder")).unwrap();
+        fs::write(dir.join("file"), "x").unwrap();
+        // Type 'alis', creator 'MACS', kIsAlias: what Finder writes on an alias.
+        let mut info = [0u8; 32];
+        info[..8].copy_from_slice(b"alisMACS");
+        info[8..10].copy_from_slice(&K_IS_ALIAS.to_be_bytes());
+        for name in ["folder", "file"] {
+            let c = std::ffi::CString::new(dir.join(name).to_str().unwrap()).unwrap();
+            // SAFETY: valid path, name and buffer.
+            let rc = unsafe {
+                libc::setxattr(c.as_ptr(), c"com.apple.FinderInfo".as_ptr(), info.as_ptr().cast(), info.len(), 0, 0)
+            };
+            assert_eq!(rc, 0);
+        }
+        let entries = list_dir(&dir, false).unwrap();
+        let link = |name: &str| entries.iter().find(|e| e.name == name).unwrap().link;
+        assert_eq!(link("file"), Some(Link::Alias));
+        assert_eq!(link("folder"), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 
