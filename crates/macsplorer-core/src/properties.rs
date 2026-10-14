@@ -93,6 +93,15 @@ pub fn set_permissions(path: &Path, bits: [[bool; 3]; 3]) -> io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
 
+/// One item of a multiple selection, as far as the size walk cares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectedItem {
+    /// A file and its size.
+    File(u64),
+    /// A folder or package, to be walked.
+    Folder(PathBuf),
+}
+
 /// Running totals of a folder walk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FolderTotals {
@@ -144,13 +153,40 @@ impl FolderSize {
 
     /// [`measure`](Self::measure) with a given number of threads.
     pub fn measure_with_threads(&self, dir: &Path, threads: usize) {
+        self.walk(dir, threads);
+        self.done.store(true, Ordering::Release);
+    }
+
+    /// Measures a selection of several items, like `SizeThreadProc` going
+    /// through the selected items: files add their size, and each selected
+    /// folder counts as a folder and is walked.
+    pub fn measure_selection(&self, items: &[SelectedItem]) {
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(4, 16);
+        for item in items {
+            if self.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            match item {
+                SelectedItem::File(bytes) => {
+                    self.bytes.fetch_add(*bytes, Ordering::Relaxed);
+                    self.files.fetch_add(1, Ordering::Relaxed);
+                }
+                SelectedItem::Folder(dir) => {
+                    self.folders.fetch_add(1, Ordering::Relaxed);
+                    self.walk(dir, threads);
+                }
+            }
+        }
+        self.done.store(true, Ordering::Release);
+    }
+
+    fn walk(&self, dir: &Path, threads: usize) {
         let queue = Queue { state: Mutex::new((vec![dir.to_path_buf()], 1)), wake: Condvar::new() };
         std::thread::scope(|scope| {
             for _ in 0..threads.max(1) {
                 scope.spawn(|| self.work(&queue));
             }
         });
-        self.done.store(true, Ordering::Release);
     }
 
     /// One walker thread: takes folders off the queue until none are left
@@ -230,6 +266,15 @@ pub fn format_contains(totals: FolderTotals) -> String {
     format!("{} Files, {} Folders", group_digits(totals.files), group_digits(totals.folders))
 }
 
+/// The Location line of several items: "All in /Users/me" when they share a
+/// parent. The wording for items from different folders is a guess (the
+/// page's strings weren't traced; a selection only spans folders in search).
+pub fn format_common_location<'a>(parents: impl IntoIterator<Item = &'a Path>) -> String {
+    let mut parents = parents.into_iter();
+    let Some(first) = parents.next() else { return String::new() };
+    if parents.all(|p| p == first) { format!("All in {}", first.display()) } else { "Several locations".into() }
+}
+
 /// A day a date line names instead of its weekday.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelativeDay {
@@ -288,6 +333,29 @@ fn is_fat_volume(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn common_location() {
+        let a = Path::new("/a");
+        assert_eq!(format_common_location([a, a]), "All in /a");
+        assert_eq!(format_common_location([a, Path::new("/b")]), "Several locations");
+        assert_eq!(format_common_location([]), "");
+    }
+
+    #[test]
+    fn selection_counts_files_and_folders() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-sel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub/inner")).unwrap();
+        fs::write(dir.join("sub/a"), [0u8; 10]).unwrap();
+        fs::write(dir.join("sub/inner/b"), [0u8; 5]).unwrap();
+        let size = FolderSize::default();
+        size.measure_selection(&[SelectedItem::File(100), SelectedItem::Folder(dir.join("sub"))]);
+        assert!(size.is_done());
+        // The selected folder counts, and so does the one inside it.
+        assert_eq!(size.totals(), FolderTotals { bytes: 115, files: 3, folders: 2 });
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn size_line() {

@@ -17,7 +17,9 @@ use eframe::egui;
 use egui::{Align, Key, Layout, Rect, Sense, TextEdit, Ui, pos2, vec2};
 
 use macsplorer_core::listing::{Entry, Link, is_package_name};
-use macsplorer_core::properties::{FolderSize, FolderTotals, ItemInfo, format_contains, format_size_line, format_target, item_info, permissions};
+use macsplorer_core::properties::{
+    FolderSize, FolderTotals, ItemInfo, SelectedItem, format_common_location, format_contains, format_size_line, format_target, item_info, permissions,
+};
 
 type Permissions = [[bool; 3]; 3];
 use macsplorer_core::rename::RenameKind;
@@ -60,6 +62,12 @@ pub fn size_for(entry: &Entry) -> egui::Vec2 {
     vec2(WIDTH, BASE_HEIGHT + rows.into_iter().map(group_height).sum::<f32>())
 }
 
+/// The window size for a selection of several items: Type, Location, Size
+/// and Contains in one group.
+pub fn size_for_multi() -> egui::Vec2 {
+    vec2(WIDTH, BASE_HEIGHT + group_height(4))
+}
+
 fn group_height(rows: usize) -> f32 {
     GROUP_TOP + rows as f32 * ROW_HEIGHT + GROUP_BOTTOM
 }
@@ -97,6 +105,15 @@ pub enum Outcome {
     Apply { close: bool },
 }
 
+/// What several selected items add to the page: no rename, dates or
+/// permissions, only what they have in common and their combined size.
+struct Multi {
+    entries: Vec<Entry>,
+    /// "All of type X" or "Multiple types", once the worker has looked.
+    types: Option<String>,
+    types_rx: Receiver<String>,
+}
+
 pub struct Properties {
     viewport: egui::ViewportId,
     entry: Entry,
@@ -116,6 +133,8 @@ pub struct Properties {
     /// The folder totals on screen and when they were taken.
     shown: FolderTotals,
     shown_at: Instant,
+    /// Set when the dialog is for a selection of several items.
+    multi: Option<Multi>,
 }
 
 impl Properties {
@@ -151,6 +170,55 @@ impl Properties {
             size,
             shown: FolderTotals::default(),
             shown_at: Instant::now(),
+            multi: None,
+        }
+    }
+
+    /// Opens the dialog for several selected items (two or more). The name
+    /// box lists them and can't be edited; Size and Contains add them up,
+    /// counting the selected folders and walking them.
+    pub fn new_multi(ctx: &egui::Context, entries: Vec<Entry>, show_extensions: bool) -> Self {
+        let first = entries[0].clone();
+        let mut dialog = Self::new_blank(first, show_extensions);
+        dialog.name = entries.iter().map(|e| e.display_name(show_extensions)).collect::<Vec<_>>().join(", ");
+        dialog.hidden_ext = None;
+        let items: Vec<SelectedItem> = entries
+            .iter()
+            .map(|e| if e.kind == RenameKind::File { SelectedItem::File(e.size.unwrap_or(0)) } else { SelectedItem::Folder(e.path.clone()) })
+            .collect();
+        let (tx, types_rx) = channel();
+        let (walker, ctx2) = (dialog.size.clone(), ctx.clone());
+        let for_types = entries.clone();
+        thread::spawn(move || {
+            if tx.send(common_type(&for_types)).is_err() {
+                return;
+            }
+            ctx2.request_repaint();
+            walker.measure_selection(&items);
+            ctx2.request_repaint();
+        });
+        dialog.multi = Some(Multi { entries, types: None, types_rx });
+        dialog
+    }
+
+    /// A dialog with nothing read yet and no worker thread.
+    fn new_blank(entry: Entry, show_extensions: bool) -> Self {
+        let (_, info_rx) = channel();
+        Self {
+            viewport: egui::ViewportId::from_hash_of(("properties", &entry.path, Instant::now())),
+            name: entry.display_name(show_extensions).to_owned(),
+            hidden_ext: None,
+            entry,
+            editable: false,
+            info: None,
+            kind: None,
+            info_rx,
+            permissions: None,
+            saved_permissions: None,
+            size: Arc::new(FolderSize::default()),
+            shown: FolderTotals::default(),
+            shown_at: Instant::now(),
+            multi: None,
         }
     }
 
@@ -178,7 +246,7 @@ impl Properties {
     }
 
     fn size(&self) -> egui::Vec2 {
-        size_for(&self.entry)
+        if self.multi.is_some() { size_for_multi() } else { size_for(&self.entry) }
     }
 
     pub fn path(&self) -> &Path {
@@ -195,7 +263,7 @@ impl Properties {
     }
 
     fn name_changed(&self) -> bool {
-        self.new_name() != self.entry.name
+        self.multi.is_none() && self.new_name() != self.entry.name
     }
 
     fn permissions_changed(&self) -> bool {
@@ -228,11 +296,19 @@ impl Properties {
     }
 
     fn title(&self) -> String {
+        if self.multi.is_some() {
+            return "Properties".into();
+        }
         let name = self.name.trim();
         format!("{} Properties", if name.is_empty() { &self.entry.name } else { name })
     }
 
     fn poll(&mut self) {
+        if let Some(multi) = &mut self.multi
+            && let Ok(types) = multi.types_rx.try_recv()
+        {
+            multi.types = Some(types);
+        }
         if let Ok((info, kind)) = self.info_rx.try_recv() {
             self.saved_permissions = info.as_ref().ok().map(|i| permissions(i.mode));
             self.permissions = self.saved_permissions;
@@ -256,7 +332,7 @@ impl Properties {
     /// Shows the dialog in its own window for this frame.
     pub fn show(&mut self, ctx: &egui::Context, icons: &mut FileIcons) -> Outcome {
         self.poll();
-        if self.is_dir() && !self.size.is_done() {
+        if (self.is_dir() || self.multi.is_some()) && !self.size.is_done() {
             ctx.request_repaint_after(SIZE_REFRESH);
         }
         let title = self.title();
@@ -381,6 +457,12 @@ impl Properties {
     /// The page's groups below the name, top to bottom. Their row counts
     /// must match what [`size_for`] reserves.
     fn groups(&self, info: Option<&ItemInfo>, location: String) -> Vec<Group> {
+        if let Some(multi) = &self.multi {
+            let ready = multi.types.is_some();
+            let location = format_common_location(multi.entries.iter().filter_map(|e| e.path.parent()));
+            let (size, contains) = if ready { (format_size_line(self.shown.bytes), format_contains(self.shown)) } else { Default::default() };
+            return vec![Group::Rows(vec![("Type:", multi.types.clone().unwrap_or_default()), ("Location:", location), ("Size:", size), ("Contains:", contains)])];
+        }
         let mut groups = if self.is_dir() {
             let ready = info.is_some();
             let (size, contains) = if ready { (format_size_line(self.shown.bytes), format_contains(self.shown)) } else { Default::default() };
@@ -423,6 +505,24 @@ impl Drop for Properties {
     fn drop(&mut self) {
         self.size.cancel();
     }
+}
+
+/// "All of type X" when the items share a type name, else "Multiple types".
+/// Finder's Kind where there is one, like the single item's page; plain
+/// folders are "File Folder".
+fn common_type(entries: &[Entry]) -> String {
+    let mut common: Option<String> = None;
+    for entry in entries {
+        let name = match entry.kind {
+            RenameKind::Folder => "File Folder".to_owned(),
+            _ => locale::kind_name(&entry.path).unwrap_or_else(|| entry.kind_label()),
+        };
+        match &common {
+            Some(c) if *c != name => return "Multiple types".into(),
+            _ => common = Some(name),
+        }
+    }
+    format!("All of type {}", common.unwrap_or_default())
 }
 
 /// A raised tab page with one selected tab joined to its top edge.

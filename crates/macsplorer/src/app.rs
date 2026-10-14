@@ -148,6 +148,9 @@ enum Action {
     SetView(ViewMode),
     /// Open the Properties dialog for an item or folder.
     Properties(PathBuf),
+    /// Properties for an item of the list: with several items selected, one
+    /// dialog for the whole selection.
+    ItemProperties(PathBuf),
 }
 
 /// What Cut or Copy remembered. The paths' text is also put on the system
@@ -779,6 +782,19 @@ impl Explorer {
         }
     }
 
+    /// Like Explorer, several selected items get one dialog with their
+    /// combined size; `path` is the item the command was given on.
+    fn open_item_properties(&mut self, path: PathBuf) {
+        if self.selection.len() > 1 && self.selection.contains(&path) {
+            let entries: Vec<Entry> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).cloned().collect();
+            if entries.len() > 1 {
+                self.properties.push(Properties::new_multi(&self.ctx, entries, self.settings.show_extensions));
+                return;
+            }
+        }
+        self.open_properties(path);
+    }
+
     fn open_properties(&mut self, path: PathBuf) {
         let entry = self.entries.iter().find(|e| e.path == path).cloned().unwrap_or_else(|| Properties::folder_entry(&path));
         // The root and mounted volumes can't be renamed from here.
@@ -960,6 +976,7 @@ impl Explorer {
                 }
                 Action::Undo => self.undo_last(),
                 Action::Properties(path) => self.open_properties(path),
+                Action::ItemProperties(path) => self.open_item_properties(path),
                 Action::SetView(mode) => {
                     self.settings.view = mode;
                     // Keep the focused item in sight across the switch.
@@ -1037,7 +1054,7 @@ impl Explorer {
             // Finder's Get Info key (Explorer's is Alt+Enter): the focused
             // item if it's selected, else the first selected, else the folder.
             if cmd && i.key_pressed(Key::I) {
-                actions.push(Action::Properties(self.properties_target(in_list)));
+                actions.push(Action::ItemProperties(self.properties_target(in_list)));
             }
             if in_list && i.key_pressed(Key::Enter) && let Some(p) = self.selection.first() {
                 actions.push(Action::Open(p.clone()));
@@ -1129,7 +1146,7 @@ impl Explorer {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Properties").clicked() {
-                    actions.push(Action::Properties(self.properties_target(self.focus == Pane::List)));
+                    actions.push(Action::ItemProperties(self.properties_target(self.focus == Pane::List)));
                 }
                 ui.separator();
                 if ui.button("Close").clicked() {
@@ -2172,7 +2189,7 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
     }
     ui.separator();
     if ui.button("Properties").clicked() {
-        actions.push(Action::Properties(entry.path.clone()));
+        actions.push(Action::ItemProperties(entry.path.clone()));
     }
 }
 
@@ -3161,10 +3178,17 @@ mod screenshot {
     /// The Properties dialog for `name` in the fixture, once its folder walk
     /// has finished.
     fn shoot_properties(shot: &str, name: &str) {
-        let path = fixture().join(name);
-        let entry = list_dir(path.parent().unwrap(), false).unwrap().into_iter().find(|e| e.path == path).unwrap();
+        shoot_properties_of(shot, &[name]);
+    }
+
+    /// The dialog for one fixture item, or for several of them selected together.
+    fn shoot_properties_of(shot: &str, names: &[&str]) {
+        let listing = list_dir(&fixture(), false).unwrap();
+        let entries: Vec<Entry> = names.iter().map(|n| listing.iter().find(|e| e.path == fixture().join(n)).unwrap().clone()).collect();
+        let entry = entries[0].clone();
+        let size = if entries.len() > 1 { crate::properties::size_for_multi() } else { crate::properties::size_for(&entry) };
         let mut harness = Harness::builder()
-            .with_size(crate::properties::size_for(&entry))
+            .with_size(size)
             .with_pixels_per_point(2.0)
             .wgpu()
             .build_ui_state(
@@ -3172,7 +3196,11 @@ mod screenshot {
                     // Fonts installed now apply from the next frame.
                     let Some(dialog) = dialog else {
                         theme::install(ui.ctx());
-                        *dialog = Some(Properties::new(ui.ctx(), entry.clone(), true, true));
+                        *dialog = Some(if entries.len() > 1 {
+                            Properties::new_multi(ui.ctx(), entries.clone(), true)
+                        } else {
+                            Properties::new(ui.ctx(), entry.clone(), true, true)
+                        });
                         return;
                     };
                     // The harness's panel has a margin; the window has none.
@@ -3189,6 +3217,12 @@ mod screenshot {
         let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
         fs::create_dir_all(&out).unwrap();
         image.save(out.join(format!("{shot}.png"))).unwrap();
+    }
+
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn properties_selection() {
+        shoot_properties_of("properties-selection", &["Projects", "Quarterly report for the board of directors.txt", "budget.xlsx"]);
     }
 
     #[test]

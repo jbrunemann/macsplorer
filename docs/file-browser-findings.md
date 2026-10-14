@@ -489,6 +489,15 @@ Kind (`NSURLLocalizedTypeDescriptionKey`, read on the worker thread), which
 plays the role of `SHGetFileInfoW`'s registered name; plain folders keep
 "File Folder", and Linux falls back to "XLSX File" style names.
 
+Several selected items (Properties from the item menu, File > Properties or
+Cmd+I with two or more items selected) open one dialog, as Explorer does:
+the name box lists the names and can't be edited, Type reads "All of type X"
+or "Multiple types", Location "All in <folder>", and Size and Contains add
+the items up (`SizeThreadProc` goes through the selected items: files add
+their size, a selected folder counts as a folder and is walked). No dates or
+permissions are shown. The title is just "Properties". The page's wording
+wasn't traced; it follows Windows 2000. Not traced: the multi-item icon.
+
 Dates and numbers follow the system locale, as Windows takes them from the
 user locale (`app/locale.rs`). On macOS a date line is `NSDateFormatter`'s
 full date, with the weekday replaced by the relative formatter's word for
