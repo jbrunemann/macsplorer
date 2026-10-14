@@ -21,20 +21,22 @@ fn main() -> eframe::Result {
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| "/".into());
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Macsplorer")
-            // Wayland and X11 match the window to its .desktop file by this.
-            .with_app_id("macsplorer")
-            .with_inner_size([1000.0, 680.0])
-            .with_min_inner_size([520.0, 320.0])
-            // The Windows 2000 caption and frame are drawn by the app. A
-            // borderless window is the only kind macOS doesn't round, and it
-            // keeps edge resizing and minimize (winit sets those style bits).
-            .with_decorations(false)
-            .with_icon(app_icon()),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Macsplorer")
+        // Wayland and X11 match the window to its .desktop file by this.
+        .with_app_id("macsplorer")
+        .with_inner_size([1000.0, 680.0])
+        .with_min_inner_size([520.0, 320.0])
+        // The Windows 2000 caption and frame are drawn by the app. A
+        // borderless window is the only kind macOS doesn't round, and it
+        // keeps edge resizing and minimize (winit sets those style bits).
+        .with_decorations(false)
+        .with_icon(app_icon());
+    // A window opened with File > New Window cascades from the one before it.
+    if let Some((pos, size)) = platform::inherited_frame() {
+        viewport = viewport.with_position(pos).with_inner_size(size);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
         "Macsplorer",
         options,

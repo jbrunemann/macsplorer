@@ -6,6 +6,8 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 
+use eframe::egui;
+
 /// Name of the modifier shown in tooltips (egui's `command` is Cmd on macOS,
 /// Ctrl elsewhere).
 pub const CMD: &str = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
@@ -45,6 +47,51 @@ pub const TAHOMA_BOLD: &[&str] = &[
 pub fn open_default(path: &Path) -> io::Result<()> {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     Command::new(opener).arg(path).spawn().map(drop)
+}
+
+/// Environment variable carrying the opener's window frame (`x,y,w,h`, points)
+/// to a new window's process, so the new window can open offset from it.
+const WINDOW_ENV: &str = "MACSPLORER_WINDOW";
+
+/// How far a new window is offset from the one that opened it.
+const CASCADE: f32 = 24.0;
+
+/// Opens another Macsplorer window on `folder`. Each window is its own
+/// process, so they share nothing (clipboard, undo, settings). `frame` is the
+/// opener's window rect, which the new window cascades from.
+pub fn new_window(folder: &Path, frame: Option<egui::Rect>) -> io::Result<()> {
+    let frame = frame.map(|r| format!("{},{},{},{}", r.left() + CASCADE, r.top() + CASCADE, r.width(), r.height()));
+    let exe = std::env::current_exe()?;
+    // Launched through Launch Services when bundled, so the new window comes
+    // to the front like any app opening; a bare binary is just started.
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")) {
+        let mut open = Command::new("open");
+        open.arg("-n").arg("-a").arg(bundle);
+        if let Some(frame) = &frame {
+            open.arg("--env").arg(format!("{WINDOW_ENV}={frame}"));
+        }
+        return open.arg("--args").arg(folder).spawn().map(drop);
+    }
+    let mut cmd = Command::new(exe);
+    cmd.arg(folder);
+    if let Some(frame) = frame {
+        cmd.env(WINDOW_ENV, frame);
+    }
+    cmd.spawn().map(drop)
+}
+
+/// The frame a window opened by [`new_window`] should take: position and size.
+pub fn inherited_frame() -> Option<([f32; 2], [f32; 2])> {
+    parse_frame(&std::env::var(WINDOW_ENV).ok()?)
+}
+
+fn parse_frame(text: &str) -> Option<([f32; 2], [f32; 2])> {
+    let n: Vec<f32> = text.split(',').map(|v| v.trim().parse().ok()).collect::<Option<_>>()?;
+    match n[..] {
+        [x, y, w, h] if w > 0.0 && h > 0.0 => Some(([x, y], [w, h])),
+        _ => None,
+    }
 }
 
 /// Shows `path` selected in the file manager. Blocks briefly; call it off
@@ -111,6 +158,14 @@ fn percent_encode(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_text_is_parsed() {
+        assert_eq!(parse_frame("100,50.5,1000,680"), Some(([100.0, 50.5], [1000.0, 680.0])));
+        assert_eq!(parse_frame("1,2,3"), None);
+        assert_eq!(parse_frame("1,2,0,4"), None);
+        assert_eq!(parse_frame("a,b,c,d"), None);
+    }
 
     #[test]
     fn uri_paths_are_percent_encoded() {

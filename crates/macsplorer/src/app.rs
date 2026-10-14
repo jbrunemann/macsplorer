@@ -129,6 +129,8 @@ enum Action {
     HistoryJump(usize),
     Up,
     Refresh,
+    /// Start another Macsplorer process on the open folder.
+    NewWindow,
     RevealInFinder(PathBuf),
     Eject(PathBuf),
     Cut,
@@ -934,6 +936,12 @@ impl Explorer {
                     self.load(loads);
                     self.reload();
                 }
+                Action::NewWindow => {
+                    let frame = self.ctx.input(|i| i.viewport().outer_rect);
+                    if let Err(e) = platform::new_window(self.current(), frame) {
+                        self.status = Some(format!("Could not open a new window: {e}"));
+                    }
+                }
                 Action::RevealInFinder(p) => {
                     thread::spawn(move || platform::reveal(&p));
                 }
@@ -1050,6 +1058,9 @@ impl Explorer {
             if pasted {
                 actions.push(Action::Paste(None));
             }
+            if cmd && !i.modifiers.shift && i.key_pressed(Key::N) {
+                actions.push(Action::NewWindow);
+            }
             if cmd && !i.modifiers.shift && i.key_pressed(Key::Z) {
                 actions.push(Action::Undo);
             }
@@ -1153,6 +1164,10 @@ impl Explorer {
     fn menu_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(theme::menu_style)).ui(ui, |ui| {
             ui.menu_button("File", |ui| {
+                if ui.button("New Window").clicked() {
+                    actions.push(Action::NewWindow);
+                }
+                ui.separator();
                 if ui.button("Properties").clicked() {
                     actions.push(Action::ItemProperties(self.properties_target(self.focus == Pane::List)));
                 }
