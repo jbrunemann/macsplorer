@@ -190,6 +190,19 @@ fn edge(p: &Painter, r: Rect, tl: Color32, br: Color32) {
     p.line_segment([pos2(l - 0.5, b), pos2(rr + 0.5, b)], Stroke::new(1.0, br));
 }
 
+/// A 1 pt square at `pos` in a solid color. egui turns small filled rects into
+/// anti-aliased line segments, which fade away at 1x scale (the Linux port), so
+/// this adds an unfeathered mesh quad snapped to the pixel grid instead.
+pub fn dot(p: &Painter, pos: Pos2, color: Color32) {
+    let ppp = p.ctx().pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let min = pos2(snap(pos.x), snap(pos.y));
+    let max = pos2(snap(pos.x + 1.0).max(min.x + 1.0 / ppp), snap(pos.y + 1.0).max(min.y + 1.0 / ppp));
+    let mut mesh = egui::Mesh::default();
+    mesh.add_colored_rect(Rect::from_min_max(min, max), color);
+    p.add(egui::Shape::mesh(mesh));
+}
+
 /// A dotted outline just inside `r`, like `DrawFocusRect`: 1 pt dots on
 /// alternate points of a checkerboard, so the pattern holds still while the
 /// rectangle moves. Windows XORs the dots; black is the closest egui can do.
@@ -201,7 +214,7 @@ pub fn focus_rect(p: &Painter, r: Rect) {
     }
     let dot = |x: f32, y: f32| {
         if (x + y).rem_euclid(2.0) == 0.0 {
-            p.rect_filled(Rect::from_min_size(pos2(x, y), vec2(1.0, 1.0)), 0.0, TEXT);
+            dot(p, pos2(x, y), TEXT);
         }
     };
     let mut x = x0;

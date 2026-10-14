@@ -2376,12 +2376,8 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
         let (lo, hi) = if a.x == b.x { (a.y, b.y) } else { (a.x, b.x) };
         let mut t = (lo / 2.0).ceil() * 2.0;
         while t < hi {
-            let dot = if a.x == b.x {
-                egui::Rect::from_min_size(egui::pos2(a.x - 0.5, t), egui::vec2(1.0, 1.0))
-            } else {
-                egui::Rect::from_min_size(egui::pos2(t, a.y - 0.5), egui::vec2(1.0, 1.0))
-            };
-            p.rect_filled(dot, 0.0, line.color);
+            let at = if a.x == b.x { egui::pos2(a.x - 0.5, t) } else { egui::pos2(t, a.y - 0.5) };
+            theme::dot(p, at, line.color);
             t += 2.0;
         }
     };

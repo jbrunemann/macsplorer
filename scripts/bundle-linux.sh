@@ -1,17 +1,18 @@
 #!/bin/sh
 # Builds target/release/macsplorer-linux-<arch>.tar.gz: the binary, a desktop
 # entry and the app icon.
-# Usage: scripts/bundle-linux.sh
+# Usage: scripts/bundle-linux.sh   (honors CARGO_TARGET_DIR)
 set -eu
 cd "$(dirname "$0")/.."
 
+out=${CARGO_TARGET_DIR:-target}/release
 cargo build --release -p macsplorer
 
 arch=$(uname -m)
-dir=target/release/macsplorer-linux-$arch
+dir=$out/macsplorer-linux-$arch
 rm -rf "$dir"
 mkdir -p "$dir"
-cp target/release/macsplorer "$dir/macsplorer"
+cp "$out/macsplorer" "$dir/macsplorer"
 cp assets/icon.png "$dir/macsplorer.png"
 cp assets/macsplorer.desktop "$dir/macsplorer.desktop"
 cat > "$dir/README.txt" <<TXT
@@ -28,5 +29,5 @@ msttcorefonts package), Macsplorer uses it; otherwise it falls back to egui's
 default font.
 TXT
 
-tar -C target/release -czf "$dir.tar.gz" "$(basename "$dir")"
+tar -C "$out" -czf "$dir.tar.gz" "$(basename "$dir")"
 echo "$dir.tar.gz"
