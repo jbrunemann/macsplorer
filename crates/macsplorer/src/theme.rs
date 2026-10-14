@@ -581,8 +581,8 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
     mesh.add_triangle(0, 2, 3);
     p.add(mesh);
 
-    // On macOS, not Windows' system menu: a click on the red dot or the folder closes, matching
-    // the macOS close button in the top left.
+    // On macOS, not Windows' system menu: the red dot closes, like the macOS close button in the
+    // top left. The folder icon next to it does nothing, as in Finder's title bar.
     let icon_left = if cfg!(target_os = "macos") {
         let dot = pos2(rect.left() + 8.0, rect.center().y);
         p.circle(dot, 5.0, Color32::from_rgb(0xff, 0x5f, 0x57), Stroke::new(1.0, Color32::from_rgb(0xc0, 0x30, 0x28)));
@@ -595,7 +595,7 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
         paint_icon(p, icon, Icon::FolderOpen, true);
     }
     if cfg!(target_os = "macos") {
-        let close_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(icon.right(), rect.bottom()));
+        let close_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(icon.left(), rect.bottom()));
         if ui.interact(close_area, ui.id().with("caption_icon"), Sense::click()).clicked() {
             ui.ctx().send_viewport_cmd(ViewportCommand::Close);
         }
