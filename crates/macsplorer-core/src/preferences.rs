@@ -25,11 +25,15 @@ pub struct Preferences {
     pub columns: Option<ColumnSet>,
     /// View > Text Size, one of `text_size::SIZES`.
     pub zoom: f32,
+    /// The terminal "Open in Terminal" starts: an app name on macOS ("iTerm",
+    /// "Ghostty"), a command on Linux. Only set by editing the file; `None`
+    /// means the system's.
+    pub terminal: Option<String>,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None }
     }
 }
 
@@ -72,6 +76,9 @@ impl Preferences {
         let mut map = fs::read_to_string(&file).map(|t| read_map(&t)).unwrap_or_default();
         map.insert("dark".into(), Value::Bool(self.dark));
         map.insert("zoom".into(), Value::from(self.zoom));
+        if let Some(terminal) = &self.terminal {
+            map.insert("terminal".into(), Value::from(terminal.as_str()));
+        }
         if let Some(columns) = &self.columns {
             map.insert("columns".into(), columns.to_json());
         }
@@ -90,6 +97,7 @@ impl Preferences {
             dark: map.get("dark").and_then(Value::as_bool).unwrap_or(false),
             columns: map.get("columns").and_then(ColumnSet::from_json),
             zoom: map.get("zoom").and_then(Value::as_f64).map_or(text_size::NORMAL, |z| text_size::snap(z as f32)),
+            terminal: map.get("terminal").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(String::from),
         }
     }
 }
@@ -143,6 +151,21 @@ mod tests {
         // Saving without columns leaves the stored ones alone.
         Preferences { dark: false, columns: None, ..Default::default() }.save_to(&dir).unwrap();
         assert!(Preferences::load_from(&dir).columns.is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_terminal_is_read_and_kept() {
+        let dir = temp("terminal");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(FILE), r#"{"terminal": " Ghostty "}"#).unwrap();
+        let prefs = Preferences::load_from(&dir);
+        assert_eq!(prefs.terminal.as_deref(), Some("Ghostty"));
+        // Another setting changing doesn't lose it.
+        Preferences { dark: true, ..prefs }.save_to(&dir).unwrap();
+        assert_eq!(Preferences::load_from(&dir).terminal.as_deref(), Some("Ghostty"));
+        fs::write(dir.join(FILE), r#"{"terminal": ""}"#).unwrap();
+        assert_eq!(Preferences::load_from(&dir).terminal, None);
         fs::remove_dir_all(&dir).unwrap();
     }
 

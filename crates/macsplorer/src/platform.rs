@@ -119,6 +119,44 @@ pub fn reveal(path: &Path) {
     }
 }
 
+/// Opens a terminal window in `folder` without waiting for it. `preferred` is
+/// the user's choice from the settings file: on macOS an app name, which gets
+/// the folder like Finder's drop on the Dock icon (Terminal, iTerm and Ghostty
+/// open a window there); on Linux a command. The error is what to tell the user.
+pub fn open_terminal(folder: &Path, preferred: Option<&str>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS has no default terminal setting to read. `open` returns once
+        // the launch is requested, so waiting for it is quick, and it is
+        // where a misspelled app name shows up.
+        let out = Command::new("open").arg("-a").arg(preferred.unwrap_or("Terminal")).arg(folder).output().map_err(|e| e.to_string())?;
+        if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // No single terminal on Linux: the settings file's, $TERMINAL, then the
+        // Debian alternative, then the common ones. Most start in the
+        // working directory they inherit; gnome-terminal's server needs the
+        // folder as an argument.
+        let env = std::env::var("TERMINAL").ok().filter(|t| !t.is_empty());
+        let known = ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "alacritty", "kitty", "xterm"];
+        for terminal in preferred.into_iter().chain(env.as_deref()).chain(known) {
+            let mut cmd = Command::new(terminal);
+            cmd.current_dir(folder);
+            if terminal.ends_with("gnome-terminal") {
+                cmd.arg(format!("--working-directory={}", folder.display()));
+            }
+            match cmd.spawn() {
+                Ok(_) => return Ok(()),
+                // Not installed: try the next one.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Err("no terminal found; set $TERMINAL".into())
+    }
+}
+
 /// Unmounts and ejects a mounted volume. Blocks; call it off the UI thread.
 /// The error is the tool's own message.
 pub fn eject(volume: &Path) -> Result<(), String> {

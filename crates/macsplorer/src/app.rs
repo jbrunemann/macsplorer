@@ -134,6 +134,8 @@ enum Action {
     /// Start another Macsplorer process on the open folder.
     NewWindow,
     RevealInFinder(PathBuf),
+    /// Nautilus' "Open in Terminal": a terminal window in this folder.
+    OpenTerminal(PathBuf),
     Eject(PathBuf),
     Cut,
     Copy,
@@ -972,6 +974,11 @@ impl Explorer {
                 }
                 Action::RevealInFinder(p) => {
                     thread::spawn(move || platform::reveal(&p));
+                }
+                Action::OpenTerminal(p) => {
+                    if let Err(e) = platform::open_terminal(&p, Preferences::load().terminal.as_deref()) {
+                        self.status = Some(format!("Couldn't open a terminal in {}: {e}", p.display()));
+                    }
                 }
                 Action::Eject(p) => self.eject(p),
                 Action::Cut => self.set_clipboard(true),
@@ -2222,6 +2229,8 @@ impl eframe::App for Explorer {
     }
 }
 
+const TERMINAL_LABEL: &str = "Open in Terminal";
+
 /// The "Open With" submenu: the file's apps, then "Choose Program...".
 /// The app list is looked up once per file and kept while the menu is open.
 fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
@@ -2260,6 +2269,9 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
     if ui.button(platform::REVEAL_LABEL).clicked() {
         actions.push(Action::RevealInFinder(entry.path.clone()));
     }
+    if entry.kind == RenameKind::Folder && ui.button(TERMINAL_LABEL).clicked() {
+        actions.push(Action::OpenTerminal(entry.path.clone()));
+    }
     if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
         actions.push(Action::Eject(entry.path.clone()));
     }
@@ -2297,6 +2309,9 @@ fn background_menu(ui: &mut Ui, folder: &Path, can_paste: bool, actions: &mut Ve
     ui.separator();
     if ui.button("Refresh").clicked() {
         actions.push(Action::Refresh);
+    }
+    if ui.button(TERMINAL_LABEL).clicked() {
+        actions.push(Action::OpenTerminal(folder.to_path_buf()));
     }
     ui.separator();
     if ui.button("Properties").clicked() {
@@ -2728,6 +2743,9 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
         }
         if ui.button(platform::REVEAL_LABEL).clicked() {
             actions.push(Action::RevealInFinder(row.key.path.clone()));
+        }
+        if ui.button(TERMINAL_LABEL).clicked() {
+            actions.push(Action::OpenTerminal(row.key.path.clone()));
         }
         if is_ejectable(&row.key.path) && ui.button("Eject").clicked() {
             actions.push(Action::Eject(row.key.path.clone()));

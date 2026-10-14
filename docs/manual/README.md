@@ -170,6 +170,7 @@ The status bar shows how many items you have selected and how much space they ta
 | **Open** | Same as a double-click. |
 | **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons. **Choose Program...** lets you pick any app. |
 | **Show in Finder** | Opens a Finder window with the item selected. |
+| **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |
 | **Eject** | For disks and drives: safely disconnects them. |
 | **Cut**, **Copy**, **Copy as Path**, **Paste** | See [Copying, moving and deleting](#8-copying-moving-and-deleting). |
 | **Delete** | Moves the item to the Trash. |
@@ -284,6 +285,10 @@ If the text is too small to read comfortably, choose **View › Text Size** and 
 You can also press **⌘+** to go one size up, **⌘−** to go one size down, and **⌘0** to return to Normal. You may want to make the window bigger after choosing a larger size.
 
 <img src="images/text-size-larger.png" alt="Macsplorer at 150% text size" width="900">
+
+### Using another terminal
+
+**Open in Terminal** starts the Terminal app. To use another one, add its app name to `~/Library/Application Support/macsplorer/settings.json`, for example `"terminal": "iTerm"` or `"terminal": "Ghostty"`. The name is the one shown in the Applications folder, without `.app`. The next **Open in Terminal** uses it, no restart needed. If the name is wrong, the status bar says so.
 
 ### Dark mode
 
