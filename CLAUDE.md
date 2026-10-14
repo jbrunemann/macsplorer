@@ -15,6 +15,7 @@ never paste decompiled code into the source.
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
 | `scripts/bundle-macos.sh` | Builds `target/release/Macsplorer.app`. |
 | `scripts/bundle-linux.sh` | Builds `target/release/macsplorer-linux-<arch>.tar.gz` (binary, `assets/macsplorer.desktop`, icon). |
+| `scripts/build-linux-docker.sh` | Builds the same Linux tarball in an Ubuntu 22.04 Docker container (arm64 natively on Apple Silicon, or pass `linux/amd64`), into `target/linux-docker/`. |
 | `scripts/update-seti.py` | Refreshes `assets/seti` (Seti font/theme + language table) from the VS Code repo. |
 | `docs/` | Findings from the Windows binaries. `file-browser-findings.md` §4 lists untraced behaviors. |
 
