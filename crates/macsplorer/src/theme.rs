@@ -19,27 +19,6 @@ pub fn is_dark() -> bool {
     DARK_MODE.load(Ordering::Relaxed)
 }
 
-/// The marker file for the dark mode choice; the app has no settings file.
-fn dark_preference_path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("macsplorer").join("dark-mode"))
-}
-
-pub fn load_dark_preference() -> bool {
-    dark_preference_path().is_some_and(|p| p.exists())
-}
-
-pub fn store_dark_preference(dark: bool) {
-    let Some(path) = dark_preference_path() else { return };
-    if dark {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(path, "");
-    } else {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
 /// Windows Classic system colors (`GetSysColor` defaults on Windows 2000),
 /// or the same roles in a dark palette. The dark one is not from Windows 2000
 /// (it had none, and neither do the build 10240 binaries; Explorer's dark mode

@@ -24,6 +24,7 @@ use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
 use macsplorer_core::marquee::{self, Marquee};
 use macsplorer_core::listing::{Entry, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
+use macsplorer_core::preferences::Preferences;
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
 use macsplorer_core::properties::set_permissions;
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
@@ -990,7 +991,7 @@ impl Explorer {
                 Action::ItemProperties(path) => self.open_item_properties(path),
                 Action::SetDark(dark) => {
                     theme::set_dark(&self.ctx, dark);
-                    theme::store_dark_preference(dark);
+                    Preferences::update(|p| p.dark = dark);
                     self.icons.palette_changed();
                 }
                 Action::SetView(mode) => {

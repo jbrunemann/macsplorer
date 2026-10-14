@@ -43,7 +43,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(egui::Theme::Light);
             theme::install(&cc.egui_ctx);
-            theme::set_dark(&cc.egui_ctx, theme::load_dark_preference());
+            theme::set_dark(&cc.egui_ctx, macsplorer_core::preferences::Preferences::load().dark);
             Ok(Box::new(app::Explorer::new(cc.egui_ctx.clone(), start)))
         }),
     )

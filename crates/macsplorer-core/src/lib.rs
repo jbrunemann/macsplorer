@@ -16,6 +16,7 @@ pub mod listing;
 pub mod marquee;
 pub mod natural;
 pub mod places;
+pub mod preferences;
 pub mod properties;
 pub mod rename;
 pub mod seti;
