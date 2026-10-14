@@ -326,7 +326,8 @@ pub struct SortSpec {
     pub ascending: bool,
     /// Keep folders above files regardless of column. Explorer's details
     /// view does this; the exact rule in `CFSFolder::CompareIDs` is not yet
-    /// traced.
+    /// traced. `false` mixes them like Finder (an app setting, not from
+    /// Explorer).
     pub folders_first: bool,
     /// `false` gives the `NoStrCmpLogical` plain ordering.
     pub natural: bool,
@@ -486,6 +487,19 @@ mod tests {
         sort_entries(&mut v, SortSpec::default());
         let names: Vec<_> = v.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Alpha", "zeta", "b2.txt", "b10.txt"]);
+    }
+
+    #[test]
+    fn mixed_sorting_interleaves_folders_and_files() {
+        let mut v = vec![
+            entry("b10.txt", RenameKind::File, Some(1)),
+            entry("zeta", RenameKind::Folder, None),
+            entry("b2.txt", RenameKind::File, Some(1)),
+            entry("Alpha", RenameKind::Folder, None),
+        ];
+        sort_entries(&mut v, SortSpec { folders_first: false, ..Default::default() });
+        let names: Vec<_> = v.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "b2.txt", "b10.txt", "zeta"]);
     }
 
     #[test]

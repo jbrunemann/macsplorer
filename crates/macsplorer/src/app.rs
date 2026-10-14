@@ -74,6 +74,8 @@ struct Settings {
     show_extensions: bool,
     show_hidden: bool,
     natural_sort: bool,
+    /// Finder-style ordering: folders sorted in among the files.
+    mix_folders: bool,
     /// Explorer's "Expand to open folder" navigation pane option.
     expand_to_open: bool,
     /// The Folders explorer bar (navigation pane) is shown.
@@ -284,7 +286,7 @@ impl Explorer {
             list_request: 0,
             listing: false,
             sort: SortSpec::default(),
-            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, expand_to_open: true, show_folders: true, color_names: true },
+            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: true, color_names: true },
             selection: BTreeSet::new(),
             anchor: None,
             focus_item: None,
@@ -1213,6 +1215,10 @@ impl Explorer {
                 }
                 if ui.checkbox(&mut self.settings.natural_sort, "Natural number sorting").changed() {
                     self.sort.natural = self.settings.natural_sort;
+                    self.resort();
+                }
+                if ui.checkbox(&mut self.settings.mix_folders, "Mix folders and files (macOS)").changed() {
+                    self.sort.folders_first = !self.settings.mix_folders;
                     self.resort();
                 }
                 if changed {
