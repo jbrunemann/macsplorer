@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::io;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -23,11 +24,27 @@ pub struct ItemInfo {
     pub accessed: Option<SystemTime>,
     /// On a FAT or exFAT volume, which keeps access dates without a time.
     pub on_fat: bool,
+    /// `st_mode` of the item itself, or of its target for a symlink (what a
+    /// `chmod` on the link would change).
+    pub mode: u32,
+    /// Where the item points, if it is a symlink.
+    pub link: Option<LinkInfo>,
+}
+
+/// A symlink's target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkInfo {
+    /// What the link holds, as `readlink` returns it: possibly relative.
+    pub target: PathBuf,
+    /// Nothing is there.
+    pub broken: bool,
 }
 
 /// Reads `path`'s metadata, following a symlink like the listing does.
 pub fn item_info(path: &Path) -> io::Result<ItemInfo> {
-    let meta = fs::metadata(path).or_else(|_| fs::symlink_metadata(path))?;
+    let target = fs::metadata(path);
+    let link = fs::read_link(path).ok().map(|to| LinkInfo { target: to, broken: target.is_err() });
+    let meta = target.or_else(|_| fs::symlink_metadata(path))?;
     Ok(ItemInfo {
         is_dir: meta.is_dir(),
         size: meta.len(),
@@ -35,7 +52,43 @@ pub fn item_info(path: &Path) -> io::Result<ItemInfo> {
         modified: meta.modified().ok(),
         accessed: meta.accessed().ok(),
         on_fat: is_fat_volume(path),
+        mode: meta.mode(),
+        link,
     })
+}
+
+/// The Target line: the link's text, with a note when nothing is there.
+pub fn format_target(link: &LinkInfo) -> String {
+    let target = link.target.display();
+    if link.broken { format!("{target} (not found)") } else { target.to_string() }
+}
+
+/// The nine permission bits as check boxes: rows are owner, group and
+/// others, columns read, write and execute.
+pub fn permissions(mode: u32) -> [[bool; 3]; 3] {
+    [6, 3, 0].map(|shift| [4, 2, 1].map(|bit| mode >> shift & bit != 0))
+}
+
+/// `mode` with its nine permission bits replaced by `bits` (laid out as
+/// [`permissions`] returns them). The file type and the special bits stay.
+pub fn with_permissions(mode: u32, bits: [[bool; 3]; 3]) -> u32 {
+    let mut out = mode & !0o777;
+    for (row, shift) in bits.into_iter().zip([6, 3, 0]) {
+        for (on, bit) in row.into_iter().zip([4, 2, 1]) {
+            if on {
+                out |= bit << shift;
+            }
+        }
+    }
+    out
+}
+
+/// Sets `path`'s permission bits to `bits`, keeping the special bits. A
+/// symlink's target is changed, like `chmod`, which is also what the
+/// dialog shows.
+pub fn set_permissions(path: &Path, bits: [[bool; 3]; 3]) -> io::Result<()> {
+    let mode = with_permissions(fs::metadata(path)?.mode(), bits) & 0o7777;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
 
 /// Running totals of a folder walk.
@@ -227,6 +280,65 @@ mod tests {
         cancelled.measure(&dir);
         assert!(cancelled.is_done());
         assert_eq!(cancelled.totals(), FolderTotals::default());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn permission_boxes() {
+        assert_eq!(permissions(0o100750), [[true, true, true], [true, false, true], [false; 3]]);
+        assert_eq!(permissions(0o040000), [[false; 3]; 3]);
+        // The special bits aren't among the nine.
+        assert_eq!(permissions(0o104644), [[true, true, false], [true, false, false], [true, false, false]]);
+    }
+
+    #[test]
+    fn permissions_round_trip() {
+        let mode = 0o104750;
+        assert_eq!(with_permissions(mode, permissions(mode)), mode);
+        // Only the nine bits change.
+        assert_eq!(with_permissions(0o104750, [[true, true, false], [false; 3], [true, false, false]]), 0o104604);
+        assert_eq!(with_permissions(0o040755, [[false; 3]; 3]), 0o040000);
+    }
+
+    #[test]
+    fn setting_permissions_follows_links() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-props-chmod-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o4644)).unwrap();
+        std::os::unix::fs::symlink("f", dir.join("link")).unwrap();
+
+        set_permissions(&dir.join("link"), [[true, true, true], [true, false, true], [false; 3]]).unwrap();
+        // The target changed, with its set-user-ID bit kept.
+        assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, 0o4750);
+        assert!(set_permissions(&dir.join("missing"), [[false; 3]; 3]).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn info_for_links() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-props-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("real"), [0u8; 7]).unwrap();
+        std::os::unix::fs::symlink("real", dir.join("good")).unwrap();
+        std::os::unix::fs::symlink("missing", dir.join("gone")).unwrap();
+
+        assert_eq!(item_info(&dir.join("real")).unwrap().link, None);
+        let good = item_info(&dir.join("good")).unwrap();
+        let link = good.link.unwrap();
+        assert_eq!(link, LinkInfo { target: "real".into(), broken: false });
+        assert_eq!(format_target(&link), "real");
+        // A link shows its target's size and permissions.
+        assert_eq!(good.size, 7);
+        assert_eq!(good.mode & 0o170000, 0o100000);
+
+        let gone = item_info(&dir.join("gone")).unwrap();
+        let link = gone.link.unwrap();
+        assert!(link.broken);
+        assert_eq!(format_target(&link), "missing (not found)");
         fs::remove_dir_all(&dir).unwrap();
     }
 

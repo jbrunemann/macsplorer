@@ -461,14 +461,27 @@ Macsplorer (`core::properties`, `app/properties.rs`): one General tab in
 its own borderless window, opened from Properties at the bottom of the item,
 empty-space and Folders pane context menus, File > Properties and Cmd+I
 (Finder's Get Info key, instead of Alt+Enter). Left out on purpose: the
-Sharing and Security tabs, Size on disk, Opens with, Attributes and
-Advanced, and the caption's "?" button. Metadata is read and folders are
+Sharing and Security tabs, Size on disk, Opens with, Advanced, and the
+caption's "?" button. Metadata is read and folders are
 walked on a worker thread, and the totals are shown every 250 ms as in
 Windows. A rename from the dialog goes through the same checks and undo as
 an in-place rename. When a rename fails, the dialog stays open and the
 error goes to the status bar instead of a message box. Guesses: the walk
 counts hidden items, doesn't count the folder itself, and treats symlinks
 as files without following them. Packages (`.app`) get the folder page.
+Not from Explorer: the Windows Attributes check boxes (Read-only, Hidden)
+become the Unix permissions, a grid of Owner, Group and Others by Read, Write
+and Execute at the bottom of the page. A click toggles a box, and Apply or
+OK runs a `chmod` (the special bits stay) after any rename; Apply is enabled
+while the name or a box differs from what is on disk. A failed `chmod` keeps
+the dialog open and goes to the status bar. Changing permissions isn't in
+the undo stack. The boxes are disabled for the root and mounted volumes, like
+the name. For a symlink they show, and change, the target's permissions, as
+`chmod` does. A symlink also gets a
+Source line (the link's own path) and a Target line (what `readlink` returns,
+as written, with "(not found)" after a dangling one). Finder aliases get
+neither. The window's height follows the rows an item has (folder, file,
+link) and stays fixed for it.
 Apply is enabled only while the name differs from the current one (Windows
 enables it on any edit). The type name of files and packages is Finder's
 Kind (`NSURLLocalizedTypeDescriptionKey`, read on the worker thread), which

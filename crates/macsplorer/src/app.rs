@@ -25,6 +25,7 @@ use macsplorer_core::marquee::{self, Marquee};
 use macsplorer_core::listing::{Entry, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
+use macsplorer_core::properties::set_permissions;
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::slow_click::{self, SlowClick};
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
@@ -791,16 +792,29 @@ impl Explorer {
         dialogs.retain_mut(|dialog| match dialog.show(ctx, &mut self.icons) {
             Outcome::Keep => true,
             Outcome::Close => false,
-            Outcome::Rename { close } => {
-                let path = dialog.path().to_path_buf();
-                match self.rename_item(&path, &dialog.new_name()) {
-                    Some(target) => {
-                        dialog.renamed(target);
-                        !close
+            Outcome::Apply { close } => {
+                // Like a failed PSN_APPLY, the dialog stays open when a step fails.
+                if let Some(name) = dialog.name_to_apply() {
+                    let path = dialog.path().to_path_buf();
+                    match self.rename_item(&path, &name) {
+                        Some(target) => dialog.renamed(target),
+                        None => return true,
                     }
-                    // Like a failed PSN_APPLY, the dialog stays open.
-                    None => true,
                 }
+                if let Some(bits) = dialog.new_permissions() {
+                    match set_permissions(dialog.path(), bits) {
+                        Ok(()) => {
+                            self.status = None;
+                            dialog.permissions_applied();
+                            self.reload();
+                        }
+                        Err(e) => {
+                            self.status = Some(format!("Couldn't change the permissions: {e}"));
+                            return true;
+                        }
+                    }
+                }
+                !close
             }
         });
         // Dialogs opened while these were drawn come after them.
@@ -2921,6 +2935,8 @@ mod screenshot {
         }
         // A real app (via symlink) to show a native icon.
         let _ = std::os::unix::fs::symlink("/System/Applications/Calculator.app", dir.join("Calculator.app"));
+        // A relative link to a file.
+        let _ = std::os::unix::fs::symlink("notes.txt", dir.join("Link to notes.txt"));
         dir
     }
 
@@ -3134,8 +3150,9 @@ mod screenshot {
     /// has finished.
     fn shoot_properties(shot: &str, name: &str) {
         let path = fixture().join(name);
+        let entry = list_dir(path.parent().unwrap(), false).unwrap().into_iter().find(|e| e.path == path).unwrap();
         let mut harness = Harness::builder()
-            .with_size(crate::properties::SIZE)
+            .with_size(crate::properties::size_for(&entry))
             .with_pixels_per_point(2.0)
             .wgpu()
             .build_ui_state(
@@ -3143,8 +3160,7 @@ mod screenshot {
                     // Fonts installed now apply from the next frame.
                     let Some(dialog) = dialog else {
                         theme::install(ui.ctx());
-                        let entry = list_dir(path.parent().unwrap(), false).unwrap().into_iter().find(|e| e.path == path).unwrap();
-                        *dialog = Some(Properties::new(ui.ctx(), entry, true, true));
+                        *dialog = Some(Properties::new(ui.ctx(), entry.clone(), true, true));
                         return;
                     };
                     // The harness's panel has a margin; the window has none.
@@ -3173,6 +3189,18 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn properties_file() {
         shoot_properties("properties-file", "Quarterly report for the board of directors.txt");
+    }
+
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn properties_link() {
+        shoot_properties("properties-link", "Link to notes.txt");
+    }
+
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn properties_folder_link() {
+        shoot_properties("properties-folder-link", "Calculator.app");
     }
 
     /// The type name is Finder's Kind for the file.

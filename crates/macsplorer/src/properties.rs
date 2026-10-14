@@ -1,8 +1,11 @@
 //! The Properties dialog: the General page of shell32's `CFilePropSheetPage`
 //! (`_InitSingleFilePrsht`, `_UpdateSizeField`, `_UpdateSizeCount`), in its
-//! own borderless window. Left out on purpose: Sharing and Security tabs,
-//! Size on disk, Opens with, Attributes and Advanced.
+//! own borderless window, with the Unix permissions where Windows has its
+//! Attributes check boxes and a symlink's source and target.
+//! Left out on purpose: Sharing and Security tabs, Size on disk, Opens with
+//! and Advanced.
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,17 +16,27 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use egui::{Align, Key, Layout, Rect, Sense, TextEdit, Ui, pos2, vec2};
 
-use macsplorer_core::listing::{Entry, is_package_name};
-use macsplorer_core::properties::{FolderSize, FolderTotals, ItemInfo, format_contains, format_size_line, item_info};
+use macsplorer_core::listing::{Entry, Link, is_package_name};
+use macsplorer_core::properties::{FolderSize, FolderTotals, ItemInfo, format_contains, format_size_line, format_target, item_info, permissions};
+
+type Permissions = [[bool; 3]; 3];
 use macsplorer_core::rename::RenameKind;
 
 use crate::icons::{FileIcons, IconState};
 use crate::locale;
 use crate::theme::{self, Bevel};
 
-/// The window, fixed size like a property sheet. Tall enough for a file's
-/// six rows; a folder's page has room to spare, as in Windows.
-pub const SIZE: egui::Vec2 = vec2(380.0, 332.0);
+/// The window's width. Its height is fixed for an item, like a property
+/// sheet, but follows the rows the item has (see [`size_for`]).
+const WIDTH: f32 = 380.0;
+/// The window's height without any group of rows: frame, caption, tab, the
+/// icon and name row, and the buttons.
+const BASE_HEIGHT: f32 = 155.0;
+/// The etched line above a group, and the gap below it.
+const GROUP_TOP: f32 = 9.0;
+const GROUP_BOTTOM: f32 = 6.0;
+/// Where each permission's check box starts, from the first one.
+const BOX_STEP: f32 = 76.0;
 const FRAME: f32 = 4.0;
 const TAB_HEIGHT: f32 = 20.0;
 const ROW_HEIGHT: f32 = 22.0;
@@ -34,12 +47,54 @@ const VALUE_X: f32 = 86.0;
 /// timer `CFolderContentsInfo::SizeThreadProc` sets.
 const SIZE_REFRESH: Duration = Duration::from_millis(250);
 
+/// The window size for `entry`'s page, known before its metadata is read.
+pub fn size_for(entry: &Entry) -> egui::Vec2 {
+    let is_dir = entry.kind != RenameKind::File;
+    // The Source and Target group follows Location, then the dates (files)
+    // or Created (folders), then the permissions.
+    let mut rows = if is_dir { vec![4, 1] } else { vec![1, 2, 3] };
+    if is_linked(entry) {
+        rows.insert(if is_dir { 1 } else { 2 }, 2);
+    }
+    rows.push(PERMISSION_ROWS);
+    vec2(WIDTH, BASE_HEIGHT + rows.into_iter().map(group_height).sum::<f32>())
+}
+
+fn group_height(rows: usize) -> f32 {
+    GROUP_TOP + rows as f32 * ROW_HEIGHT + GROUP_BOTTOM
+}
+
+fn is_linked(entry: &Entry) -> bool {
+    matches!(entry.link, Some(Link::Symlink | Link::Broken))
+}
+
+/// Owner, Group and Others.
+const PERMISSION_ROWS: usize = 3;
+
+/// A block of the page between etched lines.
+enum Group {
+    Rows(Vec<(&'static str, String)>),
+    /// The nine permission bits, as [`permissions`] returns them.
+    Permissions(Permissions),
+}
+
+#[cfg(test)]
+impl Group {
+    fn rows(&self) -> usize {
+        match self {
+            Group::Rows(rows) => rows.len(),
+            Group::Permissions(_) => PERMISSION_ROWS,
+        }
+    }
+}
+
 /// What the dialog asks the window to do after this frame.
 pub enum Outcome {
     Keep,
     Close,
-    /// Rename to [`Properties::new_name`]; OK also closes on success.
-    Rename { close: bool },
+    /// Rename to [`Properties::new_name`] if the name changed, then set
+    /// [`Properties::new_permissions`] if they did; OK also closes on success.
+    Apply { close: bool },
 }
 
 pub struct Properties {
@@ -53,6 +108,10 @@ pub struct Properties {
     /// Finder's Kind, used as the type name when there is one.
     kind: Option<String>,
     info_rx: Receiver<(io::Result<ItemInfo>, Option<String>)>,
+    /// The permission boxes as shown, once the item has been read.
+    permissions: Option<Permissions>,
+    /// The permissions on disk, to tell whether the boxes were changed.
+    saved_permissions: Option<Permissions>,
     size: Arc<FolderSize>,
     /// The folder totals on screen and when they were taken.
     shown: FolderTotals,
@@ -87,6 +146,8 @@ impl Properties {
             info: None,
             kind: None,
             info_rx,
+            permissions: None,
+            saved_permissions: None,
             size,
             shown: FolderTotals::default(),
             shown_at: Instant::now(),
@@ -111,8 +172,13 @@ impl Properties {
             comment: None,
             hidden: false,
             custom_icon: false,
-            link: None,
+            // One lstat for a dialog the user just asked for.
+            link: fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()).then_some(Link::Symlink),
         }
+    }
+
+    fn size(&self) -> egui::Vec2 {
+        size_for(&self.entry)
     }
 
     pub fn path(&self) -> &Path {
@@ -128,8 +194,31 @@ impl Properties {
         }
     }
 
-    fn changed(&self) -> bool {
+    fn name_changed(&self) -> bool {
         self.new_name() != self.entry.name
+    }
+
+    fn permissions_changed(&self) -> bool {
+        self.permissions != self.saved_permissions
+    }
+
+    fn changed(&self) -> bool {
+        self.name_changed() || self.permissions_changed()
+    }
+
+    /// The boxes' state when they differ from what is on disk.
+    pub fn new_permissions(&self) -> Option<Permissions> {
+        self.permissions.filter(|_| self.permissions_changed())
+    }
+
+    /// The new name when it differs from the current one.
+    pub fn name_to_apply(&self) -> Option<String> {
+        self.name_changed().then(|| self.new_name())
+    }
+
+    /// The permissions went through: the boxes are the saved state now.
+    pub fn permissions_applied(&mut self) {
+        self.saved_permissions = self.permissions;
     }
 
     /// The rename went through: show the new name from now on.
@@ -145,6 +234,8 @@ impl Properties {
 
     fn poll(&mut self) {
         if let Ok((info, kind)) = self.info_rx.try_recv() {
+            self.saved_permissions = info.as_ref().ok().map(|i| permissions(i.mode));
+            self.permissions = self.saved_permissions;
             self.info = Some(info.map_err(|e| e.to_string()));
             self.kind = kind;
         }
@@ -171,7 +262,7 @@ impl Properties {
         let title = self.title();
         let builder = egui::ViewportBuilder::default()
             .with_title(&title)
-            .with_inner_size(SIZE)
+            .with_inner_size(self.size())
             .with_resizable(false)
             .with_minimize_button(false)
             .with_maximize_button(false)
@@ -188,7 +279,7 @@ impl Properties {
     pub fn ui(&mut self, ui: &mut Ui, icons: &mut FileIcons) -> Outcome {
         self.poll();
         let title = self.title();
-        let (outer, _) = ui.allocate_exact_size(SIZE, Sense::hover());
+        let (outer, _) = ui.allocate_exact_size(self.size(), Sense::hover());
         let p = ui.painter();
         p.rect_filled(outer, 0.0, theme::color::FACE);
         theme::bevel(p, outer, Bevel::Raised);
@@ -208,13 +299,13 @@ impl Properties {
         let ok = cancel.translate(vec2(-BUTTON.x - 6.0, 0.0));
         let (enter, escape) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
         if theme::push_button(ui, ok, "OK", true, true).clicked() || enter {
-            return if changed { Outcome::Rename { close: true } } else { Outcome::Close };
+            return if changed { Outcome::Apply { close: true } } else { Outcome::Close };
         }
         if theme::push_button(ui, cancel, "Cancel", true, false).clicked() || escape {
             return Outcome::Close;
         }
         if theme::push_button(ui, apply, "Apply", changed, false).clicked() {
-            return Outcome::Rename { close: false };
+            return Outcome::Apply { close: false };
         }
         Outcome::Keep
     }
@@ -231,7 +322,66 @@ impl Properties {
 
         let info = self.info.as_ref().and_then(|i| i.as_ref().ok());
         let location = self.entry.path.parent().map_or_else(String::new, |p| p.display().to_string());
-        let groups: Vec<Vec<(&str, String)>> = if self.is_dir() {
+        let editable = self.editable && self.permissions.is_some();
+        let mut groups = self.groups(info, location);
+
+        let mut y = icon.bottom() + 11.0;
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        for group in groups.drain(..) {
+            etched_line(ui, page, y);
+            y += GROUP_TOP;
+            match group {
+                Group::Rows(rows) => {
+                    for (label, value) in rows {
+                        let row = Rect::from_min_max(pos2(left, y), pos2(page.right() - 12.0, y + ROW_HEIGHT));
+                        ui.painter().text(pos2(row.left(), row.center().y), egui::Align2::LEFT_CENTER, label, font.clone(), theme::color::TEXT);
+                        let value_rect = Rect::from_min_max(pos2(page.left() + VALUE_X, row.top()), row.max);
+                        // Long values (a deep Location) end in "..." with the full
+                        // text as a tooltip, like SetDlgItemTextWithToolTip.
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(value_rect).layout(Layout::left_to_right(Align::Center)), |ui| {
+                            ui.add(egui::Label::new(value).truncate());
+                        });
+                        y += ROW_HEIGHT;
+                    }
+                }
+                Group::Permissions(bits) => {
+                    for (who, row_bits) in ["Owner:", "Group:", "Others:"].into_iter().zip(bits) {
+                        let center = y + ROW_HEIGHT / 2.0;
+                        ui.painter().text(pos2(left, center), egui::Align2::LEFT_CENTER, who, font.clone(), theme::color::TEXT);
+                        for (n, (on, name)) in row_bits.into_iter().zip(["Read", "Write", "Execute"]).enumerate() {
+                            let check = Rect::from_min_size(pos2(page.left() + VALUE_X + n as f32 * BOX_STEP, center - 6.5), vec2(13.0, 13.0));
+                            theme::check_box(ui.painter(), check, on, editable);
+                            let at = pos2(check.right() + 4.0, center);
+                            let galley = ui.painter().layout_no_wrap(name.to_owned(), font.clone(), theme::color::TEXT);
+                            let hit = Rect::from_min_max(check.min, pos2(at.x + galley.size().x + 2.0, check.max.y)).expand2(vec2(0.0, 4.0));
+                            if editable {
+                                ui.painter().galley(pos2(at.x, center - galley.size().y / 2.0), galley, theme::color::TEXT);
+                                let click = ui.interact(hit, egui::Id::new(("permission", who, n)), Sense::click());
+                                if click.clicked() {
+                                    // Row and column of the box in the grid.
+                                    let row = ["Owner:", "Group:", "Others:"].iter().position(|w| *w == who).unwrap_or_default();
+                                    if let Some(boxes) = &mut self.permissions {
+                                        boxes[row][n] = !on;
+                                    }
+                                }
+                            } else {
+                                // Disabled text is embossed: a white copy one pixel down-right.
+                                ui.painter().text(at + vec2(1.0, 1.0), egui::Align2::LEFT_CENTER, name, font.clone(), theme::color::HIGHLIGHT);
+                                ui.painter().text(at, egui::Align2::LEFT_CENTER, name, font.clone(), theme::color::GRAY_TEXT);
+                            }
+                        }
+                        y += ROW_HEIGHT;
+                    }
+                }
+            }
+            y += GROUP_BOTTOM;
+        }
+    }
+
+    /// The page's groups below the name, top to bottom. Their row counts
+    /// must match what [`size_for`] reserves.
+    fn groups(&self, info: Option<&ItemInfo>, location: String) -> Vec<Group> {
+        let mut groups = if self.is_dir() {
             let ready = info.is_some();
             let (size, contains) = if ready { (format_size_line(self.shown.bytes), format_contains(self.shown)) } else { Default::default() };
             // Plain folders keep Windows' name; packages get Finder's Kind.
@@ -241,41 +391,30 @@ impl Properties {
                 (None, _) => self.entry.kind_label(),
             };
             vec![
-                vec![("Type:", type_name), ("Location:", location), ("Size:", size), ("Contains:", contains)],
-                vec![("Created:", info.map_or_else(String::new, |i| locale::long_date_time(i.created, true)))],
+                Group::Rows(vec![("Type:", type_name), ("Location:", location), ("Size:", size), ("Contains:", contains)]),
+                Group::Rows(vec![("Created:", info.map_or_else(String::new, |i| locale::long_date_time(i.created, true)))]),
             ]
         } else {
             let date = |f: fn(&ItemInfo) -> Option<std::time::SystemTime>, with_time: bool| info.map_or_else(String::new, |i| locale::long_date_time(f(i), with_time));
             vec![
-                vec![("Type of file:", self.kind.clone().unwrap_or_else(|| self.entry.kind_label()))],
-                vec![("Location:", location), ("Size:", info.map_or_else(String::new, |i| format_size_line(i.size)))],
-                vec![
+                Group::Rows(vec![("Type of file:", self.kind.clone().unwrap_or_else(|| self.entry.kind_label()))]),
+                Group::Rows(vec![("Location:", location), ("Size:", info.map_or_else(String::new, |i| format_size_line(i.size)))]),
+                Group::Rows(vec![
                     ("Created:", date(|i| i.created, true)),
                     ("Modified:", date(|i| i.modified, true)),
                     // FAT keeps access dates without a time.
                     ("Accessed:", date(|i| i.accessed, !info.is_some_and(|i| i.on_fat))),
-                ],
+                ]),
             ]
         };
-
-        let mut y = icon.bottom() + 11.0;
-        for group in groups {
-            etched_line(ui, page, y);
-            y += 9.0;
-            for (label, value) in group {
-                let row = Rect::from_min_max(pos2(left, y), pos2(page.right() - 12.0, y + ROW_HEIGHT));
-                let font = egui::TextStyle::Body.resolve(ui.style());
-                ui.painter().text(pos2(row.left(), row.center().y), egui::Align2::LEFT_CENTER, label, font, theme::color::TEXT);
-                let value_rect = Rect::from_min_max(pos2(page.left() + VALUE_X, row.top()), row.max);
-                // Long values (a deep Location) end in "..." with the full
-                // text as a tooltip, like SetDlgItemTextWithToolTip.
-                ui.scope_builder(egui::UiBuilder::new().max_rect(value_rect).layout(Layout::left_to_right(Align::Center)), |ui| {
-                    ui.add(egui::Label::new(value).truncate());
-                });
-                y += ROW_HEIGHT;
-            }
-            y += 6.0;
+        if is_linked(&self.entry) {
+            // The link's own path, and what it holds (a relative target as written).
+            let target = info.and_then(|i| i.link.as_ref()).map_or_else(String::new, format_target);
+            let at = if self.is_dir() { 1 } else { 2 };
+            groups.insert(at, Group::Rows(vec![("Source:", self.entry.path.display().to_string()), ("Target:", target)]));
         }
+        groups.push(Group::Permissions(self.permissions.unwrap_or_default()));
+        groups
     }
 }
 
@@ -313,4 +452,104 @@ fn etched_line(ui: &Ui, page: Rect, y: f32) {
     let p = ui.painter();
     p.hline(x.clone(), y + 0.5, egui::Stroke::new(1.0, theme::color::SHADOW));
     p.hline(x, y + 1.5, egui::Stroke::new(1.0, theme::color::HIGHLIGHT));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The window is as tall as the groups the page draws.
+    #[test]
+    fn size_matches_groups() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-props-size-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("folder")).unwrap();
+        fs::write(dir.join("file"), b"x").unwrap();
+        std::os::unix::fs::symlink("file", dir.join("file link")).unwrap();
+        std::os::unix::fs::symlink("folder", dir.join("folder link")).unwrap();
+
+        let ctx = egui::Context::default();
+        for name in ["file", "folder", "file link", "folder link"] {
+            let path = dir.join(name);
+            let entry = macsplorer_core::listing::list_dir(&dir, false).unwrap().into_iter().find(|e| e.path == path).unwrap();
+            let dialog = Properties::new(&ctx, entry.clone(), true, true);
+            let rows = dialog.groups(None, String::new()).iter().map(Group::rows).collect::<Vec<_>>();
+            let height = BASE_HEIGHT + rows.iter().copied().map(group_height).sum::<f32>();
+            assert_eq!(size_for(&entry).y, height, "{name}: {rows:?}");
+            assert_eq!(rows.len(), if name.starts_with("folder") { 3 } else { 4 } + usize::from(name.contains("link")), "{name}");
+        }
+        // A folder that isn't in the listing finds out it's a link.
+        let tree_entry = Properties::folder_entry(&dir.join("folder link"));
+        assert_eq!(tree_entry.link, Some(Link::Symlink));
+        assert_eq!(Properties::folder_entry(&dir.join("folder")).link, None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A click on a permission box toggles it, and the dialog notices a
+    /// change against what is on disk.
+    #[test]
+    fn clicking_a_box_toggles_it() {
+        use egui_kittest::Harness;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("macsplorer-props-click-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        let entry = macsplorer_core::listing::list_dir(&dir, false).unwrap().remove(0);
+
+        let size = size_for(&entry);
+        let mut harness = Harness::builder().with_size(size).build_ui_state(
+            |ui, (dialog, icons): &mut (Option<Properties>, FileIcons)| {
+                // Fonts installed now apply from the next frame.
+                let Some(dialog) = dialog else {
+                    crate::theme::install(ui.ctx());
+                    *dialog = Some(Properties::new(ui.ctx(), entry.clone(), true, true));
+                    return;
+                };
+                let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                dialog.ui(&mut window, icons);
+            },
+            (None, FileIcons::new()),
+        );
+        type Dialog = (Option<Properties>, FileIcons);
+        let wait_for = |harness: &mut Harness<'_, Dialog>, done: &dyn Fn(&Properties) -> bool| {
+            for _ in 0..100 {
+                harness.run();
+                if harness.state().0.as_ref().is_some_and(done) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("the dialog never got there");
+        };
+        wait_for(&mut harness, &|d| d.permissions.is_some());
+        let state = |h: &Harness<'_, Dialog>| h.state().0.as_ref().map(|d| (d.permissions.unwrap(), d.new_permissions()));
+        assert_eq!(state(&harness).unwrap().0, [[true, true, false], [true, false, false], [true, false, false]]);
+        assert_eq!(state(&harness).unwrap().1, None);
+
+        // The page's top, the icon row and the groups above the permissions,
+        // then the Owner row's Execute box.
+        let groups_above = [1, 2, 3].map(group_height).iter().sum::<f32>();
+        let y = FRAME + 24.0 + TAB_HEIGHT + 55.0 + groups_above + GROUP_TOP + ROW_HEIGHT / 2.0;
+        let at = pos2(FRAME + 6.0 + VALUE_X + 2.0 * BOX_STEP + 6.0, y);
+        let click = |harness: &mut Harness<'_, Dialog>| {
+            // One frame per event, so the press is quick enough to count as a click.
+            harness.event(egui::Event::PointerMoved(at));
+            for pressed in [true, false] {
+                harness.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            }
+            harness.step();
+            harness.run();
+        };
+        click(&mut harness);
+        let (boxes, changed) = state(&harness).unwrap();
+        assert!(boxes[0][2]);
+        assert_eq!(changed, Some(boxes));
+        click(&mut harness);
+        assert_eq!(state(&harness).unwrap().1, None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
