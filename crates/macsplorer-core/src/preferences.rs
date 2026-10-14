@@ -11,13 +11,17 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::columns::ColumnSet;
+
 const FILE: &str = "settings.json";
 /// The empty file older versions used to mean "dark mode is on".
 const LEGACY_DARK_MARKER: &str = "dark-mode";
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Preferences {
     pub dark: bool,
+    /// The details view's columns; `None` until one was stored.
+    pub columns: Option<ColumnSet>,
 }
 
 impl Preferences {
@@ -58,6 +62,9 @@ impl Preferences {
         let file = dir.join(FILE);
         let mut map = fs::read_to_string(&file).map(|t| read_map(&t)).unwrap_or_default();
         map.insert("dark".into(), Value::Bool(self.dark));
+        if let Some(columns) = &self.columns {
+            map.insert("columns".into(), columns.to_json());
+        }
         let text = serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
         // Replace the file in one step, so another window reading it never
         // sees half of it.
@@ -69,7 +76,10 @@ impl Preferences {
     }
 
     fn from_map(map: &Map<String, Value>) -> Self {
-        Self { dark: map.get("dark").and_then(Value::as_bool).unwrap_or(false) }
+        Self {
+            dark: map.get("dark").and_then(Value::as_bool).unwrap_or(false),
+            columns: map.get("columns").and_then(ColumnSet::from_json),
+        }
     }
 }
 
@@ -103,10 +113,36 @@ mod tests {
     #[test]
     fn saved_values_come_back() {
         let dir = temp("roundtrip");
-        Preferences { dark: true }.save_to(&dir).unwrap();
+        Preferences { dark: true, ..Default::default() }.save_to(&dir).unwrap();
         assert!(Preferences::load_from(&dir).dark);
-        Preferences { dark: false }.save_to(&dir).unwrap();
+        Preferences { dark: false, ..Default::default() }.save_to(&dir).unwrap();
         assert!(!Preferences::load_from(&dir).dark);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn columns_are_stored_next_to_the_other_settings() {
+        let dir = temp("columns");
+        let mut columns = ColumnSet::default();
+        columns.set_width(crate::columns::Column::Name, 222.0);
+        Preferences { dark: true, columns: Some(columns.clone()) }.save_to(&dir).unwrap();
+        let back = Preferences::load_from(&dir);
+        assert!(back.dark);
+        assert_eq!(back.columns, Some(columns));
+        // Saving without columns leaves the stored ones alone.
+        Preferences { dark: false, columns: None }.save_to(&dir).unwrap();
+        assert!(Preferences::load_from(&dir).columns.is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_columns_entry_reads_as_none() {
+        let dir = temp("badcolumns");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(FILE), r#"{"dark": true, "columns": 5}"#).unwrap();
+        let prefs = Preferences::load_from(&dir);
+        assert!(prefs.dark);
+        assert_eq!(prefs.columns, None);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -115,7 +151,7 @@ mod tests {
         let dir = temp("unknown");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(FILE), r#"{"future": [1, 2], "dark": false}"#).unwrap();
-        Preferences { dark: true }.save_to(&dir).unwrap();
+        Preferences { dark: true, ..Default::default() }.save_to(&dir).unwrap();
         let map = read_map(&fs::read_to_string(dir.join(FILE)).unwrap());
         assert_eq!(map["future"], serde_json::json!([1, 2]));
         assert_eq!(map["dark"], Value::Bool(true));
@@ -129,7 +165,7 @@ mod tests {
         fs::write(dir.join(FILE), "{not json").unwrap();
         assert_eq!(Preferences::load_from(&dir), Preferences::default());
         // And the next save replaces it.
-        Preferences { dark: true }.save_to(&dir).unwrap();
+        Preferences { dark: true, ..Default::default() }.save_to(&dir).unwrap();
         assert!(Preferences::load_from(&dir).dark);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -149,7 +185,7 @@ mod tests {
     #[test]
     fn a_stale_marker_does_not_override_the_settings_file() {
         let dir = temp("stale");
-        Preferences { dark: false }.save_to(&dir).unwrap();
+        Preferences { dark: false, ..Default::default() }.save_to(&dir).unwrap();
         fs::write(dir.join(LEGACY_DARK_MARKER), "").unwrap();
         assert!(!Preferences::load_from(&dir).dark);
         assert!(!dir.join(LEGACY_DARK_MARKER).exists());

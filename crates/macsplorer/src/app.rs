@@ -222,9 +222,12 @@ pub struct Explorer {
     widest_name: Option<((u64, bool, String), f32)>,
     /// The rubber band while it's being dragged in the item view.
     marquee: Option<Marquee>,
-    /// Details view columns and their widths, shared by every folder until
-    /// the window closes. (Explorer kept them per folder.)
+    /// Details view columns and their widths, shared by every folder and
+    /// remembered between runs. (Explorer kept them per folder.)
     columns: ColumnSet,
+    /// The columns as last read from or written to the settings file, once
+    /// `restore_preferences` has run; `None` keeps tests off the user's file.
+    saved_columns: Option<ColumnSet>,
     /// The open "More..." dialog.
     column_dialog: Option<ColumnDialog>,
     /// A header divider drag, and whether it started on a divider proper
@@ -299,6 +302,7 @@ impl Explorer {
             widest_name: None,
             marquee: None,
             columns: ColumnSet::default(),
+            saved_columns: None,
             column_dialog: None,
             column_drag: None,
             header_left: 0.0,
@@ -842,6 +846,26 @@ impl Explorer {
         // Dialogs opened while these were drawn come after them.
         dialogs.append(&mut self.properties);
         self.properties = dialogs;
+    }
+
+    /// Takes the stored preferences and from now on writes changes back.
+    /// (Dark mode is applied by `main`, before the window exists.)
+    pub fn restore_preferences(&mut self, prefs: &Preferences) {
+        if let Some(columns) = &prefs.columns {
+            self.columns = columns.clone();
+        }
+        self.saved_columns = Some(self.columns.clone());
+    }
+
+    /// Writes the column layout when it changed, but not while a divider is
+    /// being dragged: only the width the drag ends on is worth keeping.
+    fn save_columns(&mut self) {
+        if self.column_drag.is_some() || self.saved_columns.as_ref().is_none_or(|saved| *saved == self.columns) {
+            return;
+        }
+        let columns = self.columns.clone();
+        Preferences::update(|p| p.columns = Some(columns.clone()));
+        self.saved_columns = Some(columns);
     }
 
     fn apply(&mut self, actions: Vec<Action>, visible: &[usize]) {
@@ -2159,6 +2183,7 @@ impl eframe::App for Explorer {
                 }
             }
         }
+        self.save_columns();
     }
 }
 
@@ -2785,6 +2810,7 @@ fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn tree() -> FolderTree {
         let root = |label: &str, path: &str| Root { label: label.into(), path: path.into(), section: Section::Favorites };
@@ -2831,6 +2857,25 @@ mod tests {
     fn down_with_no_selection_picks_first_row() {
         let t = tree();
         assert_eq!(target(tree_key_action(&t.rows(), Key::ArrowDown)), Some(("select", "/u".into())));
+    }
+
+    #[test]
+    fn stored_columns_are_used_and_tests_do_not_write_them() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-prefs-app-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut app = Explorer::new(egui::Context::default(), dir.clone());
+        // Until `main` restores the preferences, nothing is persisted.
+        assert!(app.saved_columns.is_none());
+        app.columns.toggle(Column::Type);
+        app.save_columns();
+        assert!(app.saved_columns.is_none());
+
+        let mut stored = ColumnSet::default();
+        stored.set_visible(&[Column::Name, Column::Modified]);
+        app.restore_preferences(&Preferences { dark: false, columns: Some(stored.clone()) });
+        assert_eq!(app.columns, stored);
+        assert_eq!(app.saved_columns, Some(stored));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
 
