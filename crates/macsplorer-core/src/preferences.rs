@@ -12,16 +12,25 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::columns::ColumnSet;
+use crate::text_size;
 
 const FILE: &str = "settings.json";
 /// The empty file older versions used to mean "dark mode is on".
 const LEGACY_DARK_MARKER: &str = "dark-mode";
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Preferences {
     pub dark: bool,
     /// The details view's columns; `None` until one was stored.
     pub columns: Option<ColumnSet>,
+    /// View > Text Size, one of `text_size::SIZES`.
+    pub zoom: f32,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self { dark: false, columns: None, zoom: text_size::NORMAL }
+    }
 }
 
 impl Preferences {
@@ -62,6 +71,7 @@ impl Preferences {
         let file = dir.join(FILE);
         let mut map = fs::read_to_string(&file).map(|t| read_map(&t)).unwrap_or_default();
         map.insert("dark".into(), Value::Bool(self.dark));
+        map.insert("zoom".into(), Value::from(self.zoom));
         if let Some(columns) = &self.columns {
             map.insert("columns".into(), columns.to_json());
         }
@@ -79,6 +89,7 @@ impl Preferences {
         Self {
             dark: map.get("dark").and_then(Value::as_bool).unwrap_or(false),
             columns: map.get("columns").and_then(ColumnSet::from_json),
+            zoom: map.get("zoom").and_then(Value::as_f64).map_or(text_size::NORMAL, |z| text_size::snap(z as f32)),
         }
     }
 }
@@ -125,13 +136,27 @@ mod tests {
         let dir = temp("columns");
         let mut columns = ColumnSet::default();
         columns.set_width(crate::columns::Column::Name, 222.0);
-        Preferences { dark: true, columns: Some(columns.clone()) }.save_to(&dir).unwrap();
+        Preferences { dark: true, columns: Some(columns.clone()), ..Default::default() }.save_to(&dir).unwrap();
         let back = Preferences::load_from(&dir);
         assert!(back.dark);
         assert_eq!(back.columns, Some(columns));
         // Saving without columns leaves the stored ones alone.
-        Preferences { dark: false, columns: None }.save_to(&dir).unwrap();
+        Preferences { dark: false, columns: None, ..Default::default() }.save_to(&dir).unwrap();
         assert!(Preferences::load_from(&dir).columns.is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_text_size_is_stored() {
+        let dir = temp("zoom");
+        assert_eq!(Preferences::load_from(&dir).zoom, 1.0);
+        Preferences { zoom: 1.5, ..Default::default() }.save_to(&dir).unwrap();
+        assert_eq!(Preferences::load_from(&dir).zoom, 1.5);
+        // A value edited by hand snaps to a menu choice.
+        fs::write(dir.join(FILE), r#"{"zoom": 1.9}"#).unwrap();
+        assert_eq!(Preferences::load_from(&dir).zoom, 2.0);
+        fs::write(dir.join(FILE), r#"{"zoom": "big"}"#).unwrap();
+        assert_eq!(Preferences::load_from(&dir).zoom, 1.0);
         fs::remove_dir_all(&dir).unwrap();
     }
 

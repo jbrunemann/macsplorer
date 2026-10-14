@@ -45,6 +45,9 @@ fn main() -> eframe::Result {
             theme::install(&cc.egui_ctx);
             let prefs = macsplorer_core::preferences::Preferences::load();
             theme::set_dark(&cc.egui_ctx, prefs.dark);
+            // The app's Text Size steps replace egui's 10% zoom keys.
+            cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            cc.egui_ctx.set_zoom_factor(prefs.zoom);
             let mut app = app::Explorer::new(cc.egui_ctx.clone(), start);
             app.restore_preferences(&prefs);
             Ok(Box::new(app))

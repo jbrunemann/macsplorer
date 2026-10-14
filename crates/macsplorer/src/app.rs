@@ -29,6 +29,7 @@ use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
 use macsplorer_core::properties::set_permissions;
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::slow_click::{self, SlowClick};
+use macsplorer_core::text_size;
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
 use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
@@ -152,6 +153,8 @@ enum Action {
     Undo,
     SetView(ViewMode),
     SetDark(bool),
+    /// View > Text Size, also Cmd +/-/0.
+    SetZoom(f32),
     /// Open the Properties dialog for an item or folder.
     Properties(PathBuf),
     /// Properties for an item of the list: with several items selected, one
@@ -1018,6 +1021,10 @@ impl Explorer {
                     Preferences::update(|p| p.dark = dark);
                     self.icons.palette_changed();
                 }
+                Action::SetZoom(zoom) => {
+                    self.ctx.set_zoom_factor(zoom);
+                    Preferences::update(|p| p.zoom = zoom);
+                }
                 Action::SetView(mode) => {
                     self.settings.view = mode;
                     // Keep the focused item in sight across the switch.
@@ -1059,6 +1066,24 @@ impl Explorer {
     // ---- keyboard ------------------------------------------------------
 
     fn keyboard(&self, ui: &Ui, visible: &[usize], actions: &mut Vec<Action>) {
+        // Cmd +/-/0 work everywhere, like egui's own zoom keys they replace
+        // (turned off in `main`), but step through the Text Size choices.
+        use egui::gui_zoom::kb_shortcuts as keys;
+        let zoom = ui.ctx().zoom_factor();
+        let target = ui.input_mut(|i| {
+            if i.consume_shortcut(&keys::ZOOM_RESET) {
+                Some(text_size::NORMAL)
+            } else if i.consume_shortcut(&keys::ZOOM_IN) || i.consume_shortcut(&keys::ZOOM_IN_SECONDARY) {
+                Some(text_size::larger(zoom))
+            } else if i.consume_shortcut(&keys::ZOOM_OUT) {
+                Some(text_size::smaller(zoom))
+            } else {
+                None
+            }
+        });
+        if let Some(target) = target.filter(|&t| t != zoom) {
+            actions.push(Action::SetZoom(target));
+        }
         // Text fields own the keyboard while they are focused.
         if ui.ctx().memory(|m| m.focused().is_some()) {
             return;
@@ -1240,6 +1265,16 @@ impl Explorer {
                 });
                 ui.separator();
                 view_choices(ui, self.settings.view, actions);
+                ui.separator();
+                ui.menu_button("Text Size", |ui| {
+                    let current = text_size::snap(ui.ctx().zoom_factor());
+                    for (zoom, label) in text_size::SIZES {
+                        if ui.radio(current == zoom, label).clicked() {
+                            actions.push(Action::SetZoom(zoom));
+                            ui.close();
+                        }
+                    }
+                });
                 ui.separator();
                 let mut changed = false;
                 changed |= theme::menu_checkbox(ui, &mut self.settings.show_extensions, "File name extensions").changed();
@@ -2877,7 +2912,7 @@ mod tests {
 
         let mut stored = ColumnSet::default();
         stored.set_visible(&[Column::Name, Column::Modified]);
-        app.restore_preferences(&Preferences { dark: false, columns: Some(stored.clone()) });
+        app.restore_preferences(&Preferences { columns: Some(stored.clone()), ..Default::default() });
         assert_eq!(app.columns, stored);
         assert_eq!(app.saved_columns, Some(stored));
         fs::remove_dir_all(&dir).unwrap();
@@ -3403,7 +3438,7 @@ mod screenshot {
         image.save(out.join("chevron-menu.png")).unwrap();
     }
 
-    /// The View menu, which is all checkboxes.
+    /// The View menu, which is mostly checkboxes.
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
     fn view_menu() {
@@ -3433,6 +3468,20 @@ mod screenshot {
         let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
         fs::create_dir_all(&out).unwrap();
         image.save(out.join("view-menu.png")).unwrap();
+        // And its Text Size submenu.
+        harness.hover_at(egui::pos2(92.0, 150.0));
+        for _ in 0..10 {
+            harness.run();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        harness.render().expect("render").save(out.join("view-menu-text-size.png")).unwrap();
+    }
+
+    /// View > Text Size at 150%.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn text_size_larger() {
+        shoot("text-size-larger", egui::vec2(1000.0, 680.0), |app| app.ctx.set_zoom_factor(1.5));
     }
 
     /// A window small enough that both panes need classic scroll bars.
