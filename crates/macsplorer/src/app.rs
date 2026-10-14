@@ -1217,7 +1217,7 @@ impl Explorer {
                     self.sort.natural = self.settings.natural_sort;
                     self.resort();
                 }
-                if ui.checkbox(&mut self.settings.mix_folders, "Mix folders and files (macOS)").changed() {
+                if ui.checkbox(&mut self.settings.mix_folders, "Mix folders and files").changed() {
                     self.sort.folders_first = !self.settings.mix_folders;
                     self.resort();
                 }
