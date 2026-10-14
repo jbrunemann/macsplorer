@@ -535,6 +535,47 @@ Ctrl "focus only" variant, and typing in the Folders pane (the tree has its own 
 wasn't traced). Mouse clicks don't clear the buffer; the 1 s timeout covers them. Rust's
 `to_lowercase` stands in for the locale's case folding.
 
+### 2.10 Choosing columns (shell32 `CDefView`, `CColumnDlg`)
+
+**Header menu, observed.** A right click on the details header goes from `CListViewHost::_DoColumnsMenu`
+(0x18041fb90, which hit-tests the header for the clicked column) to `CDefView::OnVisibleColumnMenu`
+(0x18027a350). That builds the menu in `_AddColumnVerbsToMenu` (0x18027cf6c):
+
+- In Details view only, and only on Windows 7 and later: "Size Column to Fit" (0x7049, left out for one
+  particular column key), "Size All Columns to Fit" (0x704a), then a separator. Win2000 had neither.
+- The column manager's column 0 (Name) as command 0x7500, `MF_CHECKED | MF_GRAYED`: it can't be hidden.
+- Every other column in the column manager's full-list order as 0x7500 + index, checked when shown.
+  Columns with `SHCOLSTATE_HIDDEN` are skipped. A `SHCOLSTATE_SECONDARYUI` column that isn't shown is left
+  out of the menu, and so is everything after the 25th entry.
+- If anything was left out: a separator and "More..." (0x7033, string 0x1099), which runs
+  `DoCustomizeColumns`.
+
+`CDefView::ToggleVisibleColumn` (0x18027cbb0) handles a column command: it takes the shown columns in
+order; a shown column is removed; a hidden one is inserted at its index in the full list, or appended
+if fewer columns are shown; then `SetColumns`. **Inferred:** how the column manager orders hidden
+columns in its full list wasn't traced. The Win2000 menu (screenshot) lists Name, Size, Type, Modified,
+Attributes, Comment, Created, Accessed, then More..., so the first eight are the primary columns.
+
+**"More..." dialog, observed** (`CColumnDlg`, Win2000 title "Column Settings", XP "Choose Details"):
+
+- `_InitListView` (0x18042a640): a list view with check boxes. First the shown columns, checked, in
+  display order; then the remaining ones with a non-empty name, unchecked, sorted by name. Row 0 starts
+  selected and focused. The width box takes at most 3 characters.
+- `DlgProc` (0x18042a268): unchecking an always-visible column (Name) is refused with a beep. A
+  double-click (`NM_DBLCLK`) toggles the row's check. Move Up / Move Down move the selected row
+  (`_MoveItem` 0x18042aad8 swaps it with its neighbor, keeps it selected and scrolls to it, beeps at the
+  ends). Show / Hide check or uncheck the selected row. Editing the width box sets the selected
+  column's width, marked as changed.
+- `_UpdateDlgButtons` (0x18042af6c): Move Up is enabled unless on the first row, Move Down unless on the
+  last. Show only for an unchecked row and Hide only for a checked one, neither for Name. The width box
+  shows the selected column's width and is disabled for fixed-width columns.
+- OK runs `_SaveState` (0x18042acd8), only if something changed: the checked rows in list order become
+  the shown columns, then the widths typed in the box are applied. Cancel changes nothing.
+
+**Attributes text, not traced.** `CFSFolder::_BuildAttributeString` (Windows.Storage 0x18027470c) just calls
+`PSFormatForDisplay(PKEY_FileAttributes)`, so the letters come from propsys.dll, which isn't in this setup.
+From memory: one letter per set attribute (R, H, S, A, C, E...), blank if none.
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
@@ -548,6 +589,7 @@ wasn't traced). Mouse clicks don't clear the buffer; the 1 s timeout covers them
 | Toolbar | The Windows 2000 standard buttons Macsplorer has: Back, Forward, Up, Folders, Refresh (not on Win2000's bar), Undo, and Views, a whole-button drop-down (`BTNS_WHOLEDROPDOWN`) with the view modes. Search, History, Move To, Copy To and Delete are left out. Icons are hand-drawn after the Win2000 ones. |
 | View modes (§2.4, §2.5) | Win2000 look, so follow the ListView (§2.5): 75 × 75 slots, 32 px icon centered 2 px from the top, label 3 px below, wrapped in 71 px and folded to two lines unless focused; clicks hit the image ± 8 px or the label, not the whole slot; selected icons blended 50% (25% when the view is unfocused) toward the highlight color; spatial arrow keys. List as traced: columns as wide as the widest name + 28 px, filled top to bottom, index arrow keys; the List view's marquee auto-scrolls at the left and right edges instead (inferred, the horizontal case wasn't traced). Marquee as traced in both views; Details uses the icon plus the label's highlight box as select bounds, the band is drawn as black dots since egui can't XOR, and auto-scroll runs while the pointer is at or past the view's top or bottom edge at a guessed 20 lines a second. From build 10240 (§2.4): selection, focus and sort survive a mode switch. Labels use Tahoma 12 px instead of 8 pt, so rows and two-line labels come out a little taller than Win2000. View mode is per window until per-folder memory exists. |
 | Column header (§2.6) | Hit test and drag as traced (`macsplorer_core::columns`), always full drag. macOS has no split-open cursor, so both divider zones use the system resize cursor. Auto-size measures the cells with macsplorer's own padding (`_ComputeColumnWidthForItem` wasn't decoded) and applies the caption + 37 px minimum. The double-click is recognized on the second release (egui), not the second press. Widths are shared by all folders and last until the window closes. |
+| Choosing columns (§2.10) | Header menu, toggle and More... dialog as traced (`macsplorer_core::columns::ColumnSet`, `column_dialog.rs`), without the Win7 "Size Column to Fit" items. Shown by default: Name, Size, Modified, Attributes (the user's choice; Windows shows Name, Size, Type, Modified). Columns: the Win2000 eight plus Owner and Group as secondary columns (More... only until shown). **Attributes** shows the Unix permissions as `ls -l` does (`-rw-r--r--`, symlinks as the link itself): like Explorer's attribute letters, each position says whether a flag is set, and it reads the same as `ls`, Finder's Get Info and Linux file managers, where octal (`0644`) needs decoding. **Comment** is Finder's comment (the `kMDItemFinderComment` attribute; Linux: `user.xdg.comment`). Created is the birth time, Accessed the atime. Hidden columns keep their place in the full list, so the menu order doesn't change after a toggle (inferred). Name can be moved in the dialog like in Windows. No beep when Name is unchecked. The dialog wording is XP's from memory (the strings are in the MUI file). Shown columns are per window like the widths. Default widths for the new columns are guesses. |
 | `CTravelLog` | `Vec<Location>` with a cursor. The back/forward dropdown menu lists entries (`_ShowBackForwardMenu`). |
 | Breadcrumb (`CBreadcrumbBar`) | Each crumb is a button with a chevron dropdown listing subfolders (`_OnDropDown`). Click empty space → edit mode with the full path (`_GoToEditMode`). Crumbs are drag sources and drop targets. Collapse overflow into a root dropdown (`_AddRootDropdownItems`). |
 | `CNscTree` change notifications | FSEvents per expanded node; enumerate in the background (`_StartBackgroundEnum`). |

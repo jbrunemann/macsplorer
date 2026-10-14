@@ -1,9 +1,220 @@
-//! Details view column header: where the dividers can be grabbed and how a
-//! drag resizes a column, after the comctl32 header control (`SysHeader32`:
-//! `Header_HitTest`, `Header_OnLButtonDown`, `Header_OnMouseMove`,
-//! `Header_OnLButtonUp`). See `docs/file-browser-findings.md` §2.6.
+//! Details view columns: which ones exist, which are shown in what order
+//! (after shell32's `CDefView` header menu and `CColumnDlg`, §2.10), and the
+//! column header's divider hit test and resize drag, after the comctl32
+//! header control (`SysHeader32`: `Header_HitTest`, `Header_OnLButtonDown`,
+//! `Header_OnMouseMove`, `Header_OnLButtonUp`, §2.6). Sections refer to
+//! `docs/file-browser-findings.md`.
 //!
 //! X coordinates are relative to the header's left edge (column 0's left).
+
+/// A details view column. Also the sort key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Column {
+    Name,
+    Size,
+    Type,
+    Modified,
+    /// The Unix permissions, where Windows shows its attribute letters.
+    Attributes,
+    /// Finder's comment (Linux: the `user.xdg.comment` attribute).
+    Comment,
+    Created,
+    Accessed,
+    Owner,
+    Group,
+}
+
+impl Column {
+    /// Every column, in the folder's own order (Windows 2000's `c_fs_cols`
+    /// order for the first eight, as its header menu lists them).
+    pub const ALL: [Column; 10] = [
+        Column::Name,
+        Column::Size,
+        Column::Type,
+        Column::Modified,
+        Column::Attributes,
+        Column::Comment,
+        Column::Created,
+        Column::Accessed,
+        Column::Owner,
+        Column::Group,
+    ];
+
+    /// Shown in a new window. Windows shows Type where macsplorer shows
+    /// Attributes.
+    pub const DEFAULT: [Column; 4] = [Column::Name, Column::Size, Column::Modified, Column::Attributes];
+
+    pub fn caption(self) -> &'static str {
+        match self {
+            Column::Name => "Name",
+            Column::Size => "Size",
+            Column::Type => "Type",
+            Column::Modified => "Modified",
+            Column::Attributes => "Attributes",
+            Column::Comment => "Comment",
+            Column::Created => "Created",
+            Column::Accessed => "Accessed",
+            Column::Owner => "Owner",
+            Column::Group => "Group",
+        }
+    }
+
+    /// Width when first shown. Guesses: Windows sizes these from each
+    /// property's character count, not traced.
+    pub fn default_width(self) -> f32 {
+        match self {
+            Column::Name => 300.0,
+            Column::Size => 80.0,
+            Column::Type => 140.0,
+            Column::Modified | Column::Created | Column::Accessed => 120.0,
+            Column::Attributes => 80.0,
+            Column::Comment => 180.0,
+            Column::Owner | Column::Group => 90.0,
+        }
+    }
+
+    /// Numbers are right-aligned (`LVCFMT_RIGHT`).
+    pub fn right_aligned(self) -> bool {
+        self == Column::Size
+    }
+
+    /// Listed in the header menu only while shown, otherwise only under
+    /// "More..." (`SHCOLSTATE_SECONDARYUI`).
+    pub fn secondary(self) -> bool {
+        matches!(self, Column::Owner | Column::Group)
+    }
+
+    /// Can't be hidden (`CM_STATE_ALWAYSVISIBLE`).
+    pub fn always_visible(self) -> bool {
+        self == Column::Name
+    }
+
+    fn index(self) -> usize {
+        Column::ALL.iter().position(|&c| c == self).unwrap_or(0)
+    }
+}
+
+/// Header menu entries before "More..." takes over: Name plus 24
+/// (`_AddColumnVerbsToMenu` stops at 25).
+pub const MENU_LIMIT: usize = 25;
+
+/// One header menu entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuItem {
+    pub column: Column,
+    pub checked: bool,
+    pub enabled: bool,
+}
+
+/// The details view's columns: every column in one order (the column
+/// manager's list, which the header menu follows), which of them are shown,
+/// and their widths. The shown columns appear in the list's order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColumnSet {
+    order: Vec<Column>,
+    shown: Vec<bool>,
+    widths: Vec<f32>,
+}
+
+impl Default for ColumnSet {
+    fn default() -> Self {
+        Self {
+            order: Column::ALL.to_vec(),
+            shown: Column::ALL.iter().map(|c| Column::DEFAULT.contains(c)).collect(),
+            widths: Column::ALL.iter().map(|c| c.default_width()).collect(),
+        }
+    }
+}
+
+impl ColumnSet {
+    /// The shown columns, left to right.
+    pub fn visible(&self) -> Vec<Column> {
+        self.order.iter().copied().filter(|&c| self.is_visible(c)).collect()
+    }
+
+    pub fn is_visible(&self, column: Column) -> bool {
+        self.shown[column.index()]
+    }
+
+    pub fn width(&self, column: Column) -> f32 {
+        self.widths[column.index()]
+    }
+
+    pub fn set_width(&mut self, column: Column, width: f32) {
+        self.widths[column.index()] = width.max(0.0);
+    }
+
+    /// The shown columns' widths, left to right, for [`hit_test`].
+    pub fn visible_widths(&self) -> Vec<f32> {
+        self.visible().into_iter().map(|c| self.width(c)).collect()
+    }
+
+    /// The header menu (`CDefView::_AddColumnVerbsToMenu`): Name checked
+    /// and grayed, then the other columns in list order, checked if shown.
+    /// A secondary column is left out unless shown, and so is everything
+    /// past [`MENU_LIMIT`]. The flag says whether "More..." follows, which
+    /// it does when anything was left out.
+    pub fn menu(&self) -> (Vec<MenuItem>, bool) {
+        let mut items = vec![MenuItem { column: Column::Name, checked: true, enabled: false }];
+        let mut more = false;
+        for &column in self.order.iter().filter(|&&c| c != Column::Name) {
+            let checked = self.is_visible(column);
+            if column.secondary() && !checked || items.len() >= MENU_LIMIT {
+                more = true;
+                continue;
+            }
+            items.push(MenuItem { column, checked, enabled: true });
+        }
+        (items, more)
+    }
+
+    /// A header menu click (`CDefView::ToggleVisibleColumn`): a shown column
+    /// goes away; a hidden one is put at its index in the full list, or at
+    /// the end if fewer columns are shown. Name stays.
+    pub fn toggle(&mut self, column: Column) {
+        let mut visible = self.visible();
+        if let Some(i) = visible.iter().position(|&c| c == column) {
+            if column.always_visible() {
+                return;
+            }
+            visible.remove(i);
+        } else {
+            let at = self.order.iter().position(|&c| c == column).unwrap_or(0);
+            visible.insert(at.min(visible.len()), column);
+        }
+        self.set_visible(&visible);
+    }
+
+    /// Shows exactly `columns`, in this order (`IColumnManager::SetColumns`).
+    /// Hidden columns keep their place in the list as far as they can, so
+    /// the header menu doesn't reshuffle. Inferred: the column manager's
+    /// ordering of hidden columns wasn't traced.
+    pub fn set_visible(&mut self, columns: &[Column]) {
+        let mut columns: Vec<Column> = columns.to_vec();
+        if !columns.contains(&Column::Name) {
+            columns.insert(0, Column::Name);
+        }
+        let mut order = columns.clone();
+        for (i, &c) in self.order.iter().enumerate() {
+            if !columns.contains(&c) {
+                order.insert(i.min(order.len()), c);
+            }
+        }
+        for c in Column::ALL {
+            self.shown[c.index()] = columns.contains(&c);
+        }
+        self.order = order;
+    }
+
+    /// The rows of the "More..." dialog (`CColumnDlg::_InitListView`): the
+    /// shown columns checked, left to right, then the hidden ones unchecked
+    /// and sorted by caption.
+    pub fn dialog_rows(&self) -> Vec<(Column, bool)> {
+        let mut hidden: Vec<Column> = self.order.iter().copied().filter(|&c| !self.is_visible(c)).collect();
+        hidden.sort_by_key(|c| c.caption().to_lowercase());
+        self.visible().into_iter().map(|c| (c, true)).chain(hidden.into_iter().map(|c| (c, false))).collect()
+    }
+}
 
 /// How far a divider can be grabbed on either side: 8 × `SM_CXBORDER`. A
 /// column narrower than four times this gives a quarter of its width.
@@ -100,6 +311,88 @@ mod tests {
     use super::*;
 
     const W: [f32; 3] = [100.0, 50.0, 20.0];
+
+    fn names(v: &[Column]) -> Vec<&'static str> {
+        v.iter().map(|c| c.caption()).collect()
+    }
+
+    #[test]
+    fn menu_lists_primary_columns_then_more() {
+        let set = ColumnSet::default();
+        let (items, more) = set.menu();
+        let captions: Vec<_> = items.iter().map(|i| i.column.caption()).collect();
+        assert_eq!(captions, ["Name", "Size", "Type", "Modified", "Attributes", "Comment", "Created", "Accessed"]);
+        assert_eq!(items[0], MenuItem { column: Column::Name, checked: true, enabled: false });
+        assert!(items[1].checked && !items[2].checked && items[4].checked);
+        assert!(more);
+    }
+
+    #[test]
+    fn shown_secondary_columns_join_the_menu() {
+        let mut set = ColumnSet::default();
+        set.toggle(Column::Owner);
+        let (items, more) = set.menu();
+        assert!(items.iter().any(|i| i.column == Column::Owner && i.checked));
+        // Group is still only under More...
+        assert!(more);
+    }
+
+    #[test]
+    fn toggling_puts_a_column_back_in_its_place() {
+        let mut set = ColumnSet::default();
+        set.toggle(Column::Size);
+        assert_eq!(names(&set.visible()), ["Name", "Modified", "Attributes"]);
+        set.toggle(Column::Size);
+        assert_eq!(names(&set.visible()), ["Name", "Size", "Modified", "Attributes"]);
+        // Type's index (2) is inside the shown columns, so it goes there.
+        set.toggle(Column::Type);
+        assert_eq!(names(&set.visible()), ["Name", "Size", "Type", "Modified", "Attributes"]);
+        set.toggle(Column::Created);
+        assert_eq!(names(&set.visible()), ["Name", "Size", "Type", "Modified", "Attributes", "Created"]);
+        // The menu order didn't move.
+        let (items, _) = set.menu();
+        let captions: Vec<_> = items.iter().map(|i| i.column.caption()).collect();
+        assert_eq!(captions, ["Name", "Size", "Type", "Modified", "Attributes", "Comment", "Created", "Accessed"]);
+    }
+
+    #[test]
+    fn name_cannot_be_hidden() {
+        let mut set = ColumnSet::default();
+        set.toggle(Column::Name);
+        assert!(set.is_visible(Column::Name));
+        set.set_visible(&[Column::Size]);
+        assert_eq!(names(&set.visible()), ["Name", "Size"]);
+    }
+
+    #[test]
+    fn dialog_lists_shown_then_hidden_by_caption() {
+        let mut set = ColumnSet::default();
+        set.set_visible(&[Column::Modified, Column::Name, Column::Size]);
+        let rows: Vec<_> = set.dialog_rows().into_iter().map(|(c, on)| (c.caption(), on)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("Modified", true),
+                ("Name", true),
+                ("Size", true),
+                ("Accessed", false),
+                ("Attributes", false),
+                ("Comment", false),
+                ("Created", false),
+                ("Group", false),
+                ("Owner", false),
+                ("Type", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn widths_follow_the_visible_order() {
+        let mut set = ColumnSet::default();
+        set.set_width(Column::Modified, 50.0);
+        set.toggle(Column::Size);
+        assert_eq!(set.visible_widths(), [300.0, 50.0, 80.0]);
+    }
 
     #[test]
     fn dividers_reach_eight_px_each_side() {

@@ -1,4 +1,5 @@
 mod app;
+mod column_dialog;
 mod icons;
 mod locale;
 mod native_icon;

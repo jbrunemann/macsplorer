@@ -251,6 +251,25 @@ pub fn etched_vline(ui: &mut Ui, height: f32) {
     p.vline(x + 1.5, r.y_range(), Stroke::new(1.0, HIGHLIGHT));
 }
 
+/// A classic 13 × 13 check box at `rect`'s top left: a sunken white well,
+/// gray when disabled, with the 7 × 7 check mark when `checked`.
+pub fn check_box(p: &Painter, rect: Rect, checked: bool, enabled: bool) {
+    let r = Rect::from_min_size(rect.min, vec2(13.0, 13.0));
+    p.rect_filled(r, 0.0, if enabled { WINDOW } else { FACE });
+    bevel(p, r, Bevel::Sunken);
+    if !checked {
+        return;
+    }
+    // Each column of the mark is three pixels tall.
+    const TOPS: [f32; 7] = [2.0, 3.0, 4.0, 3.0, 2.0, 1.0, 0.0];
+    let color = if enabled { TEXT } else { SHADOW };
+    for (x, top) in TOPS.iter().enumerate() {
+        for y in 0..3 {
+            dot(p, r.min + vec2(3.0 + x as f32, 3.0 + top + y as f32), color);
+        }
+    }
+}
+
 /// Paints a white sunken field into `rect` and returns the area inside the bevel.
 pub fn sunken_field(p: &Painter, rect: Rect) -> Rect {
     p.rect_filled(rect, 0.0, WINDOW);

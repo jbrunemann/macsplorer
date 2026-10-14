@@ -12,17 +12,17 @@ use eframe::egui;
 use egui::text::CCursor;
 use egui::text_selection::CCursorRange;
 use egui::{Align, Key, Layout, RichText, Sense, TextEdit, Ui};
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column as TableColumn, TableBuilder};
 
 use macsplorer_core::breadcrumb::crumbs;
-use macsplorer_core::columns::{self, ColumnDrag, HeaderHit};
+use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{copy_into, move_into};
 use macsplorer_core::history::History;
 use macsplorer_core::isearch::{self, IncrementalSearch};
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
 use macsplorer_core::marquee::{self, Marquee};
-use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
+use macsplorer_core::listing::{Entry, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
@@ -30,6 +30,7 @@ use macsplorer_core::slow_click::{self, SlowClick};
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
 use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
+use crate::column_dialog::{self, ColumnDialog};
 use crate::icons::{FileIcons, IconState};
 use crate::locale;
 use crate::open_with;
@@ -41,9 +42,6 @@ use crate::trash::SystemTrash;
 
 const LIST_ROW_HEIGHT: f32 = 17.0;
 const LIST_HEADER_HEIGHT: f32 = 18.0;
-/// Details view columns: Name, Size, Type, Modified.
-const DEFAULT_COLUMN_WIDTHS: [f32; 4] = [300.0, 80.0, 140.0, 120.0];
-const COLUMN_CAPTIONS: [&str; 4] = ["Name", "Size", "Type", "Modified"];
 const TREE_ROW_HEIGHT: f32 = 18.0;
 const TREE_INDENT: f32 = 19.0;
 
@@ -115,7 +113,11 @@ enum Action {
     BeginRename,
     CommitRename,
     CancelRename,
-    Sort(SortColumn),
+    Sort(Column),
+    /// A header menu click: show or hide a column.
+    ToggleColumn(Column),
+    /// The header menu's "More...".
+    ChooseColumns,
     Back,
     Forward,
     HistoryJump(usize),
@@ -207,9 +209,11 @@ pub struct Explorer {
     widest_name: Option<((u64, bool, String), f32)>,
     /// The rubber band while it's being dragged in the item view.
     marquee: Option<Marquee>,
-    /// Details view column widths, shared by every folder until the window
-    /// closes. (Explorer kept them per folder.)
-    column_widths: [f32; 4],
+    /// Details view columns and their widths, shared by every folder until
+    /// the window closes. (Explorer kept them per folder.)
+    columns: ColumnSet,
+    /// The open "More..." dialog.
+    column_dialog: Option<ColumnDialog>,
     /// A header divider drag, and whether it started on a divider proper
     /// (where a double-click auto-sizes) rather than a hidden column's.
     column_drag: Option<(ColumnDrag, bool)>,
@@ -281,7 +285,8 @@ impl Explorer {
             nav_layout: None,
             widest_name: None,
             marquee: None,
-            column_widths: DEFAULT_COLUMN_WIDTHS,
+            columns: ColumnSet::default(),
+            column_dialog: None,
             column_drag: None,
             header_left: 0.0,
             rename: None,
@@ -860,6 +865,12 @@ impl Explorer {
                     }
                     self.resort();
                 }
+                Action::ToggleColumn(column) => self.columns.toggle(column),
+                Action::ChooseColumns => {
+                    if self.column_dialog.is_none() {
+                        self.column_dialog = Some(ColumnDialog::new(&self.columns));
+                    }
+                }
                 Action::Back => {
                     if self.history.back().is_some() {
                         self.after_navigation();
@@ -1415,7 +1426,8 @@ impl Explorer {
         let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("details-menu");
-        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, column_widths, header_left, .. } = self;
+        let shown = self.columns.visible();
+        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, columns, header_left, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::WINDOW;
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -1435,8 +1447,9 @@ impl Explorer {
         }
         bg.context_menu(|ui| background_menu(ui, &folder, can_paste, actions));
 
-        let header = |ui: &mut Ui, column: usize, sort_column: SortColumn, right: bool, actions: &mut Vec<Action>| {
-            let label = COLUMN_CAPTIONS[column];
+        let header = |ui: &mut Ui, column: Column, actions: &mut Vec<Action>| {
+            let label = column.caption();
+            let right = column.right_aligned();
             let rect = ui.max_rect();
             // Over a divider a press resizes instead of sorting.
             let sense = if header_hit.divider().is_some() { Sense::hover() } else { Sense::click() };
@@ -1453,7 +1466,7 @@ impl Explorer {
                 (egui::pos2(rect.left() + 6.0 + off, rect.center().y + off), egui::Align2::LEFT_CENTER)
             };
             let text = p.text(pos, align, label, font, theme::color::TEXT);
-            if sort.column == sort_column {
+            if sort.column == column {
                 // A small sort triangle beside the caption.
                 let x = if right { text.left() - 10.0 } else { text.right() + 6.0 };
                 let c = egui::pos2(x + 3.0, rect.center().y + off);
@@ -1465,8 +1478,9 @@ impl Explorer {
                 p.add(egui::Shape::convex_polygon(pts, theme::color::SHADOW, egui::Stroke::NONE));
             }
             if resp.clicked() {
-                actions.push(Action::Sort(sort_column));
+                actions.push(Action::Sort(column));
             }
+            resp.context_menu(|ui| header_menu(ui, columns, actions));
         };
 
         // Where the rows are: row 0's top on screen, the icon's left edge and
@@ -1479,31 +1493,32 @@ impl Explorer {
             }
             // Fixed widths; the last column fills the rest of the header with
             // an empty button, as `Header_Draw` does.
-            let table = table
+            let mut table = table
                 .scroll_bar_visibility(hidden)
                 .auto_shrink([false, visible.is_empty()])
                 .striped(false)
                 .sense(Sense::click_and_drag())
-                .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::exact(column_widths[0]).clip(true))
-                .column(Column::exact(column_widths[1]).clip(true))
-                .column(Column::exact(column_widths[2]).clip(true))
-                .column(Column::exact(column_widths[3]).clip(true))
-                .column(Column::remainder().at_least(0.0).clip(true))
-                .header(LIST_HEADER_HEIGHT, |mut row| {
+                .cell_layout(Layout::left_to_right(Align::Center));
+            for &column in &shown {
+                table = table.column(TableColumn::exact(columns.width(column)).clip(true));
+            }
+            let table = table.column(TableColumn::remainder().at_least(0.0).clip(true)).header(LIST_HEADER_HEIGHT, |mut row| {
+                for (i, &column) in shown.iter().enumerate() {
                     row.col(|ui| {
-                        *header_left = ui.max_rect().left();
-                        header(ui, 0, SortColumn::Name, false, actions);
+                        if i == 0 {
+                            *header_left = ui.max_rect().left();
+                        }
+                        header(ui, column, actions);
                     });
-                    row.col(|ui| header(ui, 1, SortColumn::Size, true, actions));
-                    row.col(|ui| header(ui, 2, SortColumn::Kind, false, actions));
-                    row.col(|ui| header(ui, 3, SortColumn::Modified, false, actions));
-                    row.col(|ui| {
-                        let rect = ui.max_rect();
-                        ui.painter().rect_filled(rect, 0.0, theme::color::FACE);
-                        theme::bevel(ui.painter(), rect, Bevel::Raised);
-                    });
+                }
+                row.col(|ui| {
+                    let rect = ui.max_rect();
+                    ui.painter().rect_filled(rect, 0.0, theme::color::FACE);
+                    theme::bevel(ui.painter(), rect, Bevel::Raised);
+                    let resp = ui.interact(rect, ui.id().with("header-rest"), Sense::click());
+                    resp.context_menu(|ui| header_menu(ui, columns, actions));
                 });
+            });
 
             if visible.is_empty() {
                 let out = table.body(|_| {});
@@ -1529,43 +1544,40 @@ impl Explorer {
                     let mut label_rect = egui::Rect::NOTHING;
                     let mut name_column = (0.0, 0.0);
 
-                    row.col(|ui| {
-                        ui.add_space(4.0);
-                        let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
-                        icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, cut.contains(&entry.path)));
-                        ui.add_space(3.0);
-                        let label = match rename.as_mut().filter(|r| r.path == entry.path) {
-                            Some(r) => {
-                                rename_editor(ui, r, false, actions);
-                                ui.min_rect()
+                    for &column in &shown {
+                        row.col(|ui| {
+                            if column != Column::Name {
+                                let text = cell_text(entry, column);
+                                if column.right_aligned() {
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        ui.add_space(6.0);
+                                        ui.label(text);
+                                    });
+                                } else {
+                                    ui.add_space(6.0);
+                                    ui.label(text);
+                                }
+                                return;
                             }
-                            None => {
-                                let name = entry.display_name(settings.show_extensions);
-                                selectable_name(ui, name, selected, focused)
-                            }
-                        };
-                        item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
-                        label_rect = label;
-                        name_column = (icon_rect.left(), ui.max_rect().right());
-                    });
-                    row.col(|ui| {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_space(6.0);
-                            if let Some(size) = entry.size {
-                                ui.label(format_size(size));
-                            }
+                            ui.add_space(4.0);
+                            let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
+                            icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, cut.contains(&entry.path)));
+                            ui.add_space(3.0);
+                            let label = match rename.as_mut().filter(|r| r.path == entry.path) {
+                                Some(r) => {
+                                    rename_editor(ui, r, false, actions);
+                                    ui.min_rect()
+                                }
+                                None => {
+                                    let name = entry.display_name(settings.show_extensions);
+                                    selectable_name(ui, name, selected, focused)
+                                }
+                            };
+                            item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
+                            label_rect = label;
+                            name_column = (icon_rect.left(), ui.max_rect().right());
                         });
-                    });
-                    row.col(|ui| {
-                        ui.add_space(6.0);
-                        ui.label(entry.kind_label());
-                    });
-                    row.col(|ui| {
-                        ui.add_space(6.0);
-                        if let Some(t) = modified_text(entry) {
-                            ui.label(t);
-                        }
-                    });
+                    }
                     row.col(|_| {});
 
                     let resp = row.response();
@@ -1642,32 +1654,40 @@ impl Explorer {
             let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|&p| header.contains(p) && ui.rect_contains_pointer(header)) else {
                 return HeaderHit::Nowhere;
             };
-            let hit = columns::hit_test(&self.column_widths, header.right() - left, p.x - left);
+            let widths = self.columns.visible_widths();
+            let hit = columns::hit_test(&widths, header.right() - left, p.x - left);
             let Some(column) = hit.divider() else { return hit };
             // The system has no "split open" cursor; both zones get the same one.
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
             if !ui.input(|i| i.pointer.primary_pressed()) {
                 return hit;
             }
-            self.column_drag = Some((ColumnDrag::new(&self.column_widths, column, p.x - left), matches!(hit, HeaderHit::Divider(_))));
+            self.column_drag = Some((ColumnDrag::new(&widths, column, p.x - left), matches!(hit, HeaderHit::Divider(_))));
         }
         let Some((drag, on_divider)) = self.column_drag else { return HeaderHit::Nowhere };
+        // Columns can't change while a divider is held (the menu needs a
+        // right click, which cancels the drag), but be safe.
+        let Some(&column) = self.columns.visible().get(drag.column) else {
+            self.column_drag = None;
+            return HeaderHit::Nowhere;
+        };
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
         // Esc or the right button puts the width back (`Header_WndProc`).
         let cancel = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape) || i.pointer.secondary_pressed());
         if cancel {
-            self.column_widths[drag.column] = drag.original;
+            self.columns.set_width(column, drag.original);
             self.column_drag = None;
             return HeaderHit::Divider(drag.column);
         }
         let (down, pos, double) = ui.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos(), i.pointer.button_double_clicked(egui::PointerButton::Primary)));
         if let Some(p) = pos {
-            self.column_widths[drag.column] = drag.width_at(p.x - left);
+            self.columns.set_width(column, drag.width_at(p.x - left));
         }
         if !down {
             self.column_drag = None;
             if double && on_divider {
-                self.column_widths[drag.column] = self.auto_width(ui, drag.column, visible);
+                let width = self.auto_width(ui, column, visible);
+                self.columns.set_width(column, width);
             }
         }
         HeaderHit::Divider(drag.column)
@@ -1676,21 +1696,22 @@ impl Explorer {
     /// The width a divider double-click gives `column`: its widest cell, but
     /// no less than the caption plus 37 px (`SetColumnWidth(LVSCW_AUTOSIZE)`,
     /// `_ValidateMinWidth`). Cell padding is ours, matching how cells draw.
-    fn auto_width(&self, ui: &Ui, column: usize, visible: &[usize]) -> f32 {
+    fn auto_width(&self, ui: &Ui, column: Column, visible: &[usize]) -> f32 {
         let font = egui::TextStyle::Body.resolve(ui.style());
         let width = |text: String| ui.fonts_mut(|f| f.layout_no_wrap(text, font.clone(), theme::color::TEXT).size().x);
         // Caption plus 6 px each side (3 × SM_CXEDGE), plus 25.
-        let caption = width(COLUMN_CAPTIONS[column].into()) + 12.0 + 25.0;
+        let caption = width(column.caption().into()) + 12.0 + 25.0;
         visible
             .iter()
             .map(|&i| {
                 let e = &self.entries[i];
                 match column {
                     // 4 + icon 16 + 3, the label's 2 px highlight, 6 to spare.
-                    0 => width(e.display_name(self.settings.show_extensions).into()) + 4.0 + 16.0 + 3.0 + 2.0 + 6.0,
-                    1 => e.size.map_or(0.0, |s| width(format_size(s)) + 12.0),
-                    2 => width(e.kind_label()) + 12.0,
-                    _ => modified_text(e).map_or(0.0, |t| width(t) + 12.0),
+                    Column::Name => width(e.display_name(self.settings.show_extensions).into()) + 4.0 + 16.0 + 3.0 + 2.0 + 6.0,
+                    _ => match cell_text(e, column) {
+                        t if t.is_empty() => 0.0,
+                        t => width(t) + 12.0,
+                    },
                 }
             })
             .fold(caption, f32::max)
@@ -2062,6 +2083,16 @@ impl eframe::App for Explorer {
         }
         let ctx = ui.ctx().clone();
         self.show_properties(&ctx);
+        if let Some(dialog) = &mut self.column_dialog {
+            match dialog.show(&ctx) {
+                column_dialog::Outcome::Keep => {}
+                column_dialog::Outcome::Cancel => self.column_dialog = None,
+                column_dialog::Outcome::Apply => {
+                    dialog.apply(&mut self.columns);
+                    self.column_dialog = None;
+                }
+            }
+        }
     }
 }
 
@@ -2337,9 +2368,42 @@ fn rename_editor(ui: &mut Ui, r: &mut RenameState, wrapping: bool, actions: &mut
 /// An item label that highlights only its text when selected: navy with
 /// white text when the pane has focus, button-face gray otherwise.
 /// Returns the highlight box.
-/// The details view's Modified cell.
-fn modified_text(entry: &Entry) -> Option<String> {
-    entry.modified.map(locale::short_date_time)
+/// A details view cell's text, for every column but Name.
+fn cell_text(entry: &Entry, column: Column) -> String {
+    let date = |t: Option<std::time::SystemTime>| t.map_or_else(String::new, locale::short_date_time);
+    match column {
+        Column::Name => entry.display_name(true).to_owned(),
+        Column::Size => entry.size.map_or_else(String::new, format_size),
+        Column::Type => entry.kind_label(),
+        Column::Modified => date(entry.modified),
+        Column::Attributes => entry.attributes(),
+        // One line, like a list view cell.
+        Column::Comment => entry.comment.as_deref().map_or_else(String::new, |c| c.replace(['\n', '\r'], " ")),
+        Column::Created => date(entry.created),
+        Column::Accessed => date(entry.accessed),
+        Column::Owner => entry.owner.clone(),
+        Column::Group => entry.group.clone(),
+    }
+}
+
+/// The column header's context menu (`CDefView::OnVisibleColumnMenu`):
+/// a check per column, then "More...".
+fn header_menu(ui: &mut Ui, columns: &ColumnSet, actions: &mut Vec<Action>) {
+    let (items, more) = columns.menu();
+    for item in items {
+        let mut checked = item.checked;
+        if ui.add_enabled(item.enabled, egui::Checkbox::new(&mut checked, item.column.caption())).clicked() {
+            actions.push(Action::ToggleColumn(item.column));
+            ui.close();
+        }
+    }
+    if more {
+        ui.separator();
+        if ui.button("More...").clicked() {
+            actions.push(Action::ChooseColumns);
+            ui.close();
+        }
+    }
 }
 
 fn selectable_name(ui: &mut Ui, text: &str, selected: bool, focused: bool) -> egui::Rect {
@@ -2930,6 +2994,69 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn column_resize() {
         shoot_driven("column-resize", egui::vec2(900.0, 560.0), |_| {}, |h| drag(h, egui::pos2(526.0, 111.0), egui::pos2(400.0, 140.0)));
+    }
+
+    /// The column header's context menu, opened on Type.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn header_menu() {
+        shoot_driven("header-menu", egui::vec2(900.0, 400.0), |_| {}, |h| {
+            let pos = egui::pos2(650.0, 111.0);
+            h.hover_at(pos);
+            h.run();
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
+                h.run();
+            }
+            h.run();
+        });
+    }
+
+    /// Type, Created and Owner turned on from the header menu.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn details_columns() {
+        shoot("details-columns", egui::vec2(1200.0, 400.0), |app| {
+            for column in [Column::Type, Column::Created, Column::Owner] {
+                app.columns.toggle(column);
+            }
+        });
+    }
+
+    /// The header menu's More... dialog, Created checked and moved up.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn column_settings() {
+        let mut harness = Harness::builder().with_size(crate::column_dialog::SIZE).with_pixels_per_point(2.0).wgpu().build_ui_state(
+            |ui, dialog: &mut Option<ColumnDialog>| {
+                let Some(dialog) = dialog else {
+                    theme::install(ui.ctx());
+                    let mut columns = ColumnSet::default();
+                    columns.set_visible(&[Column::Name, Column::Size, Column::Type, Column::Created, Column::Modified]);
+                    *dialog = Some(ColumnDialog::new(&columns));
+                    return;
+                };
+                let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                dialog.ui(&mut window);
+            },
+            None,
+        );
+        for _ in 0..3 {
+            harness.run();
+        }
+        // Select Created.
+        harness.hover_at(egui::pos2(60.0, 159.0));
+        harness.run();
+        for pressed in [true, false] {
+            let (pos, button, modifiers) = (egui::pos2(60.0, 159.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
+            harness.event(egui::Event::PointerButton { pos, button, pressed, modifiers });
+            harness.run();
+        }
+        harness.run();
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("column-settings.png")).unwrap();
     }
 
     /// Undo enabled after a rename, and the Views menu open.

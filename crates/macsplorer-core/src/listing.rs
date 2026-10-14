@@ -1,12 +1,15 @@
 //! Directory listing and sorting for the details view.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::os::unix::fs::MetadataExt;
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
+use crate::columns::Column;
 use crate::natural::{natural_cmp, plain_cmp};
 use crate::rename::RenameKind;
 
@@ -27,6 +30,14 @@ pub struct Entry {
     /// `None` for folders and packages.
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+    pub accessed: Option<SystemTime>,
+    /// `st_mode`: file type and permission bits. A symlink's own.
+    pub mode: u32,
+    pub owner: String,
+    pub group: String,
+    /// Finder's comment, if any.
+    pub comment: Option<String>,
     pub hidden: bool,
     /// Finder shows its own icon for this item (`kHasCustomIcon`).
     pub custom_icon: bool,
@@ -68,6 +79,11 @@ impl Entry {
         }
     }
 
+    /// The Attributes column: the permissions as `ls -l` writes them.
+    pub fn attributes(&self) -> String {
+        format_mode(self.mode)
+    }
+
     /// Explorer-style type description: "Folder", "TXT File", "File".
     pub fn kind_label(&self) -> String {
         match (self.kind, self.extension()) {
@@ -94,6 +110,9 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
         let path = item.path();
         // Follow symlinks so a link to a folder behaves like a folder.
         let Ok(meta) = fs::metadata(&path).or_else(|_| item.metadata()) else { continue };
+        // The Attributes column describes the link itself, like `ls -l`.
+        let own = if item.file_type().is_ok_and(|t| t.is_symlink()) { item.metadata().ok() } else { None };
+        let own = own.as_ref().unwrap_or(&meta);
         let kind = if !meta.is_dir() {
             RenameKind::File
         } else if is_package_name(&name) {
@@ -104,6 +123,12 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
         out.push(Entry {
             size: (kind == RenameKind::File).then_some(meta.len()),
             modified: meta.modified().ok(),
+            created: meta.created().ok(),
+            accessed: meta.accessed().ok(),
+            mode: own.mode(),
+            owner: user_name(own.uid()),
+            group: group_name(own.gid()),
+            comment: comment(&path),
             custom_icon: has_custom_icon(&path),
             name,
             path,
@@ -134,6 +159,125 @@ pub fn has_custom_icon(_path: &Path) -> bool {
     false
 }
 
+/// The 10-character permissions string of `ls -l`: the file type, then
+/// read, write and execute for owner, group and others, with set-user-ID,
+/// set-group-ID and sticky shown as `s`/`S` and `t`/`T`.
+pub fn format_mode(mode: u32) -> String {
+    let kind = match mode & 0o170000 {
+        0o040000 => 'd',
+        0o120000 => 'l',
+        0o020000 => 'c',
+        0o060000 => 'b',
+        0o010000 => 'p',
+        0o140000 => 's',
+        _ => '-',
+    };
+    let mut out = String::with_capacity(10);
+    out.push(kind);
+    for (shift, special, set_char) in [(6, 0o4000, 's'), (3, 0o2000, 's'), (0, 0o1000, 't')] {
+        let bits = mode >> shift;
+        out.push(if bits & 4 != 0 { 'r' } else { '-' });
+        out.push(if bits & 2 != 0 { 'w' } else { '-' });
+        out.push(match (bits & 1 != 0, mode & special != 0) {
+            (true, true) => set_char,
+            (false, true) => set_char.to_ascii_uppercase(),
+            (true, false) => 'x',
+            (false, false) => '-',
+        });
+    }
+    out
+}
+
+/// The account name for a user ID, or the number if there is none.
+pub fn user_name(uid: u32) -> String {
+    static CACHE: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
+    cached(&CACHE, uid, || {
+        // SAFETY: getpwuid returns null or a pointer to static storage,
+        // read right away while the cache lock serializes callers.
+        let pw = unsafe { libc::getpwuid(uid) };
+        // SAFETY: a non-null passwd has a NUL-terminated pw_name.
+        (!pw.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) }.to_string_lossy().into_owned())
+    })
+}
+
+/// The group name for a group ID, or the number if there is none.
+pub fn group_name(gid: u32) -> String {
+    static CACHE: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
+    cached(&CACHE, gid, || {
+        // SAFETY: as in `user_name`, for getgrgid.
+        let gr = unsafe { libc::getgrgid(gid) };
+        // SAFETY: a non-null group has a NUL-terminated gr_name.
+        (!gr.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr((*gr).gr_name) }.to_string_lossy().into_owned())
+    })
+}
+
+fn cached(cache: &OnceLock<Mutex<HashMap<u32, String>>>, id: u32, look_up: impl FnOnce() -> Option<String>) -> String {
+    let mut map = cache.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(id).or_insert_with(|| look_up().unwrap_or_else(|| id.to_string())).clone()
+}
+
+/// Reads an extended attribute, `None` if it isn't there.
+fn read_xattr(path: &Path, name: &std::ffi::CStr) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut buf = vec![0u8; 4096];
+    // SAFETY: valid NUL-terminated path and name, and a buffer of buf.len() bytes.
+    #[cfg(target_os = "macos")]
+    let n = unsafe { libc::getxattr(cpath.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
+    // SAFETY: as above.
+    #[cfg(not(target_os = "macos"))]
+    let n = unsafe { libc::getxattr(cpath.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    let n = usize::try_from(n).ok()?;
+    buf.truncate(n);
+    Some(buf)
+}
+
+/// Finder's comment: the `kMDItemFinderComment` attribute, a binary plist
+/// holding one string. Finder keeps the same text in `.DS_Store`.
+#[cfg(target_os = "macos")]
+pub fn comment(path: &Path) -> Option<String> {
+    let data = read_xattr(path, c"com.apple.metadata:kMDItemFinderComment")?;
+    plist_string(&data).filter(|s| !s.is_empty())
+}
+
+/// The freedesktop.org comment attribute, which Dolphin and Nautilus edit.
+#[cfg(not(target_os = "macos"))]
+pub fn comment(path: &Path) -> Option<String> {
+    let data = read_xattr(path, c"user.xdg.comment")?;
+    Some(String::from_utf8_lossy(&data).into_owned()).filter(|s| !s.is_empty())
+}
+
+/// The string in a binary plist whose top object is one string.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn plist_string(data: &[u8]) -> Option<String> {
+    if data.len() < 8 + 32 || &data[..8] != b"bplist00" {
+        return None;
+    }
+    let trailer = &data[data.len() - 32..];
+    let offset_size = trailer[6] as usize;
+    let top = u64::from_be_bytes(trailer[16..24].try_into().ok()?) as usize;
+    let table = u64::from_be_bytes(trailer[24..32].try_into().ok()?) as usize;
+    let entry = data.get(table + top * offset_size..table + (top + 1) * offset_size)?;
+    let at = entry.iter().fold(0usize, |n, &b| n << 8 | b as usize);
+    let marker = *data.get(at)?;
+    let (mut len, mut start) = ((marker & 0x0f) as usize, at + 1);
+    if len == 0x0f {
+        // The length follows as an integer object: 0x1n, then 2^n bytes.
+        let int = *data.get(start)?;
+        let bytes = 1usize << (int & 0x0f);
+        len = data.get(start + 1..start + 1 + bytes)?.iter().fold(0usize, |n, &b| n << 8 | b as usize);
+        start += 1 + bytes;
+    }
+    match marker >> 4 {
+        0x5 => data.get(start..start + len).map(|b| String::from_utf8_lossy(b).into_owned()),
+        0x6 => {
+            let units: Vec<u16> = data.get(start..start + 2 * len)?.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            Some(String::from_utf16_lossy(&units))
+        }
+        _ => None,
+    }
+}
+
 pub fn is_package_name(name: &str) -> bool {
     Path::new(name)
         .extension()
@@ -141,17 +285,9 @@ pub fn is_package_name(name: &str) -> bool {
         .is_some_and(|e| PACKAGE_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(e)))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SortColumn {
-    Name,
-    Modified,
-    Kind,
-    Size,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct SortSpec {
-    pub column: SortColumn,
+    pub column: Column,
     pub ascending: bool,
     /// Keep folders above files regardless of column. Explorer's details
     /// view does this; the exact rule in `CFSFolder::CompareIDs` is not yet
@@ -163,7 +299,7 @@ pub struct SortSpec {
 
 impl Default for SortSpec {
     fn default() -> Self {
-        Self { column: SortColumn::Name, ascending: true, folders_first: true, natural: true }
+        Self { column: Column::Name, ascending: true, folders_first: true, natural: true }
     }
 }
 
@@ -179,10 +315,17 @@ pub fn sort_entries(entries: &mut [Entry], spec: SortSpec) {
             }
         }
         let by_column = match spec.column {
-            SortColumn::Name => names(&a.name, &b.name),
-            SortColumn::Modified => a.modified.cmp(&b.modified),
-            SortColumn::Kind => names(&a.kind_label(), &b.kind_label()),
-            SortColumn::Size => a.size.cmp(&b.size),
+            Column::Name => names(&a.name, &b.name),
+            Column::Size => a.size.cmp(&b.size),
+            Column::Type => names(&a.kind_label(), &b.kind_label()),
+            Column::Modified => a.modified.cmp(&b.modified),
+            Column::Attributes => a.attributes().cmp(&b.attributes()),
+            // Items without a comment sort first, as empty text.
+            Column::Comment => names(a.comment.as_deref().unwrap_or(""), b.comment.as_deref().unwrap_or("")),
+            Column::Created => a.created.cmp(&b.created),
+            Column::Accessed => a.accessed.cmp(&b.accessed),
+            Column::Owner => names(&a.owner, &b.owner),
+            Column::Group => names(&a.group, &b.group),
         };
         let by_column = if spec.ascending { by_column } else { by_column.reverse() };
         by_column.then_with(|| names(&a.name, &b.name))
@@ -285,6 +428,12 @@ mod tests {
             kind,
             size,
             modified: None,
+            created: None,
+            accessed: None,
+            mode: 0o100644,
+            owner: String::new(),
+            group: String::new(),
+            comment: None,
             hidden: false,
             custom_icon: false,
         }
@@ -310,7 +459,7 @@ mod tests {
             entry("small", RenameKind::File, Some(1)),
             entry("big", RenameKind::File, Some(9)),
         ];
-        sort_entries(&mut v, SortSpec { column: SortColumn::Size, ascending: false, ..Default::default() });
+        sort_entries(&mut v, SortSpec { column: Column::Size, ascending: false, ..Default::default() });
         let names: Vec<_> = v.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["a", "big", "small"]);
     }
@@ -359,6 +508,77 @@ mod tests {
         };
         assert_eq!(rc, 0);
         assert!(has_custom_icon(&file));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mode_strings() {
+        assert_eq!(format_mode(0o100644), "-rw-r--r--");
+        assert_eq!(format_mode(0o040755), "drwxr-xr-x");
+        assert_eq!(format_mode(0o120755), "lrwxr-xr-x");
+        assert_eq!(format_mode(0o104755), "-rwsr-xr-x");
+        assert_eq!(format_mode(0o102644), "-rw-r-Sr--");
+        assert_eq!(format_mode(0o041777), "drwxrwxrwt");
+        assert_eq!(format_mode(0o041776), "drwxrwxrwT");
+    }
+
+    #[test]
+    fn listing_reads_permissions_and_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("macsplorer-perm-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x.sh");
+        fs::write(&file, "x").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o750)).unwrap();
+        let entries = list_dir(&dir, false).unwrap();
+        assert_eq!(entries[0].attributes(), "-rwxr-x---");
+        // SAFETY: getuid can't fail.
+        assert_eq!(entries[0].owner, user_name(unsafe { libc::getuid() }));
+        assert!(!entries[0].owner.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_ids_show_as_numbers() {
+        assert_eq!(user_name(4_000_000_000), "4000000000");
+    }
+
+    #[test]
+    fn plist_strings() {
+        // Hand-built: bplist00, an 'A' string "hi", offset table, trailer.
+        let mut ascii = b"bplist00\x52hi".to_vec();
+        ascii.push(8);
+        let mut trailer = [0u8; 32];
+        trailer[6] = 1;
+        trailer[7] = 1;
+        trailer[15] = 1;
+        trailer[31] = 11;
+        ascii.extend_from_slice(&trailer);
+        assert_eq!(plist_string(&ascii).as_deref(), Some("hi"));
+        // A UTF-16 string with the long length form: 0x6F, 0x10 0x02, "äb".
+        let mut utf16 = b"bplist00\x6f\x10\x02\x00\xe4\x00b".to_vec();
+        utf16.push(8);
+        trailer[31] = 15;
+        utf16.extend_from_slice(&trailer);
+        assert_eq!(plist_string(&utf16).as_deref(), Some("äb"));
+        assert_eq!(plist_string(b"nope"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finder_comment() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-comment-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x");
+        fs::write(&file, "x").unwrap();
+        assert_eq!(comment(&file), None);
+        let status = std::process::Command::new("xattr")
+            .args(["-wx", "com.apple.metadata:kMDItemFinderComment", "62706C697374303052686908000000000000010100000000000000010000000000000000000000000000000B"])
+            .arg(&file)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(comment(&file).as_deref(), Some("hi"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

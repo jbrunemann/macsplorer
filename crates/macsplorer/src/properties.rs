@@ -97,7 +97,21 @@ impl Properties {
     pub fn folder_entry(path: &Path) -> Entry {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         let kind = if is_package_name(&name) { RenameKind::Package } else { RenameKind::Folder };
-        Entry { name, path: path.to_path_buf(), kind, size: None, modified: None, hidden: false, custom_icon: false }
+        Entry {
+            name,
+            path: path.to_path_buf(),
+            kind,
+            size: None,
+            modified: None,
+            created: None,
+            accessed: None,
+            mode: 0o040755,
+            owner: String::new(),
+            group: String::new(),
+            comment: None,
+            hidden: false,
+            custom_icon: false,
+        }
     }
 
     pub fn path(&self) -> &Path {
