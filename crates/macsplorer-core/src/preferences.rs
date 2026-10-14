@@ -44,6 +44,18 @@ impl Preferences {
         config_dir().map(|dir| Self::load_from(&dir)).unwrap_or_default()
     }
 
+    /// The settings file, created empty (`{}`) when there is none yet so
+    /// there is something to open in an editor.
+    pub fn file_path() -> io::Result<PathBuf> {
+        let dir = config_dir().ok_or_else(|| io::Error::other("no config folder"))?;
+        let file = dir.join(FILE);
+        if !file.exists() {
+            fs::create_dir_all(&dir)?;
+            fs::write(&file, "{}\n")?;
+        }
+        Ok(file)
+    }
+
     /// Reads the file again, lets `change` edit it and writes it back.
     pub fn update(change: impl FnOnce(&mut Preferences)) {
         let Some(dir) = config_dir() else { return };

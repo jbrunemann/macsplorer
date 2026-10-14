@@ -49,6 +49,16 @@ pub fn open_default(path: &Path) -> io::Result<()> {
     Command::new(opener).arg(path).spawn().map(drop)
 }
 
+/// Opens a text file in the default text editor without waiting for it. On
+/// macOS `open -t` is the editor for plain text, whatever app owns `.json`.
+pub fn open_text(path: &Path) -> io::Result<()> {
+    if cfg!(target_os = "macos") {
+        Command::new("open").arg("-t").arg(path).spawn().map(drop)
+    } else {
+        open_default(path)
+    }
+}
+
 /// Environment variable carrying the opener's window frame (`x,y,w,h`, points)
 /// to a new window's process, so the new window can open offset from it.
 const WINDOW_ENV: &str = "MACSPLORER_WINDOW";

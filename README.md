@@ -125,7 +125,7 @@ package have it) or egui's default font is used.
 - Search box filters the current folder by name.
 - **Navigation pane tree** (modeled on Explorer's `CNscTree`): Favorites and Locations roots, folders only, natural-sorted, packages left out. Children load on background threads with a "Loading…" row; chevrons appear only on folders that have subfolders. Click a name to open it, click the chevron or double-click to expand. Arrow keys follow tree conventions (← collapses or goes to the parent, → expands or goes to the first child). Refresh reloads expanded folders.
 - **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
-- Menus: File › Properties, Close; Edit › Undo, Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh.
+- Menus: File › Properties, Close; Edit › Undo, Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh; Help › Open config file, About.
 - Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane; **Views** picks Large Icons, List or Details.
 - Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name.
 

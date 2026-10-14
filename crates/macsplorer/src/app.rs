@@ -134,6 +134,8 @@ enum Action {
     /// Start another Macsplorer process on the open folder.
     NewWindow,
     RevealInFinder(PathBuf),
+    /// Help > Open config file: the settings file in a text editor.
+    OpenConfig,
     /// Nautilus' "Open in Terminal": a terminal window in this folder.
     OpenTerminal(PathBuf),
     Eject(PathBuf),
@@ -975,6 +977,12 @@ impl Explorer {
                 Action::RevealInFinder(p) => {
                     thread::spawn(move || platform::reveal(&p));
                 }
+                Action::OpenConfig => {
+                    let opened = Preferences::file_path().and_then(|file| platform::open_text(&file));
+                    if let Err(e) = opened {
+                        self.status = Some(format!("Couldn't open the config file: {e}"));
+                    }
+                }
                 Action::OpenTerminal(p) => {
                     if let Err(e) = platform::open_terminal(&p, Preferences::load().terminal.as_deref()) {
                         self.status = Some(format!("Couldn't open a terminal in {}: {e}", p.display()));
@@ -1315,6 +1323,10 @@ impl Explorer {
                 }
             });
             ui.menu_button("Help", |ui| {
+                if ui.button("Open config file").clicked() {
+                    actions.push(Action::OpenConfig);
+                }
+                ui.separator();
                 if ui.button("About Macsplorer").clicked() {
                     self.status = Some(format!("Macsplorer {}", env!("CARGO_PKG_VERSION")));
                 }

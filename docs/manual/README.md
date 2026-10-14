@@ -288,7 +288,7 @@ You can also press **⌘+** to go one size up, **⌘−** to go one size down, a
 
 ### Using another terminal
 
-**Open in Terminal** starts the Terminal app. To use another one, add its app name to `~/Library/Application Support/macsplorer/settings.json`, for example `"terminal": "iTerm"` or `"terminal": "Ghostty"`. The name is the one shown in the Applications folder, without `.app`. The next **Open in Terminal** uses it, no restart needed. If the name is wrong, the status bar says so.
+**Open in Terminal** starts the Terminal app. To use another one, add its app name to `~/Library/Application Support/macsplorer/settings.json`, for example `"terminal": "iTerm"` or `"terminal": "Ghostty"`. The name is the one shown in the Applications folder, without `.app`. **Help › Open config file** opens that file in your text editor. The next **Open in Terminal** uses it, no restart needed. If the name is wrong, the status bar says so.
 
 ### Dark mode
 
