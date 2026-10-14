@@ -32,7 +32,14 @@ jobs:
           path: Macsplorer-macOS.zip*
 
   linux:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
@@ -41,12 +48,12 @@ jobs:
       - name: Bundle
         run: |
           scripts/bundle-linux.sh
-          mv target/release/macsplorer-linux-x86_64.tar.gz Macsplorer-linux-x86_64.tar.gz
-          sha256sum Macsplorer-linux-x86_64.tar.gz > Macsplorer-linux-x86_64.tar.gz.sha256
+          mv target/release/macsplorer-linux-${{ matrix.arch }}.tar.gz Macsplorer-linux-${{ matrix.arch }}.tar.gz
+          sha256sum Macsplorer-linux-${{ matrix.arch }}.tar.gz > Macsplorer-linux-${{ matrix.arch }}.tar.gz.sha256
       - uses: actions/upload-artifact@v7
         with:
-          name: Macsplorer-linux
-          path: Macsplorer-linux-x86_64.tar.gz*
+          name: Macsplorer-linux-${{ matrix.arch }}
+          path: Macsplorer-linux-${{ matrix.arch }}.tar.gz*
 
   release:
     # Only when both builds succeeded, so a release never ships one platform.
