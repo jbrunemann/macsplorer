@@ -57,34 +57,39 @@ pub mod color {
     }
 
     pub fn face() -> Color32 {
-        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x2B, 0x2B, 0x2B)) // COLOR_3DFACE
+        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x2A, 0x2C, 0x31)) // COLOR_3DFACE
+    }
+    /// Menus and dialogs sit above the panels: in the dark palette they are
+    /// lighter, as there are no shadows to lift them.
+    pub fn raised_face() -> Color32 {
+        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x33, 0x36, 0x3C))
     }
     pub fn highlight() -> Color32 {
-        pick(Color32::WHITE, rgb(0x5A, 0x5A, 0x5A)) // COLOR_3DHILIGHT
+        pick(Color32::WHITE, rgb(0x58, 0x5C, 0x65)) // COLOR_3DHILIGHT
     }
     pub fn light() -> Color32 {
-        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x3E, 0x3E, 0x3E)) // COLOR_3DLIGHT
+        pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x3C, 0x3F, 0x46)) // COLOR_3DLIGHT
     }
     pub fn shadow() -> Color32 {
-        pick(rgb(0x80, 0x80, 0x80), rgb(0x18, 0x18, 0x18)) // COLOR_3DSHADOW
+        pick(rgb(0x80, 0x80, 0x80), rgb(0x15, 0x17, 0x1B)) // COLOR_3DSHADOW
     }
     pub fn dark() -> Color32 {
-        pick(rgb(0x40, 0x40, 0x40), Color32::BLACK) // COLOR_3DDKSHADOW
+        pick(rgb(0x40, 0x40, 0x40), rgb(0x08, 0x09, 0x0B)) // COLOR_3DDKSHADOW
     }
     pub fn window() -> Color32 {
-        pick(Color32::WHITE, rgb(0x19, 0x19, 0x19))
+        pick(Color32::WHITE, rgb(0x17, 0x19, 0x1D))
     }
     pub fn text() -> Color32 {
-        pick(Color32::BLACK, rgb(0xF2, 0xF2, 0xF2))
+        pick(Color32::BLACK, rgb(0xE6, 0xE8, 0xEC))
     }
     pub fn gray_text() -> Color32 {
-        rgb(0x80, 0x80, 0x80)
+        pick(rgb(0x80, 0x80, 0x80), rgb(0x84, 0x88, 0x91))
     }
     pub fn selection() -> Color32 {
         pick(rgb(0x0A, 0x24, 0x6A), rgb(0x2B, 0x56, 0x9A)) // COLOR_HIGHLIGHT
     }
     pub fn selection_text() -> Color32 {
-        Color32::WHITE
+        pick(Color32::WHITE, rgb(0xF2, 0xF4, 0xF8))
     }
     pub fn active_caption() -> Color32 {
         pick(rgb(0x0A, 0x24, 0x6A), rgb(0x10, 0x1C, 0x38))
@@ -93,10 +98,10 @@ pub mod color {
         pick(rgb(0xA6, 0xCA, 0xF0), rgb(0x3A, 0x62, 0x9C))
     }
     pub fn caption_inactive() -> Color32 {
-        pick(rgb(0x80, 0x80, 0x80), rgb(0x24, 0x24, 0x24))
+        pick(rgb(0x80, 0x80, 0x80), rgb(0x24, 0x26, 0x2B))
     }
     pub fn caption_inactive_gradient() -> Color32 {
-        pick(rgb(0xC0, 0xC0, 0xC0), rgb(0x3A, 0x3A, 0x3A))
+        pick(rgb(0xC0, 0xC0, 0xC0), rgb(0x3A, 0x3D, 0x44))
     }
     pub fn caption_inactive_text() -> Color32 {
         pick(rgb(0xD4, 0xD0, 0xC8), rgb(0x90, 0x90, 0x90))
@@ -104,10 +109,10 @@ pub mod color {
     /// A checked toolbar button: Windows draws it with a dither of face and
     /// white, approximated by a flat in-between color.
     pub fn checked_face() -> Color32 {
-        pick(rgb(0xEA, 0xE8, 0xE3), rgb(0x3F, 0x3F, 0x3F))
+        pick(rgb(0xEA, 0xE8, 0xE3), rgb(0x3F, 0x42, 0x49))
     }
     pub fn tree_line() -> Color32 {
-        pick(rgb(0x80, 0x80, 0x80), rgb(0x6A, 0x6A, 0x6A))
+        pick(rgb(0x80, 0x80, 0x80), rgb(0x6A, 0x6E, 0x77))
     }
 
     // Special file names, after Ubuntu's `ls` colors in the dark shades of
@@ -228,10 +233,10 @@ fn apply_visuals(ctx: &egui::Context) {
         let v = &mut style.visuals;
         *v = if is_dark() { egui::Visuals::dark() } else { egui::Visuals::light() };
         v.panel_fill = face();
-        v.window_fill = face();
+        v.window_fill = raised_face();
         v.window_stroke = Stroke::new(1.0, shadow());
         v.window_shadow = Shadow::NONE;
-        v.popup_shadow = Shadow { offset: [2, 2], blur: 0, spread: 0, color: Color32::from_black_alpha(90) };
+        v.popup_shadow = Shadow { offset: [2, 2], blur: 0, spread: 0, color: Color32::from_black_alpha(if is_dark() { 160 } else { 90 }) };
         v.window_corner_radius = CornerRadius::ZERO;
         v.menu_corner_radius = CornerRadius::ZERO;
         v.extreme_bg_color = window();
@@ -784,7 +789,7 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
         Icon::Views => {
             // A window holding a few large icons, as on the Win2000 button.
             let frame = Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0));
-            p.rect_filled(frame, 0.0, window());
+            p.rect_filled(frame, 0.0, PAPER);
             p.rect_stroke(frame, 0.0, Stroke::new(1.0, gray(dark())), egui::StrokeKind::Inside);
             for (x, y) in [(3.0, 4.0), (9.0, 4.0), (3.0, 9.0), (9.0, 9.0)] {
                 p.rect_filled(Rect::from_min_max(at(x, y), at(x + 3.0, y + 3.0)), 0.0, gray(active_caption()));
@@ -793,7 +798,7 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
         }
         Icon::Folder | Icon::FolderOpen => folder(p, r, enabled),
         Icon::App => {
-            p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, window());
+            p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, PAPER);
             p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 5.0)), 0.0, active_caption());
             p.rect_stroke(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
         }

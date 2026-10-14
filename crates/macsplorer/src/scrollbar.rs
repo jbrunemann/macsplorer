@@ -27,7 +27,7 @@ const REPEAT_DELAY: f64 = 0.05;
 
 /// The track while a page click is held: `COLOR_3DFACE` / white, inverted.
 fn inverted_face() -> Color32 {
-    if theme::is_dark() { Color32::from_rgb(0xFF - 0x2B, 0xFF - 0x2B, 0xFF - 0x2B) } else { Color32::from_rgb(0xFF - 0xD4, 0xFF - 0xD0, 0xFF - 0xC8) }
+    if theme::is_dark() { Color32::from_rgb(0xFF - 0x2A, 0xFF - 0x2C, 0xFF - 0x31) } else { Color32::from_rgb(0xFF - 0xD4, 0xFF - 0xD0, 0xFF - 0xC8) }
 }
 
 /// Classic bars around a `ScrollArea`: [`Bars::begin`] carves the bars out
