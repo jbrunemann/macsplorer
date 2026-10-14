@@ -359,6 +359,16 @@ pub fn menu_style(style: &mut egui::Style) {
     style.spacing.button_padding.x = 8.0;
 }
 
+/// A checkbox row for a menu. egui's checkbox has no padding of its own, so
+/// unlike the other menu items its label would touch the right edge.
+pub fn menu_checkbox(ui: &mut Ui, checked: &mut bool, text: &str) -> Response {
+    let spacing = ui.spacing();
+    let pad = (spacing.button_padding.x - spacing.item_spacing.x).max(0.0);
+    let mut atoms = egui::Atoms::new(text.to_owned());
+    atoms.push_right(egui::Atom::custom(egui::Id::new("menu_checkbox_pad"), vec2(pad, 0.0)));
+    ui.add(egui::Checkbox::new(checked, atoms))
+}
+
 /// The etched groove between rebar bands and menu sections.
 pub fn etched_hline(ui: &mut Ui) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 2.0), Sense::hover());

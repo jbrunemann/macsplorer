@@ -1194,7 +1194,7 @@ impl Explorer {
             });
             ui.menu_button("View", |ui| {
                 ui.menu_button("Explorer Bar", |ui| {
-                    if ui.checkbox(&mut self.settings.show_folders, "Folders").changed() {
+                    if theme::menu_checkbox(ui, &mut self.settings.show_folders, "Folders").changed() {
                         ui.close();
                     }
                 });
@@ -1202,22 +1202,22 @@ impl Explorer {
                 view_choices(ui, self.settings.view, actions);
                 ui.separator();
                 let mut changed = false;
-                changed |= ui.checkbox(&mut self.settings.show_extensions, "File name extensions").changed();
-                changed |= ui.checkbox(&mut self.settings.show_hidden, "Hidden files and folders").changed();
-                ui.checkbox(&mut self.settings.color_names, "Special files in color");
+                changed |= theme::menu_checkbox(ui, &mut self.settings.show_extensions, "File name extensions").changed();
+                changed |= theme::menu_checkbox(ui, &mut self.settings.show_hidden, "Hidden files and folders").changed();
+                theme::menu_checkbox(ui, &mut self.settings.color_names, "Special files in color");
                 let mut dark = theme::is_dark();
-                if ui.checkbox(&mut dark, "Dark mode").changed() {
+                if theme::menu_checkbox(ui, &mut dark, "Dark mode").changed() {
                     actions.push(Action::SetDark(dark));
                     ui.close();
                 }
-                if ui.checkbox(&mut self.settings.expand_to_open, "Expand to open folder").changed() && self.settings.expand_to_open {
+                if theme::menu_checkbox(ui, &mut self.settings.expand_to_open, "Expand to open folder").changed() && self.settings.expand_to_open {
                     self.sync_tree();
                 }
-                if ui.checkbox(&mut self.settings.natural_sort, "Natural number sorting").changed() {
+                if theme::menu_checkbox(ui, &mut self.settings.natural_sort, "Natural number sorting").changed() {
                     self.sort.natural = self.settings.natural_sort;
                     self.resort();
                 }
-                if ui.checkbox(&mut self.settings.mix_folders, "Mix folders and files").changed() {
+                if theme::menu_checkbox(ui, &mut self.settings.mix_folders, "Mix folders and files").changed() {
                     self.sort.folders_first = !self.settings.mix_folders;
                     self.resort();
                 }
@@ -3308,6 +3308,38 @@ mod screenshot {
         let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
         fs::create_dir_all(&out).unwrap();
         image.save(out.join("chevron-menu.png")).unwrap();
+    }
+
+    /// The View menu, which is all checkboxes.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn view_menu() {
+        let dir = std::env::temp_dir().join("macsplorer-screenshot-menu").join("Plain");
+        fs::create_dir_all(&dir).unwrap();
+        let mut harness = Harness::builder().with_size(egui::vec2(500.0, 360.0)).with_pixels_per_point(2.0).wgpu().build_eframe(|cc| {
+            theme::install(&cc.egui_ctx);
+            let mut app = Explorer::new(cc.egui_ctx.clone(), dir.clone());
+            app.finish_listing();
+            app
+        });
+        for _ in 0..10 {
+            harness.run();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let pos = egui::pos2(65.0, 33.0);
+        harness.hover_at(pos);
+        harness.run();
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            harness.run();
+        }
+        for _ in 0..3 {
+            harness.run();
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("view-menu.png")).unwrap();
     }
 
     /// A window small enough that both panes need classic scroll bars.
