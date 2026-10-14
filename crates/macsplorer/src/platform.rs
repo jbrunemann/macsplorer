@@ -43,6 +43,23 @@ pub const TAHOMA_BOLD: &[&str] = &[
     "/usr/lib/wine/fonts/tahomabd.ttf",
 ];
 
+/// `errno` 1, "Operation not permitted".
+const EPERM: i32 = 1;
+
+/// The message for a folder that can't be listed. On macOS "Operation not
+/// permitted" (EPERM) is the privacy protection (TCC) that guards the Trash,
+/// Mail and similar folders; only the user can lift it, in System Settings.
+pub fn open_error(dir: &Path, e: &io::Error) -> String {
+    let mut msg = format!("Can't open {}: {e}", dir.display());
+    if cfg!(target_os = "macos") && e.raw_os_error() == Some(EPERM) {
+        msg.push_str(
+            "\n\nmacOS protects this folder. To open it, give Macsplorer (or the terminal it was started from) \
+             access in System Settings > Privacy & Security > Full Disk Access, then restart it.",
+        );
+    }
+    msg
+}
+
 /// Opens `path` in its default application without waiting for it.
 pub fn open_default(path: &Path) -> io::Result<()> {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };

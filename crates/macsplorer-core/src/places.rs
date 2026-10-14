@@ -20,11 +20,13 @@ pub enum KnownFolder {
     Movies,
     Home,
     Applications,
+    /// Explorer's Recycle Bin.
+    Trash,
 }
 
 impl KnownFolder {
     /// In Explorer's Quick access order.
-    const ALL: [KnownFolder; 8] = [
+    const ALL: [KnownFolder; 9] = [
         KnownFolder::Desktop,
         KnownFolder::Downloads,
         KnownFolder::Documents,
@@ -33,6 +35,7 @@ impl KnownFolder {
         KnownFolder::Movies,
         KnownFolder::Home,
         KnownFolder::Applications,
+        KnownFolder::Trash,
     ];
 
     pub fn label(self) -> &'static str {
@@ -45,6 +48,7 @@ impl KnownFolder {
             KnownFolder::Movies => if cfg!(target_os = "macos") { "Movies" } else { "Videos" },
             KnownFolder::Home => "Home",
             KnownFolder::Applications => "Applications",
+            KnownFolder::Trash => "Trash",
         }
     }
 
@@ -59,6 +63,9 @@ impl KnownFolder {
             KnownFolder::Home => dirs::home_dir(),
             // Linux has no single Applications folder.
             KnownFolder::Applications => cfg!(target_os = "macos").then(|| PathBuf::from("/Applications")),
+            // macOS keeps the Trash in the home folder; Linux follows the freedesktop spec.
+            KnownFolder::Trash if cfg!(target_os = "macos") => dirs::home_dir().map(|h| h.join(".Trash")),
+            KnownFolder::Trash => dirs::data_dir().map(|d| d.join("Trash/files")),
         }
     }
 
@@ -73,6 +80,7 @@ impl KnownFolder {
             KnownFolder::Movies => "film",
             KnownFolder::Home => "house",
             KnownFolder::Applications => "app.badge",
+            KnownFolder::Trash => "trash",
         }
     }
 }

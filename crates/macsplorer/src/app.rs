@@ -563,7 +563,7 @@ impl Explorer {
         let (request, dir, show_hidden) = (self.list_request, self.current().to_path_buf(), self.settings.show_hidden);
         let (tx, ctx) = (self.list_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let result = list_dir(&dir, show_hidden).map_err(|e| format!("Can't open {}: {e}", dir.display()));
+            let result = list_dir(&dir, show_hidden).map_err(|e| platform::open_error(&dir, &e));
             if tx.send((request, result, free_space(&dir))).is_ok() {
                 ctx.request_repaint();
             }

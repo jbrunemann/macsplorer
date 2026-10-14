@@ -56,7 +56,7 @@ From top to bottom:
 
 The tree on the left has two sections:
 
-- **Favorites**: Desktop, Downloads, Documents, Pictures, Music, Movies, your home folder and Applications.
+- **Favorites**: Desktop, Downloads, Documents, Pictures, Music, Movies, your home folder, Applications and the Trash.
 - **Locations**: your Mac's disk, plus any USB sticks, external drives or network disks you have connected.
 
 Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds.
@@ -217,7 +217,9 @@ Use **Edit › Cut** (⌘X) instead of Copy to move the items. They are shown fa
 
 ### Delete
 
-Select the items and press the forward **Delete** key (⌦), press ⌘⌫, or choose **Edit › Delete**. They go to the Trash, just as in Finder, so you can get them back with Undo or from the Trash.
+Select the items and press the forward **Delete** key (⌦), press ⌘⌫, or choose **Edit › Delete**. They go to the Trash, just as in Finder, so you can get them back with Undo or from the **Trash** in the Folders pane.
+
+macOS keeps the Trash private. The first time you open it, Macsplorer may say "Operation not permitted". To allow it, open **System Settings › Privacy & Security › Full Disk Access**, switch on Macsplorer (or the terminal you started it from), and start Macsplorer again.
 
 ## 9. Undo
 
@@ -347,7 +349,7 @@ Not yet. Use Cut and Paste, or Copy and Paste.
 A copy gets a new name ending in "- Copy". A move stops and tells you, and nothing is replaced.
 
 **I deleted something by mistake.**
-Press ⌘Z right away, or find it in the Trash.
+Press ⌘Z right away, or open the **Trash** in the Folders pane.
 
 **Some of my files are missing from the list.**
 Check that the search box is empty, then turn on **View › Hidden files and folders** to see the items your Mac normally hides.
