@@ -46,6 +46,8 @@ Macsplorer is a file browser for people who think better with a folder tree on t
 - **Because it looks great.** Gradient caption bar, 3D bevels, classic scroll
   bars, dotted tree lines with +/− boxes. Nothing else on macOS looks like it.
 
+New to Macsplorer? The [user manual](docs/manual/README.md) walks through every feature with screenshots.
+
 ## Install
 
 **Download:** grab `Macsplorer-macOS.zip` from the

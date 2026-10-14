@@ -3477,6 +3477,39 @@ mod screenshot {
         harness.render().expect("render").save(out.join("view-menu-text-size.png")).unwrap();
     }
 
+    /// An item's context menu (for the user manual).
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn item_menu() {
+        shoot_driven("item-menu", egui::vec2(900.0, 500.0), |_| {}, |h| {
+            let pos = egui::pos2(275.0, 378.0);
+            h.hover_at(pos);
+            h.run();
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
+                h.run();
+            }
+            h.run();
+        });
+    }
+
+    /// Rename in place, with the name selected up to the extension.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn rename() {
+        shoot("rename", egui::vec2(900.0, 400.0), |app| {
+            select(app, &["data.yaml"]);
+            app.begin_rename();
+        });
+    }
+
+    /// The search box filtering the folder.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn search() {
+        shoot("search", egui::vec2(900.0, 400.0), |app| app.search = "re".into());
+    }
+
     /// View > Text Size at 150%.
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
