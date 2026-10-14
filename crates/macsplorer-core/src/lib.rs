@@ -7,6 +7,7 @@ pub mod breadcrumb;
 pub mod columns;
 pub mod copy_path;
 pub mod fileops;
+pub mod highlight;
 pub mod history;
 pub mod isearch;
 pub mod layout;

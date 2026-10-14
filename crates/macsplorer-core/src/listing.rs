@@ -41,6 +41,17 @@ pub struct Entry {
     pub hidden: bool,
     /// Finder shows its own icon for this item (`kHasCustomIcon`).
     pub custom_icon: bool,
+    /// The item is a symlink or Finder alias.
+    pub link: Option<Link>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    Symlink,
+    /// A symlink whose target doesn't exist.
+    Broken,
+    /// A Finder alias file (`kIsAlias`).
+    Alias,
 }
 
 impl Entry {
@@ -109,9 +120,12 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
         }
         let path = item.path();
         // Follow symlinks so a link to a folder behaves like a folder.
-        let Ok(meta) = fs::metadata(&path).or_else(|_| item.metadata()) else { continue };
+        let target = fs::metadata(&path);
+        let broken = target.is_err();
+        let Ok(meta) = target.or_else(|_| item.metadata()) else { continue };
         // The Attributes column describes the link itself, like `ls -l`.
-        let own = if item.file_type().is_ok_and(|t| t.is_symlink()) { item.metadata().ok() } else { None };
+        let symlink = item.file_type().is_ok_and(|t| t.is_symlink());
+        let own = if symlink { item.metadata().ok() } else { None };
         let own = own.as_ref().unwrap_or(&meta);
         let kind = if !meta.is_dir() {
             RenameKind::File
@@ -119,6 +133,12 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
             RenameKind::Package
         } else {
             RenameKind::Folder
+        };
+        let flags = finder_flags(&path);
+        let link = match (symlink, broken) {
+            (true, true) => Some(Link::Broken),
+            (true, false) => Some(Link::Symlink),
+            _ => (flags & K_IS_ALIAS != 0).then_some(Link::Alias),
         };
         out.push(Entry {
             size: (kind == RenameKind::File).then_some(meta.len()),
@@ -129,7 +149,8 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
             owner: user_name(own.uid()),
             group: group_name(own.gid()),
             comment: comment(&path),
-            custom_icon: has_custom_icon(&path),
+            custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
+            link,
             name,
             path,
             kind,
@@ -139,24 +160,33 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
     Ok(out)
 }
 
-/// True if Finder has a custom icon for `path`: the `kHasCustomIcon` bit
-/// (0x0400) in the Finder flags of the `com.apple.FinderInfo` attribute.
-#[cfg(target_os = "macos")]
+/// `kHasCustomIcon` in the Finder flags: Finder shows the item's own icon.
+const K_HAS_CUSTOM_ICON: u16 = 0x0400;
+/// `kIsAlias` in the Finder flags: the file is a Finder alias.
+const K_IS_ALIAS: u16 = 0x8000;
+
+/// True if Finder has a custom icon for `path`.
 pub fn has_custom_icon(path: &Path) -> bool {
+    finder_flags(path) & K_HAS_CUSTOM_ICON != 0
+}
+
+/// The Finder flags of `path`: bytes 8 and 9 of its `com.apple.FinderInfo`
+/// attribute, 0 if there is none.
+#[cfg(target_os = "macos")]
+fn finder_flags(path: &Path) -> u16 {
     use std::os::unix::ffi::OsStrExt;
-    const K_HAS_CUSTOM_ICON: u16 = 0x0400;
-    let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
+    let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return 0 };
     let mut info = [0u8; 32];
     // SAFETY: valid NUL-terminated path, name and a 32-byte buffer.
     let n = unsafe {
         libc::getxattr(cpath.as_ptr(), c"com.apple.FinderInfo".as_ptr(), info.as_mut_ptr().cast(), info.len(), 0, 0)
     };
-    n >= 10 && u16::from_be_bytes([info[8], info[9]]) & K_HAS_CUSTOM_ICON != 0
+    if n >= 10 { u16::from_be_bytes([info[8], info[9]]) } else { 0 }
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn has_custom_icon(_path: &Path) -> bool {
-    false
+fn finder_flags(_path: &Path) -> u16 {
+    0
 }
 
 /// The 10-character permissions string of `ls -l`: the file type, then
@@ -436,6 +466,7 @@ mod tests {
             comment: None,
             hidden: false,
             custom_icon: false,
+            link: None,
         }
     }
 
@@ -535,6 +566,21 @@ mod tests {
         // SAFETY: getuid can't fail.
         assert_eq!(entries[0].owner, user_name(unsafe { libc::getuid() }));
         assert!(!entries[0].owner.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn listing_marks_links() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-links-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("real"), "x").unwrap();
+        std::os::unix::fs::symlink("real", dir.join("good")).unwrap();
+        std::os::unix::fs::symlink("missing", dir.join("gone")).unwrap();
+        let entries = list_dir(&dir, false).unwrap();
+        let link = |name: &str| entries.iter().find(|e| e.name == name).unwrap().link;
+        assert_eq!(link("real"), None);
+        assert_eq!(link("good"), Some(Link::Symlink));
+        assert_eq!(link("gone"), Some(Link::Broken));
         fs::remove_dir_all(&dir).unwrap();
     }
 

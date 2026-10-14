@@ -38,6 +38,12 @@ pub mod color {
     pub const FOLDER_LIGHT: Color32 = Color32::from_rgb(0xFF, 0xF1, 0xB8);
     pub const ARROW: Color32 = Color32::from_rgb(0x2E, 0x8B, 0x2E);
     pub const ARROW_DARK: Color32 = Color32::from_rgb(0x14, 0x50, 0x14);
+
+    // Special file names, after Ubuntu's `ls` colors in the dark shades of
+    // the 16-color palette, which read on a white list.
+    pub const EXECUTABLE: Color32 = Color32::from_rgb(0x00, 0x80, 0x00);
+    pub const LINK: Color32 = Color32::from_rgb(0x00, 0x80, 0x80);
+    pub const ARCHIVE: Color32 = Color32::from_rgb(0x80, 0x00, 0x00);
 }
 use color::*;
 

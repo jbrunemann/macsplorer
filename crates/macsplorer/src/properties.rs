@@ -111,6 +111,7 @@ impl Properties {
             comment: None,
             hidden: false,
             custom_icon: false,
+            link: None,
         }
     }
 

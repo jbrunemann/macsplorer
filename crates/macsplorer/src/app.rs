@@ -77,6 +77,9 @@ struct Settings {
     expand_to_open: bool,
     /// The Folders explorer bar (navigation pane) is shown.
     show_folders: bool,
+    /// Executables, links and archives get colored names
+    /// ([`macsplorer_core::highlight`]).
+    color_names: bool,
 }
 
 struct RenameState {
@@ -276,7 +279,7 @@ impl Explorer {
             list_request: 0,
             listing: false,
             sort: SortSpec::default(),
-            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, expand_to_open: true, show_folders: true },
+            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, expand_to_open: true, show_folders: true, color_names: true },
             selection: BTreeSet::new(),
             anchor: None,
             focus_item: None,
@@ -1162,6 +1165,7 @@ impl Explorer {
                 let mut changed = false;
                 changed |= ui.checkbox(&mut self.settings.show_extensions, "File name extensions").changed();
                 changed |= ui.checkbox(&mut self.settings.show_hidden, "Hidden files and folders").changed();
+                ui.checkbox(&mut self.settings.color_names, "Special files in color");
                 if ui.checkbox(&mut self.settings.expand_to_open, "Expand to open folder").changed() && self.settings.expand_to_open {
                     self.sync_tree();
                 }
@@ -1570,7 +1574,7 @@ impl Explorer {
                                 }
                                 None => {
                                     let name = entry.display_name(settings.show_extensions);
-                                    selectable_name(ui, name, selected, focused)
+                                    selectable_name(ui, name, name_color(entry, settings, selected && focused), selected, focused)
                                 }
                             };
                             item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
@@ -1782,7 +1786,8 @@ impl Explorer {
                     let entry = &entries[index];
                     let selected = selection.contains(&entry.path);
                     let unfolded = focused && *focus_item == Some(index);
-                    let galley = icon_label(ui, entry.display_name(settings.show_extensions), &font, selected && focused, unfolded);
+                    let color = name_color(entry, settings, selected && focused);
+                    let galley = icon_label(ui, entry.display_name(settings.show_extensions), &font, color, unfolded);
                     let size = layout::label_size((galley.size().x, galley.size().y), line_height, !unfolded);
                     let cell = IconCell::new(grid.slot(pos), size);
                     icons.paint(ui, screen(cell.image), entry, IconState::of(selected, focused, cut.contains(&entry.path)));
@@ -1826,7 +1831,7 @@ impl Explorer {
                             .map(|pos| {
                                 let index = visible[pos];
                                 let unfolded = focused && *focus_item == Some(index);
-                                let galley = icon_label(ui, entries[index].display_name(settings.show_extensions), &font, false, unfolded);
+                                let galley = icon_label(ui, entries[index].display_name(settings.show_extensions), &font, theme::color::TEXT, unfolded);
                                 let size = layout::label_size((galley.size().x, galley.size().y), line_height, !unfolded);
                                 let cell = IconCell::new(grid.slot(pos), size);
                                 (index, cell.image.union(&cell.label))
@@ -1952,7 +1957,7 @@ impl Explorer {
                         });
                         continue;
                     }
-                    let color = if selected && focused { theme::color::SELECTION_TEXT } else { theme::color::TEXT };
+                    let color = name_color(entry, settings, selected && focused);
                     let name = entry.display_name(settings.show_extensions).to_owned();
                     let galley = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), color));
                     paint_label(ui, screen(label), galley, selected, focused);
@@ -2299,8 +2304,7 @@ fn edge_scroll(ui: &Ui, shown: egui::Rect, line: f32, axis: usize) {
 
 /// Lays out a Large Icons label: centered, wrapped in `layout::LABEL_WRAP`,
 /// cut to `layout::FOLDED_LINES` lines with "…" unless `unfolded`.
-fn icon_label(ui: &Ui, text: &str, font: &egui::FontId, highlighted: bool, unfolded: bool) -> std::sync::Arc<egui::Galley> {
-    let color = if highlighted { theme::color::SELECTION_TEXT } else { theme::color::TEXT };
+fn icon_label(ui: &Ui, text: &str, font: &egui::FontId, color: egui::Color32, unfolded: bool) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::simple(text.to_owned(), font.clone(), color, layout::LABEL_WRAP);
     job.halign = Align::Center;
     if !unfolded {
@@ -2308,6 +2312,22 @@ fn icon_label(ui: &Ui, text: &str, font: &egui::FontId, highlighted: bool, unfol
         job.wrap.overflow_character = Some('…');
     }
     ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// An item label's text color: white on the focused selection, else the
+/// special file color (kept on the unfocused gray selection, like Explorer's
+/// compressed-file blue), else black.
+fn name_color(entry: &Entry, settings: &Settings, highlighted: bool) -> egui::Color32 {
+    use macsplorer_core::highlight::{Highlight, classify};
+    if highlighted {
+        return theme::color::SELECTION_TEXT;
+    }
+    match classify(entry).filter(|_| settings.color_names) {
+        Some(Highlight::Executable) => theme::color::EXECUTABLE,
+        Some(Highlight::Link) => theme::color::LINK,
+        Some(Highlight::Archive | Highlight::BrokenLink) => theme::color::ARCHIVE,
+        None => theme::color::TEXT,
+    }
 }
 
 /// Paints an item label in its box: the text alone, or on the selection
@@ -2406,9 +2426,8 @@ fn header_menu(ui: &mut Ui, columns: &ColumnSet, actions: &mut Vec<Action>) {
     }
 }
 
-fn selectable_name(ui: &mut Ui, text: &str, selected: bool, focused: bool) -> egui::Rect {
+fn selectable_name(ui: &mut Ui, text: &str, color: egui::Color32, selected: bool, focused: bool) -> egui::Rect {
     let bg = ui.painter().add(egui::Shape::Noop);
-    let color = if selected && focused { theme::color::SELECTION_TEXT } else { theme::color::TEXT };
     let resp = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate().selectable(false).sense(Sense::hover()));
     let rect = resp.rect.expand2(egui::vec2(2.0, 1.0));
     if selected {
@@ -2863,6 +2882,10 @@ mod screenshot {
         }
         for name in ["main.rs", "app.py", "index.ts", "README.md", "Makefile", "Cargo.toml", "styles.css", "package.json", "photo.png", "archive.zip", "Dockerfile", "notes.txt", "report.pdf", "query.sql", "script.sh", "budget.xlsx", "data.yaml", "Quarterly report for the board of directors.txt"] {
             fs::write(dir.join(name), vec![b'x'; 1_500]).unwrap();
+        }
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.join("script.sh"), fs::Permissions::from_mode(0o755)).unwrap();
         }
         // A real app (via symlink) to show a native icon.
         let _ = std::os::unix::fs::symlink("/System/Applications/Calculator.app", dir.join("Calculator.app"));
