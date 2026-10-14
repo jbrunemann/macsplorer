@@ -26,6 +26,7 @@ use macsplorer_core::listing::{Entry, SortColumn, SortSpec, format_byte_size, fo
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
+use macsplorer_core::slow_click::{self, SlowClick};
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
 use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
@@ -97,7 +98,9 @@ enum Action {
     Open(PathBuf),
     /// Open a file with an app; `None` asks the user to pick one.
     OpenWith(PathBuf, Option<PathBuf>),
-    Click { index: usize, toggle: bool, extend: bool },
+    /// A click on an item. `on_label`: a left click on its label text,
+    /// which may start a slow-click rename.
+    Click { index: usize, toggle: bool, extend: bool, on_label: bool },
     /// Scroll the item view so this entry is visible.
     Reveal(usize),
     /// Characters typed in the item view at `time_ms`.
@@ -214,6 +217,9 @@ pub struct Explorer {
     /// before this frame's layout.
     header_left: f32,
     rename: Option<RenameState>,
+    /// A rename armed by clicking the selected item's label, started when
+    /// its delay passes unless a double-click or key press cancels it.
+    slow_click: SlowClick<PathBuf>,
     /// `Some` while the address bar shows a text field instead of crumbs.
     address_edit: Option<String>,
     address_needs_focus: bool,
@@ -279,6 +285,7 @@ impl Explorer {
             column_drag: None,
             header_left: 0.0,
             rename: None,
+            slow_click: SlowClick::default(),
             address_edit: None,
             address_needs_focus: false,
             search: String::new(),
@@ -301,6 +308,9 @@ impl Explorer {
             ctx,
             home: dirs::home_dir(),
         };
+        // Windows' double-click time is also the slow-click rename delay, so a
+        // second click before the rename starts always opens the item.
+        app.ctx.options_mut(|o| o.input_options.max_double_click_delay = slow_click::DELAY_MS as f64 / 1000.0);
         app.reload();
         app.sync_tree();
         app
@@ -606,6 +616,7 @@ impl Explorer {
         self.type_ahead.reset();
         self.marquee = None;
         self.rename = None;
+        self.slow_click.cancel();
         self.address_edit = None;
         self.search.clear();
         // Don't show the previous folder's items while the new one loads.
@@ -793,9 +804,21 @@ impl Explorer {
         for action in actions {
             match action {
                 Action::Navigate(p) => self.navigate(p),
-                Action::Open(p) => self.open(p),
+                Action::Open(p) => {
+                    // The second click of a double-click.
+                    self.slow_click.cancel();
+                    self.open(p);
+                }
                 Action::OpenWith(p, app) => self.open_with(p, app),
-                Action::Click { index, toggle, extend } => {
+                Action::Click { index, toggle, extend, on_label } => {
+                    let path = self.entries[index].path.clone();
+                    let click = slow_click::Click {
+                        on_label,
+                        only_selected: self.selection.len() == 1 && self.selection.contains(&path),
+                        view_focused: self.focus == Pane::List,
+                        modifiers: toggle || extend,
+                    };
+                    self.slow_click.click(path, click, now_ms(&self.ctx));
                     self.focus = Pane::List;
                     self.click(index, toggle, extend, visible);
                 }
@@ -813,10 +836,12 @@ impl Explorer {
                     }
                 }
                 Action::Deselect => {
+                    self.slow_click.cancel();
                     self.focus = Pane::List;
                     self.selection.clear();
                 }
                 Action::MarqueeBegin { origin, extend } => {
+                    self.slow_click.cancel();
                     self.focus = Pane::List;
                     if !extend {
                         self.selection.clear();
@@ -893,7 +918,12 @@ impl Explorer {
                     self.load(loads);
                 }
                 Action::TreeCollapse(key) => self.tree.collapse(&key),
-                Action::Focus(pane) => self.focus = pane,
+                Action::Focus(pane) => {
+                    if pane != Pane::List {
+                        self.slow_click.cancel();
+                    }
+                    self.focus = pane;
+                }
                 Action::ToggleFolders => {
                     self.settings.show_folders = !self.settings.show_folders;
                     if !self.settings.show_folders {
@@ -922,6 +952,22 @@ impl Explorer {
                 }
             }
         }
+    }
+
+    /// Starts a slow-click rename whose delay has passed, if the item is
+    /// still the only selection. Any key press cancels a pending one
+    /// (`CLVKeyboardManager::OnKey` calls `CancelPendingEdit`). Like
+    /// `CListView::OnTimer`, the item is scrolled into view first.
+    fn slow_click_rename(&mut self, ui: &Ui) {
+        if ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. } | egui::Event::Text(_)))) {
+            self.slow_click.cancel();
+        }
+        let Some(path) = self.slow_click.due(now_ms(ui.ctx())) else { return };
+        if self.rename.is_some() || self.focus != Pane::List || self.selection.len() != 1 || !self.selection.contains(&path) {
+            return;
+        }
+        self.reveal = self.entries.iter().position(|e| e.path == path);
+        self.begin_rename();
     }
 
     // ---- keyboard ------------------------------------------------------
@@ -1016,7 +1062,7 @@ impl Explorer {
             }
             let Some(nav) = KEYS.iter().find(|(k, _)| i.key_pressed(*k)).map(|&(_, n)| n) else { return };
             if let Some(to) = self.navigate_items(nav, visible) {
-                actions.push(Action::Click { index: visible[to], toggle: false, extend: i.modifiers.shift });
+                actions.push(Action::Click { index: visible[to], toggle: false, extend: i.modifiers.shift, on_label: false });
                 actions.push(Action::Reveal(visible[to]));
             }
         });
@@ -1480,6 +1526,7 @@ impl Explorer {
                     // The icon and label, the only part of the row that hits the
                     // item: elsewhere is empty space (`CListView::HandleMouse`).
                     let mut item_rect = egui::Rect::NOTHING;
+                    let mut label_rect = egui::Rect::NOTHING;
                     let mut name_column = (0.0, 0.0);
 
                     row.col(|ui| {
@@ -1498,6 +1545,7 @@ impl Explorer {
                             }
                         };
                         item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
+                        label_rect = label;
                         name_column = (icon_rect.left(), ui.max_rect().right());
                     });
                     row.col(|ui| {
@@ -1526,7 +1574,8 @@ impl Explorer {
                     let on_item = resp.interact_pointer_pos().is_some_and(|p| item_rect.contains(p));
                     if on_item {
                         if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
-                            actions.push(Action::Click { index, toggle: mods.command, extend: mods.shift });
+                            let on_label = resp.clicked() && resp.interact_pointer_pos().is_some_and(|p| label_rect.contains(p));
+                            actions.push(Action::Click { index, toggle: mods.command, extend: mods.shift, on_label });
                         }
                         if resp.double_clicked() {
                             actions.push(Action::Open(entry.path.clone()));
@@ -1703,6 +1752,7 @@ impl Explorer {
                 let press = resp.drag_started().then(|| ui.input(|i| i.pointer.press_origin())).flatten().map(content);
 
                 let mut hit = None;
+                let mut on_label = false;
                 let mut press_hit = false;
                 // The focused item's whole label is drawn last, over its neighbors.
                 let mut on_top = None;
@@ -1717,6 +1767,7 @@ impl Explorer {
                     icons.paint(ui, screen(cell.image), entry, IconState::of(selected, focused, cut.contains(&entry.path)));
                     if pointer.is_some_and(|p| cell.hit(p)) {
                         hit = Some(pos);
+                        on_label = pointer.is_some_and(|p| cell.label.contains(p));
                     }
                     press_hit |= press.is_some_and(|p| cell.hit(p));
                     let renaming = rename.as_ref().is_some_and(|r| r.path == entry.path);
@@ -1765,7 +1816,7 @@ impl Explorer {
                         *marquee = None;
                     }
                 }
-                item_clicks(ui, &resp, hit.map(|p| &entries[visible[p]]), hit.map(|p| visible[p]), selection, menu_id, actions);
+                item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
                 resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                     Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
                     None => background_menu(ui, &folder, can_paste, actions),
@@ -1858,6 +1909,7 @@ impl Explorer {
                 let press = resp.drag_started().then(|| ui.input(|i| i.pointer.press_origin())).flatten().map(content);
 
                 let mut hit = None;
+                let mut on_label = false;
                 let mut press_hit = false;
                 for pos in columns.items_in(view.min.x, view.max.x) {
                     let index = visible[pos];
@@ -1868,6 +1920,7 @@ impl Explorer {
                     let hits = |p: (f32, f32)| icon.contains(p) || label.contains(p);
                     if pointer.is_some_and(hits) {
                         hit = Some(pos);
+                        on_label = pointer.is_some_and(|p| label.contains(p));
                     }
                     press_hit |= press.is_some_and(hits);
                     if let Some(r) = rename.as_mut().filter(|r| r.path == entry.path) {
@@ -1904,7 +1957,7 @@ impl Explorer {
                         *marquee = None;
                     }
                 }
-                item_clicks(ui, &resp, hit.map(|p| &entries[visible[p]]), hit.map(|p| visible[p]), selection, menu_id, actions);
+                item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
                 resp.context_menu(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                     Some(i) => item_menu(ui, &entries[i], can_paste, open_with, actions),
                     None => background_menu(ui, &folder, can_paste, actions),
@@ -1963,6 +2016,7 @@ impl eframe::App for Explorer {
         self.poll_ops();
         self.icons.begin_frame();
         let visible = self.visible();
+        self.slow_click_rename(ui);
         let mut actions = Vec::new();
         self.keyboard(ui, &visible, &mut actions);
 
@@ -2003,6 +2057,9 @@ impl eframe::App for Explorer {
             .show(ui, |ui| self.item_view(ui, &visible, &mut actions));
 
         self.apply(actions, &visible);
+        if let Some(ms) = self.slow_click.wait_ms(now_ms(ui.ctx())) {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(ms));
+        }
         let ctx = ui.ctx().clone();
         self.show_properties(&ctx);
     }
@@ -2097,28 +2154,29 @@ fn empty_message(ui: &mut Ui, search: &str) {
 }
 
 /// Turns clicks on the Large Icons or List view into actions. `hit` is the item
-/// under the pointer. A click on empty space clears the selection; a
+/// under the pointer (`entries` index) and `on_label` whether the pointer is
+/// on its label rather than its icon. A click on empty space clears the selection; a
 /// right-click remembers its target under `menu_id` for the context menu.
 fn item_clicks(
     ui: &Ui,
     resp: &egui::Response,
-    hit: Option<&Entry>,
-    index: Option<usize>,
+    hit: Option<(usize, &Entry)>,
+    on_label: bool,
     selection: &BTreeSet<PathBuf>,
     menu_id: egui::Id,
     actions: &mut Vec<Action>,
 ) {
     let m = ui.input(|i| i.modifiers);
-    match (hit, index) {
-        (Some(entry), Some(index)) => {
+    match hit {
+        Some((index, entry)) => {
             if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
-                actions.push(Action::Click { index, toggle: m.command, extend: m.shift });
+                actions.push(Action::Click { index, toggle: m.command, extend: m.shift, on_label: on_label && resp.clicked() });
             }
             if resp.double_clicked() {
                 actions.push(Action::Open(entry.path.clone()));
             }
         }
-        _ => {
+        None => {
             if resp.clicked() && !m.command && !m.shift {
                 actions.push(Action::Deselect);
             }
@@ -2128,7 +2186,7 @@ fn item_clicks(
         }
     }
     if resp.secondary_clicked() {
-        ui.data_mut(|d| d.insert_temp(menu_id, index));
+        ui.data_mut(|d| d.insert_temp(menu_id, hit.map(|(index, _)| index)));
     }
 }
 
@@ -2313,6 +2371,11 @@ fn crumb_button(ui: &mut Ui, text: &str) -> egui::Response {
     }
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, theme::color::TEXT);
     resp
+}
+
+/// egui's input clock in milliseconds.
+fn now_ms(ctx: &egui::Context) -> u64 {
+    ctx.input(|i| (i.time * 1000.0) as u64)
 }
 
 fn window_focused(ui: &Ui) -> bool {

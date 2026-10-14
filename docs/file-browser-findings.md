@@ -68,6 +68,25 @@ What this gives you:
 | folder `My.Folder` | everything |
 | `photo.JPG` with extensions hidden | everything (box shows `photo`) |
 
+### 2.1.1 Slow-click trigger (comctl32 v6.10)
+
+The trigger is in the ListView, not Explorer. Code path: `CLVMouseManager::HandleMouse` (comctl32 0x171a31328) → `CLVInPlaceEditingManager::SetupPendingNameEdit` (0x171bafd54), then `CListView::OnTimer` (0x171a4fdf4) → `CLVInPlaceEditingManager::EditItem` → `LVN_BEGINLABELEDIT` → §2.1. **Observed** (Ghidra pseudocode):
+
+1. A single click arms a pending rename only when all of these hold:
+   - not a double-click, and no `MK_RBUTTON`, `MK_SHIFT` or `MK_CONTROL` in the key flags;
+   - the hit test says `LVHT_ONITEMLABEL` (the label, not the icon);
+   - the item was selected before the click, and a selection counter equals 1 (**inferred:** it was the only selected item);
+   - the list had keyboard focus when the button went down (`GetFocus()` is the ListView, or an internal flag is set);
+   - neither `LVS_EX_ONECLICKACTIVATE` nor `LVS_EX_TWOCLICKACTIVATE` is set;
+   - the drag-detect loop inside `HandleMouse` ended without a drag (a drag takes another path).
+2. Arming saves the item, sets a "pending edit" flag and calls `SetTimer(id 0x2A, GetDoubleClickTime())`, 500 ms by default. The drag-detect loop returns on button-up, so the wait effectively starts at release.
+3. `CancelPendingEdit` clears the flag and kills the timer. It's called for a double-click (`HandleMouse` with the double-click flag), from `CLVKeyboardManager::OnKey` (any key), and when a label edit finishes.
+4. When timer 0x2A fires, `OnTimer` does nothing if an edit is already open or the flag was cleared. Otherwise it scrolls the item into view and starts the label edit.
+
+Unverified: whether Windows 2000's comctl32 had exactly these conditions; the binary read here is v6.10 from build 10240.
+
+**macsplorer** (`slow_click`): the same conditions, minus the activate styles (there is no single-click mode). Keyboard focus means the item view was the active pane. A click on any other item, a marquee, a click on empty space, moving focus to the tree, or navigating also drops the pending rename. The delay is `slow_click::DELAY_MS` (500 ms), and egui's double-click interval is set to the same value, as on Windows.
+
 ### 2.2 Name sorting
 
 **Observed:** `StrCmpLogicalRestricted` (Windows.Storage 0x18015d9c8):

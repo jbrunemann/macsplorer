@@ -17,5 +17,6 @@ pub mod places;
 pub mod properties;
 pub mod rename;
 pub mod seti;
+pub mod slow_click;
 pub mod tree;
 pub mod undo;
