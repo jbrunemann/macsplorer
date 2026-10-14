@@ -13,6 +13,12 @@
   <img src="docs/window.png" alt="Macsplorer showing a folder with the Folders tree, details view and status bar" width="900">
 </p>
 
+<p align="center">
+  <a href="docs/manual/README.md"><strong>User manual</strong></a> ·
+  <a href="#install">Install</a> ·
+  <a href="https://github.com/jbrunemann/macsplorer/releases/latest">Download</a>
+</p>
+
 Macsplorer is a file browser for people who think better with a folder tree on the left, the full path on top and a details list in the middle. It looks like Windows 2000 "Windows Classic", behaves like Explorer where that matters, and still opens your files with the apps you already use.
 
 ## Why use it
@@ -46,7 +52,7 @@ Macsplorer is a file browser for people who think better with a folder tree on t
 - **Because it looks great.** Gradient caption bar, 3D bevels, classic scroll
   bars, dotted tree lines with +/− boxes. Nothing else on macOS looks like it.
 
-New to Macsplorer? The [user manual](docs/manual/README.md) walks through every feature with screenshots.
+New to Macsplorer? Read the **[user manual](docs/manual/README.md)**: it walks through every feature with screenshots, in plain language.
 
 ## Install
 
