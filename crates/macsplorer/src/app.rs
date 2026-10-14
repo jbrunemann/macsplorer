@@ -1576,7 +1576,7 @@ impl Explorer {
                             }
                             ui.add_space(4.0);
                             let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
-                            icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, cut.contains(&entry.path)));
+                            icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, entry.hidden || cut.contains(&entry.path)));
                             ui.add_space(3.0);
                             let label = match rename.as_mut().filter(|r| r.path == entry.path) {
                                 Some(r) => {
@@ -1801,7 +1801,7 @@ impl Explorer {
                     let galley = icon_label(ui, entry.display_name(settings.show_extensions), &font, color, unfolded);
                     let size = layout::label_size((galley.size().x, galley.size().y), line_height, !unfolded);
                     let cell = IconCell::new(grid.slot(pos), size);
-                    icons.paint(ui, screen(cell.image), entry, IconState::of(selected, focused, cut.contains(&entry.path)));
+                    icons.paint(ui, screen(cell.image), entry, IconState::of(selected, focused, entry.hidden || cut.contains(&entry.path)));
                     if pointer.is_some_and(|p| cell.hit(p)) {
                         hit = Some(pos);
                         on_label = pointer.is_some_and(|p| cell.label.contains(p));
@@ -1953,7 +1953,7 @@ impl Explorer {
                     let entry = &entries[index];
                     let selected = selection.contains(&entry.path);
                     let (icon, label) = item_rects(ui, pos);
-                    icons.paint(ui, screen(icon), entry, IconState::of(selected, focused, cut.contains(&entry.path)));
+                    icons.paint(ui, screen(icon), entry, IconState::of(selected, focused, entry.hidden || cut.contains(&entry.path)));
                     let hits = |p: (f32, f32)| icon.contains(p) || label.contains(p);
                     if pointer.is_some_and(hits) {
                         hit = Some(pos);
@@ -2569,7 +2569,7 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
     if row.depth == 0 && row.section == Section::Locations {
         theme::paint_icon(p, icon_rect, Icon::Drive, true);
     } else {
-        icons.paint_folder(ui, icon_rect, &row.key.path);
+        icons.paint_tree_folder(ui, icon_rect, &row.key.path);
     }
     let text_rect = egui::Rect::from_min_size(egui::pos2(label_x - 2.0, rect.center().y - 7.0), egui::vec2(text_w + 4.0, 14.0));
     let text_color = if row.selected {
@@ -2920,7 +2920,7 @@ mod screenshot {
         crate::locale::install();
         let dir = std::env::temp_dir().join("macsplorer-screenshot").join("My Documents");
         let _ = fs::remove_dir_all(&dir);
-        for d in ["Projects/2026", "Projects/Archive", "Pictures", "Setup.app"] {
+        for d in ["Projects/2026", "Projects/Archive", "Pictures", "Setup.app", ".config"] {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
         for name in ["Projects/plan.txt", "Projects/2026/budget.xlsx", "Projects/Archive/old.zip"] {
@@ -2929,6 +2929,7 @@ mod screenshot {
         for name in ["main.rs", "app.py", "index.ts", "README.md", "Makefile", "Cargo.toml", "styles.css", "package.json", "photo.png", "archive.zip", "Dockerfile", "notes.txt", "report.pdf", "query.sql", "script.sh", "budget.xlsx", "data.yaml", "Quarterly report for the board of directors.txt"] {
             fs::write(dir.join(name), vec![b'x'; 1_500]).unwrap();
         }
+        fs::write(dir.join(".gitignore"), "target\n").unwrap();
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(dir.join("script.sh"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -3025,6 +3026,17 @@ mod screenshot {
         shoot("list", egui::vec2(900.0, 400.0), |app| {
             app.settings.view = ViewMode::List;
             select(app, &["main.rs", "Setup.app"]);
+        });
+    }
+
+    /// Hidden items are ghosted like cut ones, in the list and the tree.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn hidden_items() {
+        shoot("hidden-items", egui::vec2(900.0, 400.0), |app| {
+            app.settings.show_hidden = true;
+            app.reload();
+            app.finish_listing();
         });
     }
 

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Rect, Shape, TextureHandle, TextureOptions, Ui};
 use egui::epaint::ColorMode;
 use egui::layers::ShapeIdx;
-use macsplorer_core::listing::Entry;
+use macsplorer_core::listing::{Entry, is_hidden_name};
 use macsplorer_core::places::{KnownFolder, known_folder};
 use macsplorer_core::rename::RenameKind;
 use macsplorer_core::seti::SetiTheme;
@@ -45,13 +45,14 @@ pub enum IconState {
     Selected,
     /// Selected while the view doesn't have focus: `ILD_BLEND25`.
     SelectedInactive,
-    /// Cut (`LVIS_CUT`): `ILD_BLEND50` toward the list background, ghosted.
+    /// Cut (`LVIS_CUT`) or hidden (`SFGAO_GHOSTED`, which the shell reports
+    /// as `LVIS_CUT` too): `ILD_BLEND50` toward the list background, ghosted.
     Cut,
 }
 
 impl IconState {
-    pub fn of(selected: bool, focused: bool, cut: bool) -> Self {
-        match (cut, selected, focused) {
+    pub fn of(selected: bool, focused: bool, ghosted: bool) -> Self {
+        match (ghosted, selected, focused) {
             (true, _, _) => Self::Cut,
             (_, true, true) => Self::Selected,
             (_, true, false) => Self::SelectedInactive,
@@ -67,6 +68,21 @@ impl IconState {
             Self::SelectedInactive => Some((theme::color::SELECTION, 0.25)),
             Self::Cut => Some((theme::color::WINDOW, 0.5)),
         }
+    }
+}
+
+/// Runs `paint` and blends what it drew as `state` says.
+fn blended(ui: &Ui, state: IconState, paint: impl FnOnce()) {
+    let layer = ui.painter().layer_id();
+    let start = ui.ctx().graphics_mut(|g| g.entry(layer).next_idx());
+    paint();
+    if let Some((toward, t)) = state.blend() {
+        ui.ctx().graphics_mut(|g| {
+            let list = g.entry(layer);
+            for i in start.0..list.next_idx().0 {
+                list.mutate_shape(ShapeIdx(i), |s| blend_shape(&mut s.shape, toward, t));
+            }
+        });
     }
 }
 
@@ -111,17 +127,7 @@ impl FileIcons {
         if wants_native && self.paint_native(ui, rect, entry, state) {
             return;
         }
-        let layer = ui.painter().layer_id();
-        let start = ui.ctx().graphics_mut(|g| g.entry(layer).next_idx());
-        self.paint_vector(ui, rect, entry);
-        if let Some((toward, t)) = state.blend() {
-            ui.ctx().graphics_mut(|g| {
-                let list = g.entry(layer);
-                for i in start.0..list.next_idx().0 {
-                    list.mutate_shape(ShapeIdx(i), |s| blend_shape(&mut s.shape, toward, t));
-                }
-            });
-        }
+        blended(ui, state, || self.paint_vector(ui, rect, entry));
     }
 
     fn paint_vector(&mut self, ui: &Ui, rect: Rect, entry: &Entry) {
@@ -150,7 +156,12 @@ impl FileIcons {
 
     /// Paints the yellow folder, with Finder's glyph on it for the user
     /// folders that have one.
-    pub fn paint_folder(&mut self, ui: &Ui, rect: Rect, path: &Path) {
+    pub fn paint_tree_folder(&mut self, ui: &Ui, rect: Rect, path: &Path) {
+        let hidden = path.file_name().is_some_and(|n| is_hidden_name(&n.to_string_lossy()));
+        blended(ui, if hidden { IconState::Cut } else { IconState::Normal }, || self.paint_folder(ui, rect, path));
+    }
+
+    fn paint_folder(&mut self, ui: &Ui, rect: Rect, path: &Path) {
         theme::paint_icon(ui.painter(), rect, Icon::Folder, true);
         let Some(known) = known_folder(path) else { return };
         let scale = rect.width() / 16.0;

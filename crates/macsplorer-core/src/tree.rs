@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::listing::list_dir;
+use crate::listing::{is_hidden_name, list_dir};
 use crate::natural::natural_cmp;
 use crate::places::Place;
 
@@ -348,7 +348,7 @@ fn has_subfolders(dir: &Path, show_hidden: bool) -> bool {
     rd.flatten().take(PROBE_SCAN).any(|e| {
         let name = e.file_name();
         let name = name.to_string_lossy();
-        (show_hidden || !name.starts_with('.'))
+        (show_hidden || !is_hidden_name(&name))
             && fs::metadata(e.path()).is_ok_and(|m| m.is_dir())
             && !crate::listing::is_package_name(&name)
     })

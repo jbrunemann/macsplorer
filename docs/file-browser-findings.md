@@ -341,6 +341,7 @@ and folds back to two lines when focus leaves.
 | selected, view focused (or drop target) | `ILD_BLEND50` with `CLR_DEFAULT`: 50% blend toward `COLOR_HIGHLIGHT` | highlight background |
 | selected, view not focused (`LVS_SHOWSELALWAYS`) | `ILD_BLEND25`: 25% blend toward `COLOR_HIGHLIGHT` | `COLOR_BTNFACE` background |
 | cut (`LVIS_CUT`) | `ILD_BLEND50` toward the list background color (ghosted) | normal |
+| hidden (`SFGAO_GHOSTED`), shown with "Hidden files and folders" | **Inferred:** drawn as cut (the shell hands ghosted items to the list view as `LVIS_CUT`; the folder tree does the same with `TVIS_CUT`), label normal. macsplorer calls dot-files hidden. | normal |
 
 The label colors are inferred from the border-select branch, which picks `COLOR_HIGHLIGHT` vs
 `COLOR_BTNFACE` from the same return flags; the label painter itself (`FUN_171a48290`) wasn't

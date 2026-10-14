@@ -107,6 +107,11 @@ impl Entry {
     }
 }
 
+/// Whether a file name makes the item hidden (a leading dot).
+pub fn is_hidden_name(name: &str) -> bool {
+    name.starts_with('.')
+}
+
 /// Reads one directory. Entries that vanish or can't be read while listing
 /// are skipped rather than failing the whole listing.
 pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
@@ -114,7 +119,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
     for item in fs::read_dir(dir)? {
         let Ok(item) = item else { continue };
         let name = item.file_name().to_string_lossy().into_owned();
-        let hidden = name.starts_with('.');
+        let hidden = is_hidden_name(&name);
         if hidden && !show_hidden {
             continue;
         }
