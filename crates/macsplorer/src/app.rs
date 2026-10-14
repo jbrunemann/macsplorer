@@ -1334,13 +1334,10 @@ impl Explorer {
             // Explorer's chevron: a menu of the crumb's subfolders.
             let chevron = crumb_button(ui, "›");
             egui::Popup::menu(&chevron).show(|ui| {
-                egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                    for (name, path) in subfolders(&crumb.path, self.settings.show_hidden) {
-                        if ui.button(name).clicked() {
-                            actions.push(Action::Navigate(path));
-                        }
-                    }
-                });
+                let folders = subfolders(&crumb.path, self.settings.show_hidden);
+                if let Some(path) = scrolled_menu(ui, &folders) {
+                    actions.push(Action::Navigate(path));
+                }
             });
         }
     }
@@ -2665,6 +2662,41 @@ fn subfolders(dir: &Path, show_hidden: bool) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// Tallest the crumb chevron's menu grows before it scrolls.
+const MENU_MAX_HEIGHT: f32 = 400.0;
+
+/// A menu of `items` that scrolls with a classic scroll bar once it is
+/// taller than [`MENU_MAX_HEIGHT`]. Returns the clicked item's path. The
+/// size is worked out up front so the popup doesn't resize when the bar
+/// appears.
+fn scrolled_menu(ui: &mut Ui, items: &[(String, PathBuf)]) -> Option<PathBuf> {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let (pad, spacing, min_height) = (ui.spacing().button_padding, ui.spacing().item_spacing.y, ui.spacing().interact_size.y);
+    let text_width = items.iter().map(|(name, _)| ui.painter().layout_no_wrap(name.clone(), font.clone(), theme::color::TEXT).size().x).fold(0.0, f32::max);
+    let row = (ui.fonts_mut(|f| f.row_height(&font)) + 2.0 * pad.y).max(min_height) + spacing;
+    let content = row * items.len() as f32 - spacing;
+    let height = content.min(MENU_MAX_HEIGHT);
+    let overflows = content > height;
+    let width = text_width + 2.0 * pad.x + if overflows { scrollbar::WIDTH } else { 0.0 };
+    let (outer, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
+
+    // The bar is known to be needed from the first frame.
+    let id = ui.id().with("menu-bars");
+    ui.data_mut(|d| d.insert_temp(id, egui::Vec2b::new(false, overflows)));
+    let (bars, viewport) = Bars::begin(ui, id, outer, [false, true], row);
+    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down_justified(Align::Min)));
+    let mut clicked = None;
+    let out = egui::ScrollArea::vertical().auto_shrink(false).scroll_bar_visibility(scrollbar::hidden(&mut inner)).show(&mut inner, |ui| {
+        for (name, path) in items {
+            if ui.button(name).clicked() {
+                clicked = Some(path.clone());
+            }
+        }
+    });
+    bars.end(&mut inner, &out);
+    clicked
+}
+
 fn place_label(p: &Path) -> String {
     p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
@@ -3148,6 +3180,41 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn properties_kind() {
         shoot_properties("properties-kind", "budget.xlsx");
+    }
+
+    /// The last crumb's chevron menu in a folder with too many subfolders to fit.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn chevron_menu() {
+        let dir = std::env::temp_dir().join("macsplorer-screenshot-menu").join("Many folders");
+        let _ = fs::remove_dir_all(&dir);
+        for i in 1..=40 {
+            fs::create_dir_all(dir.join(format!("Folder {i:02}"))).unwrap();
+        }
+        let mut harness = Harness::builder().with_size(egui::vec2(500.0, 520.0)).with_pixels_per_point(2.0).wgpu().build_eframe(|cc| {
+            theme::install(&cc.egui_ctx);
+            let mut app = Explorer::new(cc.egui_ctx.clone(), dir.clone());
+            app.finish_listing();
+            app
+        });
+        for _ in 0..10 {
+            harness.run();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let pos = egui::pos2(169.0, 85.0);
+        harness.hover_at(pos);
+        harness.run();
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            harness.run();
+        }
+        for _ in 0..3 {
+            harness.run();
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("chevron-menu.png")).unwrap();
     }
 
     /// A window small enough that both panes need classic scroll bars.

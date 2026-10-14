@@ -105,6 +105,5 @@ licenses.
 - More Win2000 views: Small Icons, Thumbnails, the "Web view" left info panel; a dotted focus rectangle on the focused item.
 - Type column with language names ("Rust Source") and image thumbnails.
 - Trace remaining Explorer behaviors listed in `docs/file-browser-findings.md` §4.
-- Classic scroll bars for the breadcrumb chevron popup.
 - Persist settings and window size (column widths are deliberately per window only, shared by all folders); pinning favorites; tabs/multiple windows.
 - Replace the placeholder bundle id `dev.macsplorer.app` once the user picks one.
