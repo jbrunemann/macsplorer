@@ -150,7 +150,7 @@ The **Branch** column (add it from the column header's right-click menu) shows w
 - Before the `|` are the staged changes (added `+`, modified `~`, removed `-`, conflicted `!`), after it the ones that are not staged yet. Files Git doesn't know yet count as added.
 - A final `!` says there are changes that are not staged, `~` that everything changed is staged.
 
-The summary and the **Branch** column need Git to be installed. Without it they are simply left out. The summary is refreshed whenever the folder is (**View › Refresh**, or after you change something here).
+The summary and the **Branch** column need Git to be installed. Without it they are simply left out. The summary is worked out when you enter a repository and kept while you move around inside it, so big repositories stay quick. It is worked out again with **View › Refresh** or after you change something in Macsplorer. Changes made by other programs show up at the next refresh.
 
 ### Colored names
 

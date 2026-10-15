@@ -58,8 +58,15 @@ const GIT_ICON_WIDTH: f32 = 12.0;
 const GIT_ICON_SCALE: f32 = 1.6;
 /// A details-view listing, tagged with the request it answers.
 type ListResult = (u64, Result<Vec<Entry>, String>, Option<u64>);
-/// The Git status of the open folder's working tree, tagged with the request it answers.
-type GitResult = (u64, Option<git::Status>);
+/// What a Git request found out, tagged with the request it answers.
+type GitResult = (u64, GitUpdate);
+
+enum GitUpdate {
+    /// Still in the working tree whose summary is up: nothing to change.
+    Keep,
+    /// The folder's summary, `None` outside a working tree.
+    Set(Option<git::Status>),
+}
 /// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
 type VisibleCache = ((u64, bool, String), Rc<[usize]>);
 
@@ -233,12 +240,17 @@ pub struct Explorer {
     list_rx: Receiver<ListResult>,
     list_request: u64,
     listing: bool,
-    /// The open folder's Git status, asked for on a worker thread whenever the
-    /// folder is listed (`git status` can take a while in a big repository).
+    /// The open folder's Git status. `git status` can take a while in a big
+    /// repository, so it runs on a worker thread, and the summary is kept
+    /// while you move around inside the working tree: it is asked for again
+    /// only when you enter one, or by a refresh, a file operation and the
+    /// like (`reload`).
     git: Option<git::Status>,
     git_tx: Sender<GitResult>,
     git_rx: Receiver<GitResult>,
     git_request: u64,
+    /// The request whose summary `git` holds; older answers are dropped.
+    git_applied: u64,
     sort: SortSpec,
     settings: Settings,
     selection: BTreeSet<PathBuf>,
@@ -335,6 +347,7 @@ impl Explorer {
             git_tx,
             git_rx,
             git_request: 0,
+            git_applied: 0,
             sort: SortSpec::default(),
             settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: true, color_names: true },
             selection: BTreeSet::new(),
@@ -642,9 +655,15 @@ impl Explorer {
         self.history.current()
     }
 
+    /// Lists the open folder and asks for its Git status afresh.
+    fn reload(&mut self) {
+        self.reload_list();
+        self.reload_git(false);
+    }
+
     /// Lists the open folder on a worker thread; `poll_lists` applies the
     /// result. The current entries stay up until then.
-    fn reload(&mut self) {
+    fn reload_list(&mut self) {
         self.list_request += 1;
         self.listing = true;
         let (request, dir, show_hidden) = (self.list_request, self.current().to_path_buf(), self.settings.show_hidden);
@@ -655,21 +674,42 @@ impl Explorer {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// Asks a worker thread for the open folder's Git status. With `reuse`
+    /// (after navigating) the summary that is up stays if the folder is in the
+    /// same working tree.
+    fn reload_git(&mut self, reuse: bool) {
         self.git_request += 1;
+        let known = self.git.as_ref().filter(|_| reuse).map(|g| g.root.clone());
         let (request, dir) = (self.git_request, self.current().to_path_buf());
         let (tx, ctx) = (self.git_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            if tx.send((request, git::status(&dir))).is_ok() {
+            let update = match known {
+                Some(root) if git::repo_root(&dir).as_ref() == Some(&root) => GitUpdate::Keep,
+                _ => GitUpdate::Set(git::status(&dir)),
+            };
+            if tx.send((request, update)).is_ok() {
                 ctx.request_repaint();
             }
         });
     }
 
     fn poll_git(&mut self) {
-        while let Ok((request, status)) = self.git_rx.try_recv() {
-            if request == self.git_request {
-                self.git = status;
-            }
+        while let Ok(result) = self.git_rx.try_recv() {
+            self.git_received(result);
+        }
+    }
+
+    /// A summary replaces the one up unless a newer one has been applied
+    /// already. A `Keep` changes nothing, so it can't cancel a refresh that
+    /// is still running.
+    fn git_received(&mut self, (request, update): GitResult) {
+        if let GitUpdate::Set(status) = update
+            && request > self.git_applied
+        {
+            self.git = status;
+            self.git_applied = request;
         }
     }
 
@@ -759,7 +799,8 @@ impl Explorer {
         if self.git.as_ref().is_some_and(|g| !self.current().starts_with(&g.root)) {
             self.git = None;
         }
-        self.reload();
+        self.reload_list();
+        self.reload_git(true);
         if !std::mem::take(&mut self.navigating_from_tree) {
             self.sync_tree();
         }
@@ -3186,6 +3227,49 @@ mod clipboard {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The Git summary is asked for when a working tree is entered or the
+    /// folder is reloaded, not again for every folder inside it.
+    #[test]
+    fn the_git_summary_is_kept_while_moving_inside_a_working_tree() {
+        let Some(exe) = git::executable() else { return };
+        let dir = std::env::temp_dir().join(format!("macsplorer-git-cache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        assert!(std::process::Command::new(exe).args(["init", "-q"]).current_dir(&dir).status().unwrap().success());
+        fs::write(dir.join("a.txt"), "x").unwrap();
+
+        let untracked = |app: &Explorer| app.git.as_ref().map(|g| g.working.added);
+        let next = |app: &mut Explorer| {
+            let result = app.git_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("git answer");
+            app.git_received(result);
+        };
+        let mut app = Explorer::new(egui::Context::default(), dir.clone());
+        app.finish_listing();
+        while app.git_applied != app.git_request {
+            next(&mut app);
+        }
+        assert_eq!(untracked(&app), Some(1));
+
+        // Moving into a subfolder keeps the summary, even though the tree changed.
+        fs::write(dir.join("b.txt"), "x").unwrap();
+        app.navigate(dir.join("sub"));
+        app.finish_listing();
+        next(&mut app);
+        assert_eq!(untracked(&app), Some(1));
+
+        // A reload asks again.
+        app.reload();
+        while app.git_applied != app.git_request {
+            next(&mut app);
+        }
+        assert_eq!(untracked(&app), Some(2));
+
+        // Leaving the working tree drops it at once.
+        app.navigate(dir.parent().unwrap().to_path_buf());
+        assert_eq!(untracked(&app), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Another Macsplorer window is another process, so all it shares with this
     /// one is the pasteboard.
     #[test]
@@ -3348,9 +3432,9 @@ mod screenshot {
 
     /// Waits for the Git status of the open folder, which arrives on a worker thread.
     fn finish_git(app: &mut Explorer) {
-        while let Ok((request, status)) = app.git_rx.recv_timeout(std::time::Duration::from_secs(10)) {
-            if request == app.git_request {
-                app.git = status;
+        while let Ok(result) = app.git_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            app.git_received(result);
+            if app.git_applied == app.git_request {
                 break;
             }
         }
