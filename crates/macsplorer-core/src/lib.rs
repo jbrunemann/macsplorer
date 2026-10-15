@@ -8,6 +8,7 @@ pub mod columns;
 pub mod copy_path;
 pub mod dirscan;
 pub mod fileops;
+pub mod git;
 pub mod highlight;
 pub mod history;
 pub mod isearch;

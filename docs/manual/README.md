@@ -48,7 +48,7 @@ From top to bottom:
 | **Search box** | To the right of the address bar. Shows only the items whose name contains what you type. |
 | **Folders pane** | On the left: your favorite places, your disks, and all the folders on them as a tree. |
 | **File list** | On the right: the contents of the current folder. |
-| **Status bar** | At the bottom: how many items there are, how big they are, how much free space the disk has, and your computer's name. |
+| **Status bar** | At the bottom: how many items there are, how big they are, how much free space the disk has, and your computer's name. Inside a Git repository it also shows the branch and the state of the repository (see [Git repositories](#git-repositories)). |
 
 ## 3. Getting around
 
@@ -113,6 +113,7 @@ The available columns are:
 | **Created** | When it was made. |
 | **Accessed** | When it was last opened. |
 | **Owner**, **Group** | Which user and group it belongs to. |
+| **Branch** | The Git branch of a folder that is a Git repository, with the branch symbol in front. Blank for everything else. |
 
 Choose **More...** at the bottom of that menu for the **Column Settings** window. There you can check and uncheck columns, put them in a different order with **Move Up** and **Move Down**, and type an exact width for the selected column.
 
@@ -137,6 +138,19 @@ Small icons with names, arranged in columns that run from top to bottom. When th
 - **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them. A folder that holds a Git repository shows a small branch symbol.
 - **Paper pages** are files. A colored mark on the page shows the kind of file, for example a spreadsheet, a picture, a PDF or a program's source code. A plain page with gray lines is a file of a kind Macsplorer doesn't know.
 - **Apps**, and anything you have given a custom icon in Finder, show their real icon.
+
+### Git repositories
+
+A folder that holds a Git repository shows a small branch symbol on its icon. While you are anywhere inside a repository, the status bar gets an extra pane with the branch symbol and a summary in the format of [posh-git](https://github.com/dahlbyk/posh-git#git-status-summary-information):
+
+`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`
+
+- The branch name comes first, or `(abc1234...)` when you are not on a branch. While a merge or rebase is under way it says so, for example `main|MERGING`.
+- Next to the branch: `≡` means it matches its remote, `↑3` that you are 3 commits ahead (time to push), `↓2` that you are 2 behind (time to pull), `↓2 ↑3` both, and `×` that its remote branch is gone. Nothing means it has no remote.
+- Before the `|` are the staged changes (added `+`, modified `~`, removed `-`, conflicted `!`), after it the ones that are not staged yet. Files Git doesn't know yet count as added.
+- A final `!` says there are changes that are not staged, `~` that everything changed is staged.
+
+The summary and the **Branch** column need Git to be installed. Without it they are simply left out. The summary is refreshed whenever the folder is (**View › Refresh**, or after you change something here).
 
 ### Colored names
 

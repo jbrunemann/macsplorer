@@ -18,6 +18,7 @@ use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{copy_into, move_into};
+use macsplorer_core::git;
 use macsplorer_core::history::History;
 use macsplorer_core::isearch::{self, IncrementalSearch};
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
@@ -35,7 +36,7 @@ use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
 use crate::column_dialog::{self, ColumnDialog};
 use crate::pasteboard::{self, Pasteboard};
-use crate::icons::{FileIcons, IconState};
+use crate::icons::{self, FileIcons, IconState};
 use crate::locale;
 use crate::open_with;
 use crate::platform;
@@ -50,8 +51,15 @@ const TREE_ROW_HEIGHT: f32 = 18.0;
 const TREE_INDENT: f32 = 19.0;
 
 type LoadResult = (PathBuf, bool, Result<Vec<Node>, String>);
+/// The Git branch glyph beside text (status bar, Branch column): the room
+/// it takes and how much `icons::paint_git_branch` enlarges it from its
+/// 16 px folder size.
+const GIT_ICON_WIDTH: f32 = 12.0;
+const GIT_ICON_SCALE: f32 = 1.6;
 /// A details-view listing, tagged with the request it answers.
 type ListResult = (u64, Result<Vec<Entry>, String>, Option<u64>);
+/// The Git status of the open folder's working tree, tagged with the request it answers.
+type GitResult = (u64, Option<git::Status>);
 /// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
 type VisibleCache = ((u64, bool, String), Rc<[usize]>);
 
@@ -225,6 +233,12 @@ pub struct Explorer {
     list_rx: Receiver<ListResult>,
     list_request: u64,
     listing: bool,
+    /// The open folder's Git status, asked for on a worker thread whenever the
+    /// folder is listed (`git status` can take a while in a big repository).
+    git: Option<git::Status>,
+    git_tx: Sender<GitResult>,
+    git_rx: Receiver<GitResult>,
+    git_request: u64,
     sort: SortSpec,
     settings: Settings,
     selection: BTreeSet<PathBuf>,
@@ -302,6 +316,7 @@ impl Explorer {
     pub fn new(ctx: egui::Context, start: PathBuf) -> Self {
         let (load_tx, load_rx) = channel();
         let (list_tx, list_rx) = channel();
+        let (git_tx, git_rx) = channel();
         let (eject_tx, eject_rx) = channel();
         let (op_tx, op_rx) = channel();
         let mut app = Self {
@@ -316,6 +331,10 @@ impl Explorer {
             list_rx,
             list_request: 0,
             listing: false,
+            git: None,
+            git_tx,
+            git_rx,
+            git_request: 0,
             sort: SortSpec::default(),
             settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: true, color_names: true },
             selection: BTreeSet::new(),
@@ -636,6 +655,22 @@ impl Explorer {
                 ctx.request_repaint();
             }
         });
+        self.git_request += 1;
+        let (request, dir) = (self.git_request, self.current().to_path_buf());
+        let (tx, ctx) = (self.git_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            if tx.send((request, git::status(&dir))).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn poll_git(&mut self) {
+        while let Ok((request, status)) = self.git_rx.try_recv() {
+            if request == self.git_request {
+                self.git = status;
+            }
+        }
     }
 
     fn poll_lists(&mut self) {
@@ -720,6 +755,10 @@ impl Explorer {
         self.entries.clear();
         self.entries_version += 1;
         self.load_error = None;
+        // Inside the same working tree the summary stays up until the new one arrives.
+        if self.git.as_ref().is_some_and(|g| !self.current().starts_with(&g.root)) {
+            self.git = None;
+        }
         self.reload();
         if !std::mem::take(&mut self.navigating_from_tree) {
             self.sync_tree();
@@ -1771,6 +1810,14 @@ impl Explorer {
                         row.col(|ui| {
                             if column != Column::Name {
                                 let text = cell_text(entry, column);
+                                if column == Column::Branch && entry.branch.is_some() {
+                                    ui.add_space(4.0);
+                                    let (icon, _) = ui.allocate_exact_size(egui::vec2(GIT_ICON_WIDTH, 16.0), Sense::hover());
+                                    icons::paint_git_branch(ui.painter(), icon.center(), GIT_ICON_SCALE, theme::color::active_caption());
+                                    ui.add_space(2.0);
+                                    ui.label(text);
+                                    return;
+                                }
                                 if column.right_aligned() {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         ui.add_space(6.0);
@@ -1933,6 +1980,8 @@ impl Explorer {
                     Column::Name => width(e.display_name(self.settings.show_extensions).into()) + 4.0 + 16.0 + 3.0 + 2.0 + 6.0,
                     _ => match cell_text(e, column) {
                         t if t.is_empty() => 0.0,
+                        // The branch glyph and its padding come first.
+                        t if column == Column::Branch => width(t) + 12.0 + GIT_ICON_WIDTH + 2.0,
                         t => width(t) + 12.0,
                     },
                 }
@@ -2230,13 +2279,35 @@ impl Explorer {
         ui.allocate_rect(rect, Sense::hover());
         let size_w = 90.0;
         let place_w = 150.0;
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        // The Git summary gets a pane of its own, sized to its text, while the
+        // open folder is in a working tree.
+        let git = self.git.as_ref().map(|g| {
+            let segments = g.segments();
+            let text_w: f32 = ui.fonts_mut(|f| {
+                segments.iter().map(|s| f.layout_no_wrap(s.text.clone(), font.clone(), theme::color::text()).size().x).sum()
+            });
+            // Icon, then the text, with 4 px on each side.
+            let width = (4.0 + GIT_ICON_WIDTH + 4.0 + text_w + 6.0).min(rect.width() * 0.5);
+            (segments, width)
+        });
         let right = egui::Rect::from_min_max(egui::pos2(rect.right() - place_w, rect.top()), rect.max);
         let mid = egui::Rect::from_min_max(egui::pos2(right.left() - 2.0 - size_w, rect.top()), egui::pos2(right.left() - 2.0, rect.bottom()));
-        let left = egui::Rect::from_min_max(rect.min, egui::pos2(mid.left() - 2.0, rect.bottom()));
+        let git_pane = git.as_ref().map(|(_, w)| egui::Rect::from_min_max(egui::pos2(mid.left() - 2.0 - w, rect.top()), egui::pos2(mid.left() - 2.0, rect.bottom())));
+        let left = egui::Rect::from_min_max(rect.min, egui::pos2(git_pane.map_or(mid.left(), |r| r.left()) - 2.0, rect.bottom()));
         let p = ui.painter();
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        for r in [left, mid, right] {
+        for r in [left, mid, right].into_iter().chain(git_pane) {
             theme::bevel(p, r, Bevel::SunkenThin);
+        }
+        if let (Some((segments, _)), Some(pane)) = (git, git_pane) {
+            let clip = p.with_clip_rect(pane.shrink(2.0));
+            let icon = egui::pos2(pane.left() + 4.0 + GIT_ICON_WIDTH / 2.0, pane.center().y);
+            icons::paint_git_branch(&clip, icon, GIT_ICON_SCALE, theme::color::active_caption());
+            let mut x = pane.left() + 4.0 + GIT_ICON_WIDTH + 4.0;
+            for s in segments {
+                let rect = clip.text(egui::pos2(x, pane.center().y), egui::Align2::LEFT_CENTER, s.text, font.clone(), theme::color::git(s.tone));
+                x = rect.right();
+            }
         }
         let color = if self.status.is_some() { theme::color::error_text() } else { theme::color::text() };
         p.with_clip_rect(left.shrink(2.0)).text(egui::pos2(left.left() + 4.0, left.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), color);
@@ -2257,6 +2328,7 @@ impl eframe::App for Explorer {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.poll_loads();
         self.poll_lists();
+        self.poll_git();
         self.poll_ejects();
         self.poll_ops();
         self.refresh_clipboard();
@@ -2643,6 +2715,7 @@ fn cell_text(entry: &Entry, column: Column) -> String {
         Column::Accessed => date(entry.accessed),
         Column::Owner => entry.owner.clone(),
         Column::Group => entry.group.clone(),
+        Column::Branch => entry.branch.clone().unwrap_or_default(),
     }
 }
 
@@ -3228,7 +3301,7 @@ mod screenshot {
         crate::locale::install();
         let dir = std::env::temp_dir().join("macsplorer-screenshot").join("My Documents");
         let _ = fs::remove_dir_all(&dir);
-        for d in ["Projects/.git", "Projects/2026", "Projects/Archive", "Pictures", "Setup.app", ".config"] {
+        for d in ["Projects/2026", "Projects/Archive", "Pictures", "Setup.app", ".config"] {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
         for name in ["Projects/plan.txt", "Projects/2026/budget.xlsx", "Projects/Archive/old.zip"] {
@@ -3238,6 +3311,7 @@ mod screenshot {
             fs::write(dir.join(name), vec![b'x'; 1_500]).unwrap();
         }
         fs::write(dir.join(".gitignore"), "target\n").unwrap();
+        make_repo(&dir.join("Projects"));
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(dir.join("script.sh"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -3247,6 +3321,40 @@ mod screenshot {
         // A relative link to a file.
         let _ = std::os::unix::fs::symlink("notes.txt", dir.join("Link to notes.txt"));
         dir
+    }
+
+    /// Turns `dir` into a Git repository on `main` with one change staged, one
+    /// not staged and a file that isn't tracked. Falls back to an empty `.git`
+    /// folder (which still gets the folder emblem) if git can't run.
+    fn make_repo(dir: &Path) {
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(["-c", "user.name=Shot", "-c", "user.email=shot@example.com", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        let ok = git(&["init", "-q", "-b", "main"])
+            && git(&["add", "."])
+            && git(&["commit", "-q", "-m", "first"])
+            && fs::write(dir.join("plan.txt"), "changed\n").is_ok()
+            && fs::write(dir.join("2026/budget.xlsx"), "changed\n").is_ok()
+            && git(&["add", "2026/budget.xlsx"])
+            && fs::write(dir.join("todo.txt"), "new\n").is_ok();
+        if !ok {
+            let _ = fs::create_dir_all(dir.join(".git"));
+        }
+    }
+
+    /// Waits for the Git status of the open folder, which arrives on a worker thread.
+    fn finish_git(app: &mut Explorer) {
+        while let Ok((request, status)) = app.git_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            if request == app.git_request {
+                app.git = status;
+                break;
+            }
+        }
     }
 
     fn shoot(name: &str, size: egui::Vec2, setup: impl FnOnce(&mut Explorer)) {
@@ -3287,6 +3395,26 @@ mod screenshot {
         shoot("window", egui::vec2(900.0, 560.0), |app| {
             let pick = app.entries.iter().find(|e| e.name == "main.rs").map(|e| e.path.clone());
             app.selection.extend(pick);
+        });
+    }
+
+    /// The Git summary in the status bar, inside a working tree.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn git_status() {
+        shoot("git-status", egui::vec2(900.0, 400.0), |app| {
+            app.navigate(app.current().join("Projects"));
+            app.finish_listing();
+            finish_git(app);
+        });
+    }
+
+    /// The Branch column, beside a folder that is a working tree.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn git_branch_column() {
+        shoot("git-branch-column", egui::vec2(900.0, 400.0), |app| {
+            app.columns.toggle(Column::Branch);
         });
     }
 

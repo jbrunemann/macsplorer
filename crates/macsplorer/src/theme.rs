@@ -106,6 +106,20 @@ pub mod color {
     pub fn archive() -> Color32 {
         pick(rgb(0x80, 0x00, 0x00), rgb(0xFF, 0x6B, 0x6B))
     }
+    /// The Git summary's colors. posh-git uses console colors (cyan, green,
+    /// red, yellow, dark green, dark red); these are darker, to read on the
+    /// button face, and lighter again in the dark palette.
+    pub fn git(tone: macsplorer_core::git::Tone) -> Color32 {
+        use macsplorer_core::git::Tone;
+        match tone {
+            Tone::Delimiter | Tone::Diverged => pick(rgb(0x80, 0x80, 0x00), rgb(0xE0, 0xD0, 0x50)),
+            Tone::Branch => link(),
+            Tone::Ahead => pick(rgb(0x00, 0x90, 0x00), rgb(0x4C, 0xD9, 0x4C)),
+            Tone::Behind => pick(rgb(0xC0, 0x00, 0x00), rgb(0xFF, 0x6B, 0x6B)),
+            Tone::Index => pick(rgb(0x00, 0x60, 0x00), rgb(0x40, 0xB0, 0x40)),
+            Tone::Working => pick(rgb(0x80, 0x00, 0x00), rgb(0xE0, 0x60, 0x60)),
+        }
+    }
     /// The status bar message for a failed operation.
     pub fn error_text() -> Color32 {
         pick(rgb(0x80, 0x00, 0x00), rgb(0xFF, 0x6B, 0x6B))

@@ -43,6 +43,8 @@ pub struct Entry {
     pub custom_icon: bool,
     /// A folder that is the top of a Git working tree (see [`is_git_repo`]).
     pub git_repo: bool,
+    /// For a [`git_repo`](Self::git_repo): its branch, as `git::branch_label` writes it.
+    pub branch: Option<String>,
     /// The item is a symlink or Finder alias.
     pub link: Option<Link>,
 }
@@ -142,6 +144,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
             RenameKind::Folder
         };
         let flags = finder_flags(&path);
+        let git_repo = kind == RenameKind::Folder && is_git_repo(&path);
         let link = match (symlink, broken) {
             (true, true) => Some(Link::Broken),
             (true, false) => Some(Link::Symlink),
@@ -159,7 +162,8 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
             group: group_name(own.gid()),
             comment: comment(&path),
             custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
-            git_repo: kind == RenameKind::Folder && is_git_repo(&path),
+            git_repo,
+            branch: git_repo.then(|| crate::git::branch_label(&path)).flatten(),
             link,
             name,
             path,
@@ -374,6 +378,7 @@ pub fn sort_entries(entries: &mut [Entry], spec: SortSpec) {
             Column::Accessed => a.accessed.cmp(&b.accessed),
             Column::Owner => names(&a.owner, &b.owner),
             Column::Group => names(&a.group, &b.group),
+            Column::Branch => names(a.branch.as_deref().unwrap_or(""), b.branch.as_deref().unwrap_or("")),
         };
         let by_column = if spec.ascending { by_column } else { by_column.reverse() };
         by_column.then_with(|| names(&a.name, &b.name))
@@ -485,6 +490,7 @@ mod tests {
             hidden: false,
             custom_icon: false,
             git_repo: false,
+            branch: None,
             link: None,
         }
     }

@@ -241,6 +241,7 @@ impl Properties {
             hidden: false,
             custom_icon: false,
             git_repo: false,
+            branch: None,
             // One lstat for a dialog the user just asked for.
             link: fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()).then_some(Link::Symlink),
         }

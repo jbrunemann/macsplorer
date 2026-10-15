@@ -127,7 +127,7 @@ package have it) or egui's default font is used.
 - **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
 - Menus: File › Properties, Close; Edit › Undo, Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh; Help › Open config file, About.
 - Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane; **Views** picks Large Icons, List or Details.
-- Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name.
+- Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name. Inside a Git working tree a pane with the branch glyph and a posh-git style summary (`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, same symbols and colors; `macsplorer-core::git`, from posh-git's `GitPrompt.ps1`/`GitUtils.ps1`) is added, filled in by `git status` on a worker thread. A **Branch** column (header menu) shows the branch of folders that are working trees. Both are left out when no git is found (`git::executable`: `PATH`, Homebrew and `/usr/bin`; macOS's `/usr/bin/git` stub only counts once the developer tools are installed, so it never pops up an install prompt).
 
 | Shortcut | Action |
 |---|---|

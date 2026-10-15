@@ -244,7 +244,7 @@ impl FileIcons {
 /// centers on a 512 unit box). The rings and strokes are drawn smaller than
 /// in the original so the 16 px folder leaves room around them; `scale`
 /// enlarges all pixel sizes.
-fn paint_git_branch(painter: &egui::Painter, center: egui::Pos2, scale: f32, color: Color32) {
+pub fn paint_git_branch(painter: &egui::Painter, center: egui::Pos2, scale: f32, color: Color32) {
     /// The commits' vertical distance (units 96..416) in pixels of the 16 px folder.
     const SPAN: f32 = 3.6;
     /// Stretches the layout sideways so the curve has room at this size.

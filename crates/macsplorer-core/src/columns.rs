@@ -27,12 +27,14 @@ pub enum Column {
     Accessed,
     Owner,
     Group,
+    /// The Git branch of a folder that is a working tree. Not from Explorer.
+    Branch,
 }
 
 impl Column {
     /// Every column, in the folder's own order (Windows 2000's `c_fs_cols`
     /// order for the first eight, as its header menu lists them).
-    pub const ALL: [Column; 10] = [
+    pub const ALL: [Column; 11] = [
         Column::Name,
         Column::Size,
         Column::Type,
@@ -43,6 +45,7 @@ impl Column {
         Column::Accessed,
         Column::Owner,
         Column::Group,
+        Column::Branch,
     ];
 
     /// Shown in a new window. Windows shows Type where macsplorer shows
@@ -61,6 +64,7 @@ impl Column {
             Column::Accessed => "Accessed",
             Column::Owner => "Owner",
             Column::Group => "Group",
+            Column::Branch => "Branch",
         }
     }
 
@@ -75,6 +79,7 @@ impl Column {
             Column::Attributes => 80.0,
             Column::Comment => 180.0,
             Column::Owner | Column::Group => 90.0,
+            Column::Branch => 110.0,
         }
     }
 
@@ -87,6 +92,12 @@ impl Column {
     /// "More..." (`SHCOLSTATE_SECONDARYUI`).
     pub fn secondary(self) -> bool {
         matches!(self, Column::Owner | Column::Group)
+    }
+
+    /// False for Branch on a machine without git, where the column is left
+    /// out everywhere. (Tests don't depend on the machine having git.)
+    pub fn available(self) -> bool {
+        cfg!(test) || self != Column::Branch || crate::git::executable().is_some()
     }
 
     /// Can't be hidden (`CM_STATE_ALWAYSVISIBLE`).
@@ -112,6 +123,7 @@ impl Column {
             Column::Accessed => "accessed",
             Column::Owner => "owner",
             Column::Group => "group",
+            Column::Branch => "branch",
         }
     }
 
@@ -163,7 +175,7 @@ impl ColumnSet {
     }
 
     pub fn is_visible(&self, column: Column) -> bool {
-        self.shown[column.index()]
+        self.shown[column.index()] && column.available()
     }
 
     pub fn width(&self, column: Column) -> f32 {
@@ -187,7 +199,7 @@ impl ColumnSet {
     pub fn menu(&self) -> (Vec<MenuItem>, bool) {
         let mut items = vec![MenuItem { column: Column::Name, checked: true, enabled: false }];
         let mut more = false;
-        for &column in self.order.iter().filter(|&&c| c != Column::Name) {
+        for &column in self.order.iter().filter(|&&c| c != Column::Name && c.available()) {
             let checked = self.is_visible(column);
             if column.secondary() && !checked || items.len() >= MENU_LIMIT {
                 more = true;
@@ -268,7 +280,7 @@ impl ColumnSet {
     /// shown columns checked, left to right, then the hidden ones unchecked
     /// and sorted by caption.
     pub fn dialog_rows(&self) -> Vec<(Column, bool)> {
-        let mut hidden: Vec<Column> = self.order.iter().copied().filter(|&c| !self.is_visible(c)).collect();
+        let mut hidden: Vec<Column> = self.order.iter().copied().filter(|&c| c.available() && !self.is_visible(c)).collect();
         hidden.sort_by_key(|c| c.caption().to_lowercase());
         self.visible().into_iter().map(|c| (c, true)).chain(hidden.into_iter().map(|c| (c, false))).collect()
     }
@@ -385,7 +397,7 @@ mod tests {
         let set = ColumnSet::default();
         let (items, more) = set.menu();
         let captions: Vec<_> = items.iter().map(|i| i.column.caption()).collect();
-        assert_eq!(captions, ["Name", "Size", "Type", "Modified", "Attributes", "Comment", "Created", "Accessed"]);
+        assert_eq!(captions, ["Name", "Size", "Type", "Modified", "Attributes", "Comment", "Created", "Accessed", "Branch"]);
         assert_eq!(items[0], MenuItem { column: Column::Name, checked: true, enabled: false });
         assert!(items[1].checked && !items[2].checked && items[4].checked);
         assert!(more);
@@ -416,7 +428,7 @@ mod tests {
         // The menu order didn't move.
         let (items, _) = set.menu();
         let captions: Vec<_> = items.iter().map(|i| i.column.caption()).collect();
-        assert_eq!(captions, ["Name", "Size", "Type", "Modified", "Attributes", "Comment", "Created", "Accessed"]);
+        assert_eq!(captions, ["Name", "Size", "Type", "Modified", "Attributes", "Comment", "Created", "Accessed", "Branch"]);
     }
 
     #[test]
@@ -454,7 +466,7 @@ mod tests {
         assert!(!back.is_visible(Column::Type));
         assert_eq!(back.width(Column::Type), Column::Type.default_width());
         // They are all still in the header menu or under More...
-        assert_eq!(back.menu().0.len(), 8);
+        assert_eq!(back.menu().0.len(), 9);
     }
 
     #[test]
@@ -523,6 +535,7 @@ mod tests {
                 ("Size", true),
                 ("Accessed", false),
                 ("Attributes", false),
+                ("Branch", false),
                 ("Comment", false),
                 ("Created", false),
                 ("Group", false),
