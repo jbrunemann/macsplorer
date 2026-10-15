@@ -41,9 +41,7 @@ Macsplorer is a file browser for people who think better with a folder tree on t
   yellow folder, so you find them the way you already know.
 - **Status bar that tells you something.** Object count, total size of the
   selection (or the folder), the free space of the disk you're on and the name
-  of your machine, like the original. Inside a Git repository it adds the
-  branch and a posh-git style summary, `[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, and a
-  Branch column shows which folders are repositories.
+  of your machine, like the original.
 - **Never freezes on a big folder.** Listings run on background threads, so a
   huge directory or a slow volume doesn't lock up the window.
 - **Hidden files and extensions on your terms.** Toggle both from the View
