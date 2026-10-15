@@ -14,14 +14,15 @@ pub const CMD: &str = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
 
 /// The New Window shortcut as menus print it. Explorer's is Win+E, so Linux
 /// uses the Super key (egui has no modifier flag for it: see `Explorer::keyboard`).
-pub const NEW_WINDOW_KEYS: &str = if cfg!(target_os = "macos") { "⌘E" } else { "Super+E" };
+pub const NEW_WINDOW_KEYS: &str = if cfg!(target_os = "macos") { "⌘\u{2009}E" } else { "Super+E" };
 
 /// A keyboard shortcut as menus print it: `⌥⌘C` on macOS, `Ctrl+Alt+C` elsewhere.
 /// `key` is the key's own label (`"C"`, `"⌫"`); `alt` adds Option (Alt).
 pub fn shortcut(alt: bool, key: &str) -> String {
     match (cfg!(target_os = "macos"), alt) {
-        (true, true) => format!("⌥{CMD}{key}"),
+        (true, true) => format!("⌥\u{2009}{CMD}\u{2009}{key}"),
         (_, true) => format!("{CMD}Alt+{key}"),
+        (true, false) => format!("{CMD}\u{2009}{key}"),
         _ => format!("{CMD}{key}"),
     }
 }

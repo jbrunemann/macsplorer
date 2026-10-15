@@ -134,6 +134,12 @@ pub fn bold_family() -> FontFamily {
     FontFamily::Name("bold".into())
 }
 
+/// Menu shortcut text: the key symbols (⌘ ⌥ ⌫) come from the symbol font so they
+/// share one design, the letters from the usual stack.
+pub fn shortcut_family() -> FontFamily {
+    FontFamily::Name("shortcut".into())
+}
+
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, bold_family())
 }
@@ -158,6 +164,16 @@ pub fn install(ctx: &egui::Context) {
         fonts.font_data.insert("symbols".into(), Arc::new(FontData::from_owned(bytes)));
         fonts.families.entry(FontFamily::Proportional).or_default().push("symbols".into());
     }
+    // Apple Symbols draws its glyphs small next to Tahoma: a scaled copy for the shortcuts.
+    let mut shortcut = Vec::new();
+    if let Some(bytes) = platform::SYMBOL_FONT.iter().find_map(|path| std::fs::read(path).ok()) {
+        let tweak = egui::FontTweak { scale: 1.3, y_offset_factor: 0.12, ..Default::default() };
+        fonts.font_data.insert("shortcut-symbols".into(), Arc::new(FontData::from_owned(bytes).tweak(tweak)));
+        shortcut.extend(fonts.families.get(&FontFamily::Proportional).and_then(|f| f.first()).cloned().filter(|k| k == "tahoma"));
+        shortcut.push("shortcut-symbols".to_string());
+    }
+    shortcut.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
+    fonts.families.insert(shortcut_family(), shortcut);
     // Bold falls back to the regular stack (Tahoma, then egui defaults, then symbols).
     let regular = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     bold_fonts.extend(regular);

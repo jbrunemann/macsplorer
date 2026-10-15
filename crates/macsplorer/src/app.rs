@@ -2951,7 +2951,7 @@ fn place_label(p: &Path) -> String {
 /// A menu entry with its keyboard shortcut at the right edge in the weak
 /// (muted) text color, like macOS menus.
 fn menu_item(label: &str, keys: String) -> egui::Button<'_> {
-    egui::Button::new(label).shortcut_text(keys)
+    egui::Button::new(label).shortcut_text(RichText::new(keys).family(theme::shortcut_family()))
 }
 
 fn view_choices(ui: &mut Ui, current: ViewMode, actions: &mut Vec<Action>) {
