@@ -41,7 +41,9 @@ Macsplorer is a file browser for people who think better with a folder tree on t
   yellow folder, so you find them the way you already know.
 - **Status bar that tells you something.** Object count, total size of the
   selection (or the folder), the free space of the disk you're on and the name
-  of your machine, like the original.
+  of your machine, like the original. Inside a Git repository it adds the
+  branch and a posh-git style summary, `[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, and a
+  Branch column shows which folders are repositories.
 - **Never freezes on a big folder.** Listings run on background threads, so a
   huge directory or a slow volume doesn't lock up the window.
 - **Hidden files and extensions on your terms.** Toggle both from the View
@@ -105,7 +107,7 @@ package have it) or egui's default font is used.
 
 ## Features
 
-- **Large Icons**, **List** and **Details** views (View menu). Details has Name / Size / Type / Modified columns; click a header to sort, click again to reverse. Drag a divider to resize a column (Esc cancels), double-click it to fit the contents; widths apply to every folder until the window closes. *Explorer-derived* (comctl32 `SysHeader32`).
+- **Large Icons**, **List** and **Details** views (View menu). Details shows Name / Size / Modified / Attributes and, from the header's right-click menu, Type, Comment, Created, Accessed, Owner, Group and Branch (Column Settings under More...); click a header to sort, click again to reverse. Drag a divider to resize a column (Esc cancels), double-click it to fit the contents; widths apply to every folder until the window closes. *Explorer-derived* (comctl32 `SysHeader32`).
 - Large Icons follows the Windows 2000 list view: 75 px slots, names wrapped under the icon and cut to two lines (the focused item shows its full name), and arrow keys that move to the nearest icon in that direction. *Explorer-derived* (comctl32 `SysListView32`).
 - List fills columns top to bottom with small icons, every column as wide as the longest name, and scrolls sideways (the mouse wheel too). ↑↓ step through the items, ←→ jump a column. *Explorer-derived* (same source).
 - Folders first, natural name sorting (`file2` before `file10`). *Explorer-derived* (`StrCmpLogicalW`); turn it off under View.
@@ -127,7 +129,8 @@ package have it) or egui's default font is used.
 - **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
 - Menus: File › Properties, Close; Edit › Undo, Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh; Help › Open config file, About.
 - Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane; **Views** picks Large Icons, List or Details.
-- Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name. Inside a Git working tree a pane with the branch glyph (vector shapes after Ionicons' `git-branch-outline`, MIT, so Linux gets it too) and a posh-git style summary (`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, same symbols and colors; `macsplorer-core::git`, from posh-git's `GitPrompt.ps1`/`GitUtils.ps1`) is added, filled in by `git status` on a worker thread when a working tree is entered or the folder is reloaded (Refresh, file operations), and kept while moving around inside it; there is no file watching yet. A **Branch** column (header menu) shows the branch of folders that are working trees. Both are left out when no git is found (`git::executable`: `PATH`, Homebrew and `/usr/bin`; macOS's `/usr/bin/git` stub only counts once the developer tools are installed, so it never pops up an install prompt).
+- Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name.
+- **Git**: inside a Git working tree the status bar gets a pane with the branch glyph (vector shapes after Ionicons' `git-branch-outline`, MIT, so Linux gets it too) and a posh-git style summary (`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, same symbols and colors; `macsplorer-core::git`, from posh-git's `GitPrompt.ps1`/`GitUtils.ps1`). `git status` runs on a worker thread when a working tree is entered or the folder is reloaded (Refresh, file operations) and the answer is kept while moving around inside it; there is no file watching yet. The **Branch** column (header menu) shows the branch of folders that are working trees. Both are left out when no git is found (`git::executable`: `PATH`, Homebrew and `/usr/bin`; macOS's `/usr/bin/git` stub only counts once the developer tools are installed, so it never pops up an install prompt).
 
 | Shortcut | Action |
 |---|---|
@@ -195,4 +198,7 @@ Branch column shows them.
 
 MIT licensed. The Seti font, theme map and the extension → language table come
 from the VS Code repository (MIT; see `assets/seti/` for licenses). Refresh
-them with `scripts/update-seti.py`.
+them with `scripts/update-seti.py`. The branch glyph is drawn after Ionicons'
+`git-branch-outline` (MIT), and the Git status summary follows the format and
+counting rules of [posh-git](https://github.com/dahlbyk/posh-git) (MIT); no
+code from either is included.

@@ -50,6 +50,25 @@ From top to bottom:
 | **File list** | On the right: the contents of the current folder. |
 | **Status bar** | At the bottom: how many items there are, how big they are, how much free space the disk has, and your computer's name. Inside a Git repository it also shows the branch and the state of the repository (see [Git repositories](#git-repositories)). |
 
+### Git repositories
+
+While you are anywhere inside a Git repository, the status bar gets an extra pane with the branch symbol and a summary in the format of [posh-git](https://github.com/dahlbyk/posh-git#git-status-summary-information):
+
+`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`
+
+<img src="images/git-status.png" alt="The status bar inside a Git repository" width="900">
+
+- The branch name comes first, or `(abc1234...)` when you are not on a branch. While a merge or rebase is under way it says so, for example `main|MERGING`.
+- Next to the branch: `≡` means it matches its remote, `↑3` that you are 3 commits ahead (time to push), `↓2` that you are 2 behind (time to pull), `↓2 ↑3` both, and `×` that its remote branch is gone. Nothing means it has no remote.
+- Before the `|` are the staged changes (added `+`, modified `~`, removed `-`, conflicted `!`), after it the ones that are not staged yet. Files Git doesn't know yet count as added.
+- A final `!` says there are changes that are not staged, `~` that everything that changed is staged.
+
+To see which folders are Git repositories, turn on the **Branch** column (right-click a column heading, see [Details](#details)). It shows the branch of every folder that is a repository, and nothing for the rest.
+
+<img src="images/git-branch-column.png" alt="The Branch column" width="900">
+
+The summary and the **Branch** column need Git to be installed. Without it they are simply left out. The summary is worked out when you enter a repository and kept while you move around inside it, so big repositories stay quick. It is worked out again with **View › Refresh** or after you change something in Macsplorer. Changes made by other programs show up at the next refresh.
+
 ## 3. Getting around
 
 ### The Folders pane
@@ -138,19 +157,6 @@ Small icons with names, arranged in columns that run from top to bottom. When th
 - **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them.
 - **Paper pages** are files. A colored mark on the page shows the kind of file, for example a spreadsheet, a picture, a PDF or a program's source code. A plain page with gray lines is a file of a kind Macsplorer doesn't know.
 - **Apps**, and anything you have given a custom icon in Finder, show their real icon.
-
-### Git repositories
-
-The **Branch** column (add it from the column header's right-click menu) shows which folders are Git repositories and which branch they are on. While you are anywhere inside a repository, the status bar gets an extra pane with the branch symbol and a summary in the format of [posh-git](https://github.com/dahlbyk/posh-git#git-status-summary-information):
-
-`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`
-
-- The branch name comes first, or `(abc1234...)` when you are not on a branch. While a merge or rebase is under way it says so, for example `main|MERGING`.
-- Next to the branch: `≡` means it matches its remote, `↑3` that you are 3 commits ahead (time to push), `↓2` that you are 2 behind (time to pull), `↓2 ↑3` both, and `×` that its remote branch is gone. Nothing means it has no remote.
-- Before the `|` are the staged changes (added `+`, modified `~`, removed `-`, conflicted `!`), after it the ones that are not staged yet. Files Git doesn't know yet count as added.
-- A final `!` says there are changes that are not staged, `~` that everything changed is staged.
-
-The summary and the **Branch** column need Git to be installed. Without it they are simply left out. The summary is worked out when you enter a repository and kept while you move around inside it, so big repositories stay quick. It is worked out again with **View › Refresh** or after you change something in Macsplorer. Changes made by other programs show up at the next refresh.
 
 ### Colored names
 
@@ -374,6 +380,9 @@ Press ⌘Z right away, or open the **Trash** in the Folders pane.
 
 **Some of my files are missing from the list.**
 Check that the search box is empty, then turn on **View › Hidden files and folders** to see the items your Mac normally hides.
+
+**The Git summary or the Branch column is missing.**
+Both need Git to be installed on your Mac. If you have it and they still don't show, [Git repositories](#git-repositories) explains when they appear. After changes made by other programs, press ⌘R to bring the summary up to date.
 
 **Which version do I have?**
 Choose **Help › About Macsplorer**. The version appears in the status bar.
