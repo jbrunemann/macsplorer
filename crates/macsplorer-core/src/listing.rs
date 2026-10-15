@@ -326,7 +326,7 @@ fn plist_string(data: &[u8]) -> Option<String> {
     match marker >> 4 {
         0x5 => data.get(start..start + len).map(|b| String::from_utf8_lossy(b).into_owned()),
         0x6 => {
-            let units: Vec<u16> = data.get(start..start + 2 * len)?.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            let units: Vec<u16> = data.get(start..start + 2 * len)?.as_chunks::<2>().0.iter().map(|&c| u16::from_be_bytes(c)).collect();
             Some(String::from_utf16_lossy(&units))
         }
         _ => None,
