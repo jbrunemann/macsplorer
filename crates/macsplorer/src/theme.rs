@@ -154,7 +154,11 @@ pub fn install(ctx: &egui::Context) {
             }
         }
     }
-    // Bold falls back to the regular stack (Tahoma, then egui defaults).
+    if let Some(bytes) = platform::SYMBOL_FONT.iter().find_map(|path| std::fs::read(path).ok()) {
+        fonts.font_data.insert("symbols".into(), Arc::new(FontData::from_owned(bytes)));
+        fonts.families.entry(FontFamily::Proportional).or_default().push("symbols".into());
+    }
+    // Bold falls back to the regular stack (Tahoma, then egui defaults, then symbols).
     let regular = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     bold_fonts.extend(regular);
     fonts.families.insert(bold_family(), bold_fonts);

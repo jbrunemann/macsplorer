@@ -12,6 +12,20 @@ use eframe::egui;
 /// Ctrl elsewhere).
 pub const CMD: &str = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
 
+/// The New Window shortcut as menus print it. Explorer's is Win+E, so Linux
+/// uses the Super key (egui has no modifier flag for it: see `Explorer::keyboard`).
+pub const NEW_WINDOW_KEYS: &str = if cfg!(target_os = "macos") { "⌘E" } else { "Super+E" };
+
+/// A keyboard shortcut as menus print it: `⌥⌘C` on macOS, `Ctrl+Alt+C` elsewhere.
+/// `key` is the key's own label (`"C"`, `"⌫"`); `alt` adds Option (Alt).
+pub fn shortcut(alt: bool, key: &str) -> String {
+    match (cfg!(target_os = "macos"), alt) {
+        (true, true) => format!("⌥{CMD}{key}"),
+        (_, true) => format!("{CMD}Alt+{key}"),
+        _ => format!("{CMD}{key}"),
+    }
+}
+
 /// Label of the context menu entry that reveals an item in the file manager.
 pub const REVEAL_LABEL: &str = if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in File Manager" };
 
@@ -21,6 +35,13 @@ pub const REVEAL_LABEL: &str = if cfg!(target_os = "macos") { "Show in Finder" }
 pub const TAHOMA: &[&str] = &["/System/Library/Fonts/Supplemental/Tahoma.ttf"];
 #[cfg(target_os = "macos")]
 pub const TAHOMA_BOLD: &[&str] = &["/System/Library/Fonts/Supplemental/Tahoma Bold.ttf"];
+
+/// Fallback for the Mac key symbols menus print (⌥ and ⌫ are in neither Tahoma
+/// nor egui's fonts). Linux menus spell the keys out.
+#[cfg(target_os = "macos")]
+pub const SYMBOL_FONT: &[&str] = &["/System/Library/Fonts/Apple Symbols.ttf"];
+#[cfg(not(target_os = "macos"))]
+pub const SYMBOL_FONT: &[&str] = &[];
 
 /// Linux has no Tahoma of its own: use one the user installed (fonts folder,
 /// Wine, a Windows partition).

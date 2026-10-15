@@ -1196,7 +1196,11 @@ impl Explorer {
             if pasted {
                 actions.push(if alt { Action::MoveHere(None) } else { Action::Paste(None) });
             }
-            if cmd && !i.modifiers.shift && i.key_pressed(Key::N) {
+            // New Window: Win+E in Explorer, so Cmd+E on macOS and Super+E on Linux
+            // (egui has no Super modifier there, so look at the key itself). Cmd+N
+            // is the Finder's and keeps working.
+            let win_mod = if cfg!(target_os = "macos") { cmd } else { i.key_down(Key::SuperLeft) || i.key_down(Key::SuperRight) };
+            if !i.modifiers.shift && ((win_mod && i.key_pressed(Key::E)) || (cmd && i.key_pressed(Key::N))) {
                 actions.push(Action::NewWindow);
             }
             if cmd && !i.modifiers.shift && i.key_pressed(Key::Z) {
@@ -1302,11 +1306,11 @@ impl Explorer {
     fn menu_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(theme::menu_style)).ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("New Window").clicked() {
+                if ui.add(menu_item("New Window", platform::NEW_WINDOW_KEYS.to_owned())).clicked() {
                     actions.push(Action::NewWindow);
                 }
                 ui.separator();
-                if ui.button("Properties").clicked() {
+                if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
                     actions.push(Action::ItemProperties(self.properties_target(self.focus == Pane::List)));
                 }
                 ui.separator();
@@ -1316,32 +1320,32 @@ impl Explorer {
             });
             ui.menu_button("Edit", |ui| {
                 let undo = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
-                if ui.add_enabled(self.undo.peek().is_some(), egui::Button::new(undo)).clicked() {
+                if ui.add_enabled(self.undo.peek().is_some(), menu_item(&undo, platform::shortcut(false, "Z"))).clicked() {
                     actions.push(Action::Undo);
                 }
                 ui.separator();
                 let has_selection = !self.selection.is_empty();
-                if ui.add_enabled(has_selection, egui::Button::new("Cut")).clicked() {
+                if ui.add_enabled(has_selection, menu_item("Cut", platform::shortcut(false, "X"))).clicked() {
                     actions.push(Action::Cut);
                 }
-                if ui.add_enabled(has_selection, egui::Button::new("Copy")).clicked() {
+                if ui.add_enabled(has_selection, menu_item("Copy", platform::shortcut(false, "C"))).clicked() {
                     actions.push(Action::Copy);
                 }
-                if ui.add_enabled(has_selection, egui::Button::new("Copy as Path")).clicked() {
+                if ui.add_enabled(has_selection, menu_item("Copy as Path", platform::shortcut(true, "C"))).clicked() {
                     actions.push(Action::CopyAsPath);
                 }
-                if ui.add_enabled(self.can_paste(), egui::Button::new("Paste")).clicked() {
+                if ui.add_enabled(self.can_paste(), menu_item("Paste", platform::shortcut(false, "V"))).clicked() {
                     actions.push(Action::Paste(None));
                 }
-                if ui.add_enabled(self.can_paste(), egui::Button::new("Move Here")).clicked() {
+                if ui.add_enabled(self.can_paste(), menu_item("Move Here", platform::shortcut(true, "V"))).clicked() {
                     actions.push(Action::MoveHere(None));
                 }
                 ui.separator();
-                if ui.add_enabled(has_selection, egui::Button::new("Delete")).clicked() {
+                if ui.add_enabled(has_selection, menu_item("Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
                     actions.push(Action::Delete);
                 }
                 ui.separator();
-                if ui.button("Select All").clicked() {
+                if ui.add(menu_item("Select All", platform::shortcut(false, "A"))).clicked() {
                     actions.push(Action::SelectAll);
                 }
                 if ui.button("Invert Selection").clicked() {
@@ -1394,7 +1398,7 @@ impl Explorer {
                     self.load(loads);
                 }
                 ui.separator();
-                if ui.button("Refresh").clicked() {
+                if ui.add(menu_item("Refresh", platform::shortcut(false, "R"))).clicked() {
                     actions.push(Action::Refresh);
                 }
             });
@@ -2365,51 +2369,51 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
         actions.push(Action::Eject(entry.path.clone()));
     }
     ui.separator();
-    if ui.button("Cut").clicked() {
+    if ui.add(menu_item("Cut", platform::shortcut(false, "X"))).clicked() {
         actions.push(Action::Cut);
     }
-    if ui.button("Copy").clicked() {
+    if ui.add(menu_item("Copy", platform::shortcut(false, "C"))).clicked() {
         actions.push(Action::Copy);
     }
-    if ui.button("Copy as Path").clicked() {
+    if ui.add(menu_item("Copy as Path", platform::shortcut(true, "C"))).clicked() {
         actions.push(Action::CopyAsPath);
     }
-    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
+    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, menu_item("Paste", platform::shortcut(false, "V"))).clicked() {
         actions.push(Action::Paste(Some(entry.path.clone())));
     }
-    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, egui::Button::new("Move Here")).clicked() {
+    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, menu_item("Move Here", platform::shortcut(true, "V"))).clicked() {
         actions.push(Action::MoveHere(Some(entry.path.clone())));
     }
     ui.separator();
-    if ui.button("Delete").clicked() {
+    if ui.add(menu_item("Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
         actions.push(Action::Delete);
     }
-    if ui.button("Rename").clicked() {
+    if ui.add(menu_item("Rename", "F2".to_owned())).clicked() {
         actions.push(Action::BeginRename);
     }
     ui.separator();
-    if ui.button("Properties").clicked() {
+    if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
         actions.push(Action::ItemProperties(entry.path.clone()));
     }
 }
 
 /// The context menu for empty space in the item view.
 fn background_menu(ui: &mut Ui, folder: &Path, can_paste: bool, actions: &mut Vec<Action>) {
-    if ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
+    if ui.add_enabled(can_paste, menu_item("Paste", platform::shortcut(false, "V"))).clicked() {
         actions.push(Action::Paste(None));
     }
-    if ui.add_enabled(can_paste, egui::Button::new("Move Here")).clicked() {
+    if ui.add_enabled(can_paste, menu_item("Move Here", platform::shortcut(true, "V"))).clicked() {
         actions.push(Action::MoveHere(None));
     }
     ui.separator();
-    if ui.button("Refresh").clicked() {
+    if ui.add(menu_item("Refresh", platform::shortcut(false, "R"))).clicked() {
         actions.push(Action::Refresh);
     }
     if ui.button(TERMINAL_LABEL).clicked() {
         actions.push(Action::OpenTerminal(folder.to_path_buf()));
     }
     ui.separator();
-    if ui.button("Properties").clicked() {
+    if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
         actions.push(Action::Properties(folder.to_path_buf()));
     }
 }
@@ -2944,6 +2948,12 @@ fn place_label(p: &Path) -> String {
 }
 
 /// The view modes as radio items, for the View menu and the Views button.
+/// A menu entry with its keyboard shortcut at the right edge in the weak
+/// (muted) text color, like macOS menus.
+fn menu_item(label: &str, keys: String) -> egui::Button<'_> {
+    egui::Button::new(label).shortcut_text(keys)
+}
+
 fn view_choices(ui: &mut Ui, current: ViewMode, actions: &mut Vec<Action>) {
     for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::List, "List"), (ViewMode::Details, "Details")] {
         if ui.radio(current == mode, label).clicked() {
@@ -3649,6 +3659,22 @@ mod screenshot {
             h.run();
             for pressed in [true, false] {
                 h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
+                h.run();
+            }
+            h.run();
+        });
+    }
+
+    /// The Edit menu with its keyboard shortcuts.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn edit_menu() {
+        shoot_driven("edit-menu", egui::vec2(900.0, 500.0), |app| select(app, &["data.yaml"]), |h| {
+            let pos = egui::pos2(40.0, 33.0);
+            h.hover_at(pos);
+            h.run();
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
                 h.run();
             }
             h.run();

@@ -31,7 +31,7 @@ Macsplorer is a file browser for your Mac. It looks and works like the Windows 2
 
 **Where it starts.** Macsplorer opens in your home folder, the one with your name on it.
 
-**More windows.** Choose **File › New Window** (⌘N) to open a second window, for example to copy files from one folder to another. Each new window opens on the folder you're in and appears slightly offset from the one before.
+**More windows.** Choose **File › New Window** (⌘E, or ⌘N) to open a second window, for example to copy files from one folder to another. Each new window opens on the folder you're in and appears slightly offset from the one before.
 
 **Closing.** Click the **×** in the top right corner, choose **File › Close**, or press ⌘Q.
 
@@ -338,7 +338,7 @@ Macsplorer remembers your text size, dark mode and columns the next time you ope
 
 | Keys | Action |
 |---|---|
-| ⌘N | New window |
+| ⌘E (or ⌘N) | New window |
 | ⌘+ / ⌘− / ⌘0 | Bigger text, smaller text, normal text |
 | ⌘Q | Close |
 
