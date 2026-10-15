@@ -156,7 +156,7 @@ impl FileIcons {
 
     fn paint_vector(&mut self, ui: &Ui, rect: Rect, entry: &Entry) {
         match entry.kind {
-            RenameKind::Folder => self.paint_folder(ui, rect, &entry.path),
+            RenameKind::Folder => self.paint_folder(ui, rect, &entry.path, entry.git_repo),
             RenameKind::Package => {
                 let icon = if entry.extension() == Some("app") { Icon::App } else { Icon::Folder };
                 theme::paint_icon(ui.painter(), rect, icon, true);
@@ -179,23 +179,29 @@ impl FileIcons {
     }
 
     /// Paints the yellow folder, with Finder's glyph on it for the user
-    /// folders that have one.
-    pub fn paint_tree_folder(&mut self, ui: &Ui, rect: Rect, path: &Path) {
+    /// folders that have one, or the branch glyph for a Git working tree.
+    pub fn paint_tree_folder(&mut self, ui: &Ui, rect: Rect, path: &Path, git_repo: bool) {
         let hidden = path.file_name().is_some_and(|n| is_hidden_name(&n.to_string_lossy()));
-        blended(ui, if hidden { IconState::Cut } else { IconState::Normal }, || self.paint_folder(ui, rect, path));
+        blended(ui, if hidden { IconState::Cut } else { IconState::Normal }, || self.paint_folder(ui, rect, path, git_repo));
     }
 
-    fn paint_folder(&mut self, ui: &Ui, rect: Rect, path: &Path) {
+    /// A known folder's glyph wins over the Git one.
+    fn paint_folder(&mut self, ui: &Ui, rect: Rect, path: &Path, git_repo: bool) {
         theme::paint_icon(ui.painter(), rect, Icon::Folder, true);
-        let Some(known) = known_folder(path) else { return };
         let scale = rect.width() / 16.0;
+        let center = egui::pos2(rect.left() + FOLDER_EMBLEM_CENTER.0 * scale, rect.top() + FOLDER_EMBLEM_CENTER.1 * scale);
+        let Some(known) = known_folder(path) else {
+            if git_repo {
+                paint_git_branch(ui.painter(), center, scale, theme::color::active_caption());
+            }
+            return;
+        };
         let px = (FOLDER_EMBLEM_SIZE * scale * ui.ctx().pixels_per_point()).round().max(1.0) as usize;
         let texture = self.symbols.entry((known, px)).or_insert_with(|| {
             native_icon::render_symbol(known.symbol(), px)
                 .map(|img| ui.ctx().load_texture(format!("symbol:{}:{px}", known.symbol()), img, TextureOptions::LINEAR))
         });
         if let Some(tex) = texture {
-            let center = egui::pos2(rect.left() + FOLDER_EMBLEM_CENTER.0 * scale, rect.top() + FOLDER_EMBLEM_CENTER.1 * scale);
             let target = Rect::from_center_size(center, egui::Vec2::splat(FOLDER_EMBLEM_SIZE * scale));
             let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             ui.painter().image(tex.id(), target, uv, theme::color::active_caption());
@@ -229,6 +235,37 @@ impl FileIcons {
         let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
         true
+    }
+}
+
+/// Draws the Git branch glyph around `center`, as vector shapes so it needs
+/// no icon font and works on every OS: three ring commits, a line and a
+/// curve, with the layout of Ionicons' `git-branch-outline` (MIT; commit
+/// centers on a 512 unit box). The rings and strokes are drawn smaller than
+/// in the original so the 16 px folder leaves room around them; `scale`
+/// enlarges all pixel sizes.
+fn paint_git_branch(painter: &egui::Painter, center: egui::Pos2, scale: f32, color: Color32) {
+    /// The commits' vertical distance (units 96..416) in pixels of the 16 px folder.
+    const SPAN: f32 = 3.6;
+    /// Stretches the layout sideways so the curve has room at this size.
+    const WIDEN: f32 = 1.5;
+    const RING_RADIUS: f32 = 0.7;
+    const STROKE_WIDTH: f32 = 0.8;
+    let unit = SPAN * scale / 320.0;
+    let at = |x: f32, y: f32| egui::pos2(center.x + (x - 256.0) * unit * WIDEN, center.y + (y - 256.0) * unit + 0.2 * scale);
+    let stroke = egui::Stroke::new(STROKE_WIDTH * scale, color);
+    let ring = RING_RADIUS * scale;
+    // Lines start and end at the rings' edges, not their centers.
+    let (top, bottom, right) = (at(160.0, 96.0), at(160.0, 416.0), at(352.0, 160.0));
+    painter.line_segment([egui::pos2(top.x, top.y + ring), egui::pos2(bottom.x, bottom.y - ring)], stroke);
+    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+        [egui::pos2(right.x, right.y + ring), at(352.0, 336.0), at(160.0, 256.0), egui::pos2(bottom.x, bottom.y - 2.0 * ring)],
+        false,
+        Color32::TRANSPARENT,
+        stroke,
+    ));
+    for c in [top, bottom, right] {
+        painter.circle_stroke(c, ring, stroke);
     }
 }
 

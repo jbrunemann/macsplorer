@@ -2798,7 +2798,7 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
     if row.depth == 0 && row.section == Section::Locations {
         theme::paint_icon(p, icon_rect, Icon::Drive, true);
     } else {
-        icons.paint_tree_folder(ui, icon_rect, &row.key.path);
+        icons.paint_tree_folder(ui, icon_rect, &row.key.path, row.git_repo);
     }
     let text_rect = egui::Rect::from_min_size(egui::pos2(label_x - 2.0, rect.center().y - 7.0), egui::vec2(text_w + 4.0, 14.0));
     let text_color = if row.selected {
@@ -2981,6 +2981,7 @@ mod tests {
             name: Path::new(path).file_name().unwrap().to_string_lossy().into(),
             path: path.into(),
             has_subfolders: true,
+            git_repo: false,
         };
         let mut t = FolderTree::new(vec![root("Home", "/u"), root("Apps", "/a")]);
         t.expand(NodeKey { root: 0, path: "/u".into() });
@@ -3227,7 +3228,7 @@ mod screenshot {
         crate::locale::install();
         let dir = std::env::temp_dir().join("macsplorer-screenshot").join("My Documents");
         let _ = fs::remove_dir_all(&dir);
-        for d in ["Projects/2026", "Projects/Archive", "Pictures", "Setup.app", ".config"] {
+        for d in ["Projects/.git", "Projects/2026", "Projects/Archive", "Pictures", "Setup.app", ".config"] {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
         for name in ["Projects/plan.txt", "Projects/2026/budget.xlsx", "Projects/Archive/old.zip"] {

@@ -41,6 +41,8 @@ pub struct Entry {
     pub hidden: bool,
     /// Finder shows its own icon for this item (`kHasCustomIcon`).
     pub custom_icon: bool,
+    /// A folder that is the top of a Git working tree (see [`is_git_repo`]).
+    pub git_repo: bool,
     /// The item is a symlink or Finder alias.
     pub link: Option<Link>,
 }
@@ -157,6 +159,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
             group: group_name(own.gid()),
             comment: comment(&path),
             custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
+            git_repo: kind == RenameKind::Folder && is_git_repo(&path),
             link,
             name,
             path,
@@ -175,6 +178,13 @@ const K_IS_ALIAS: u16 = 0x8000;
 /// True if Finder has a custom icon for `path`.
 pub fn has_custom_icon(path: &Path) -> bool {
     finder_flags(path) & K_HAS_CUSTOM_ICON != 0
+}
+
+/// True if `dir` is the top of a Git working tree: it holds a `.git` folder,
+/// or a `.git` file as linked worktrees and submodules do. Folders inside a
+/// working tree don't count. Not from Explorer: it has no version control.
+pub fn is_git_repo(dir: &Path) -> bool {
+    fs::symlink_metadata(dir.join(".git")).is_ok()
 }
 
 /// The Finder flags of `path`: bytes 8 and 9 of its `com.apple.FinderInfo`
@@ -474,6 +484,7 @@ mod tests {
             comment: None,
             hidden: false,
             custom_icon: false,
+            git_repo: false,
             link: None,
         }
     }
@@ -541,6 +552,27 @@ mod tests {
         assert_eq!(entry("a.txt", RenameKind::File, Some(1)).kind_label(), "TXT File");
         assert_eq!(entry("Safari.app", RenameKind::Package, None).kind_label(), "Application");
         assert_eq!(entry("Makefile", RenameKind::File, Some(1)).kind_label(), "File");
+    }
+
+    #[test]
+    fn git_repo_is_the_top_of_a_working_tree() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-git-{}", std::process::id()));
+        let plain = dir.join("plain");
+        let repo = dir.join("repo");
+        let worktree = dir.join("worktree");
+        fs::create_dir_all(plain.join("sub")).unwrap();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: ../repo/.git/worktrees/w\n").unwrap();
+        assert!(!is_git_repo(&plain));
+        assert!(is_git_repo(&repo));
+        assert!(is_git_repo(&worktree));
+        assert!(!is_git_repo(&repo.join("src")));
+        let listed = list_dir(&dir, true).unwrap();
+        let flag = |n: &str| listed.iter().find(|e| e.name == n).unwrap().git_repo;
+        assert!(flag("repo") && flag("worktree") && !flag("plain"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(target_os = "macos")]

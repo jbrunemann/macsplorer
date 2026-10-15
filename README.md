@@ -188,7 +188,8 @@ the plain page with gray text lines. App bundles, other packages and items
 with a Finder custom icon show the icon macOS shows
 (`NSWorkspace.iconForFile`), rendered lazily and cached. Folders are the
 yellow Windows 2000 folder, with the Finder SF Symbol on the user folders that
-have one.
+have one, or a Git branch glyph (drawn as vector shapes after Ionicons' `git-branch-outline`, MIT, so Linux gets it too) on the top folder of a Git working tree (a
+`.git` folder or file inside; the Finder symbol wins).
 
 ## Credits and license
 

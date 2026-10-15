@@ -59,6 +59,8 @@ pub struct Node {
     pub name: String,
     pub path: PathBuf,
     pub has_subfolders: bool,
+    /// The folder is the top of a Git working tree.
+    pub git_repo: bool,
 }
 
 /// Identifies one row. The same folder can appear under several roots
@@ -87,6 +89,8 @@ pub struct Row {
     pub expandable: bool,
     pub expanded: bool,
     pub selected: bool,
+    /// The folder is the top of a Git working tree.
+    pub git_repo: bool,
     /// A "Loading…" placeholder under an expanded folder.
     pub placeholder: bool,
     pub error: Option<String>,
@@ -296,6 +300,7 @@ impl FolderTree {
             error: state.and_then(|s| s.error.clone()),
             expanded,
             expandable,
+            git_repo: false,
             label,
             depth,
             section,
@@ -309,7 +314,9 @@ impl FolderTree {
             Some(s) if s.loaded => {
                 for n in &s.nodes {
                     let child = NodeKey { root: key.root, path: n.path.clone() };
+                    let at = out.len();
                     self.push_rows(out, child, n.name.clone(), depth + 1, section, n.has_subfolders);
+                    out[at].git_repo = n.git_repo;
                 }
             }
             _ => out.push(Row {
@@ -320,6 +327,7 @@ impl FolderTree {
                 expandable: false,
                 expanded: false,
                 selected: false,
+                git_repo: false,
                 placeholder: true,
                 error: None,
             }),
@@ -336,7 +344,7 @@ pub fn load_children(dir: &Path, show_hidden: bool) -> Result<Vec<Node>, String>
     let probe = folders.len() <= PROBE_LIMIT;
     Ok(folders
         .into_iter()
-        .map(|e| Node { has_subfolders: !probe || has_subfolders(&e.path, show_hidden), name: e.name, path: e.path })
+        .map(|e| Node { has_subfolders: !probe || has_subfolders(&e.path, show_hidden), git_repo: e.git_repo, name: e.name, path: e.path })
         .collect())
 }
 
@@ -364,7 +372,7 @@ mod tests {
 
     fn node(path: &str, sub: bool) -> Node {
         let p = PathBuf::from(path);
-        Node { name: p.file_name().unwrap().to_string_lossy().into(), path: p, has_subfolders: sub }
+        Node { name: p.file_name().unwrap().to_string_lossy().into(), path: p, has_subfolders: sub, git_repo: false }
     }
 
     fn key(root: usize, path: &str) -> NodeKey {

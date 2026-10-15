@@ -134,7 +134,7 @@ Small icons with names, arranged in columns that run from top to bottom. When th
 
 ### What the icons tell you
 
-- **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them.
+- **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them. A folder that holds a Git repository shows a small branch symbol.
 - **Paper pages** are files. A colored mark on the page shows the kind of file, for example a spreadsheet, a picture, a PDF or a program's source code. A plain page with gray lines is a file of a kind Macsplorer doesn't know.
 - **Apps**, and anything you have given a custom icon in Finder, show their real icon.
 
