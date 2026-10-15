@@ -29,11 +29,14 @@ pub struct Preferences {
     /// "Ghostty"), a command on Linux. Only set by editing the file; `None`
     /// means the system's.
     pub terminal: Option<String>,
+    /// Where git was found the last time, so the next launch doesn't have to
+    /// search for it. Written by the app, and dropped when git is gone.
+    pub git: Option<PathBuf>,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None }
     }
 }
 
@@ -91,6 +94,10 @@ impl Preferences {
         if let Some(terminal) = &self.terminal {
             map.insert("terminal".into(), Value::from(terminal.as_str()));
         }
+        match &self.git {
+            Some(git) => map.insert("git".into(), Value::from(git.to_string_lossy().as_ref())),
+            None => map.remove("git"),
+        };
         if let Some(columns) = &self.columns {
             map.insert("columns".into(), columns.to_json());
         }
@@ -110,6 +117,7 @@ impl Preferences {
             columns: map.get("columns").and_then(ColumnSet::from_json),
             zoom: map.get("zoom").and_then(Value::as_f64).map_or(text_size::NORMAL, |z| text_size::snap(z as f32)),
             terminal: map.get("terminal").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(String::from),
+            git: map.get("git").and_then(Value::as_str).map(str::trim).filter(|g| !g.is_empty()).map(PathBuf::from),
         }
     }
 }
@@ -178,6 +186,25 @@ mod tests {
         assert_eq!(Preferences::load_from(&dir).terminal.as_deref(), Some("Ghostty"));
         fs::write(dir.join(FILE), r#"{"terminal": ""}"#).unwrap();
         assert_eq!(Preferences::load_from(&dir).terminal, None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_git_location_is_stored_and_dropped() {
+        let dir = temp("git");
+        fs::create_dir_all(&dir).unwrap();
+        let mut prefs = Preferences::load_from(&dir);
+        assert_eq!(prefs.git, None);
+        prefs.git = Some("/opt/homebrew/bin/git".into());
+        prefs.save_to(&dir).unwrap();
+        assert_eq!(Preferences::load_from(&dir).git, Some(PathBuf::from("/opt/homebrew/bin/git")));
+        // Another setting changing doesn't lose it.
+        Preferences { dark: true, ..Preferences::load_from(&dir) }.save_to(&dir).unwrap();
+        assert_eq!(Preferences::load_from(&dir).git, Some(PathBuf::from("/opt/homebrew/bin/git")));
+        // Git being gone removes it from the file.
+        Preferences { git: None, ..Preferences::load_from(&dir) }.save_to(&dir).unwrap();
+        assert_eq!(Preferences::load_from(&dir).git, None);
+        assert!(!fs::read_to_string(dir.join(FILE)).unwrap().contains("git"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

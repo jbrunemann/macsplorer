@@ -97,7 +97,7 @@ impl Column {
     /// False for Branch on a machine without git, where the column is left
     /// out everywhere. (Tests don't depend on the machine having git.)
     pub fn available(self) -> bool {
-        cfg!(test) || self != Column::Branch || crate::git::executable().is_some()
+        cfg!(test) || self != Column::Branch || crate::git::available()
     }
 
     /// Can't be hidden (`CM_STATE_ALWAYSVISIBLE`).

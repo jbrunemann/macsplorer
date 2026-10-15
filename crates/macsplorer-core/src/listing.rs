@@ -118,6 +118,13 @@ pub fn is_hidden_name(name: &str) -> bool {
 /// Reads one directory. Entries that vanish or can't be read while listing
 /// are skipped rather than failing the whole listing.
 pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
+    list_dir_with(dir, show_hidden, false)
+}
+
+/// [`list_dir`], and with `branches` the [`Entry::branch`] of every folder
+/// that is a Git working tree. That costs a look for `.git` in each folder,
+/// so only ask for it while the Branch column is shown.
+pub fn list_dir_with(dir: &Path, show_hidden: bool, branches: bool) -> io::Result<Vec<Entry>> {
     let mut out = Vec::new();
     for item in fs::read_dir(dir)? {
         let Ok(item) = item else { continue };
@@ -160,7 +167,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
             group: group_name(own.gid()),
             comment: comment(&path),
             custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
-            branch: (kind == RenameKind::Folder && is_git_repo(&path)).then(|| crate::git::branch_label(&path)).flatten(),
+            branch: (branches && kind == RenameKind::Folder && is_git_repo(&path)).then(|| crate::git::branch_label(&path)).flatten(),
             link,
             name,
             path,
@@ -571,9 +578,11 @@ mod tests {
         assert!(is_git_repo(&repo));
         assert!(is_git_repo(&worktree));
         assert!(!is_git_repo(&repo.join("src")));
-        let listed = list_dir(&dir, true).unwrap();
+        let listed = list_dir_with(&dir, true, true).unwrap();
         let flag = |n: &str| listed.iter().find(|e| e.name == n).unwrap().branch.is_some();
         assert!(flag("repo") && flag("worktree") && !flag("plain"));
+        // Not asked for, not looked up.
+        assert!(list_dir(&dir, true).unwrap().iter().all(|e| e.branch.is_none()));
         fs::remove_dir_all(&dir).unwrap();
     }
 

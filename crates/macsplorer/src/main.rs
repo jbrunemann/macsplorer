@@ -49,6 +49,8 @@ fn main() -> eframe::Result {
             // The app's Text Size steps replace egui's 10% zoom keys.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             cc.egui_ctx.set_zoom_factor(prefs.zoom);
+            // Before anything looks for git, so the lookup can start from where it was.
+            macsplorer_core::git::remember(prefs.git.clone());
             let mut app = app::Explorer::new(cc.egui_ctx.clone(), start);
             app.restore_preferences(&prefs);
             Ok(Box::new(app))

@@ -18,18 +18,46 @@ use std::sync::OnceLock;
 
 use crate::listing::is_git_repo;
 
-/// The git to run, if this machine has one: found on `PATH` or in the usual
-/// places (an app started from the Finder has a short `PATH`, without
-/// Homebrew's). Without git the status summary and the Branch column are
-/// left out. Looked up once.
+/// The answer of the lookup, set once.
+static GIT: OnceLock<Option<PathBuf>> = OnceLock::new();
+/// Where git was the last time, from the settings file: tried first.
+static HINT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Tells the lookup where git was found last time (the settings file keeps
+/// that), so it needn't search. Call it before anything asks for
+/// [`executable`]; it does no I/O.
+pub fn remember(path: Option<PathBuf>) {
+    if let Some(path) = path {
+        let _ = HINT.set(path);
+    }
+}
+
+/// The git to run, if this machine has one: the remembered one if it is
+/// still there, else found on `PATH` or in the usual places (an app started
+/// from the Finder has a short `PATH`, without Homebrew's). Without git the
+/// status summary and the Branch column are left out. Looked up once, by
+/// whoever asks first, and everyone else waits for the answer: ask from a
+/// worker thread, and use [`available`] on the UI thread.
 pub fn executable() -> Option<&'static Path> {
-    static GIT: OnceLock<Option<PathBuf>> = OnceLock::new();
     GIT.get_or_init(|| {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let usual = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from);
-        std::env::split_paths(&path).chain(usual).map(|dir| dir.join("git")).find(|git| git.is_file() && runs(git))
+        let candidates = std::env::split_paths(&path).chain(usual).map(|dir| dir.join("git"));
+        pick(HINT.get().map(PathBuf::as_path), candidates)
     })
     .as_deref()
+}
+
+/// True once the lookup has found git. Never waits: false while it is still
+/// running, so the UI thread can ask every frame.
+pub fn available() -> bool {
+    GIT.get().is_some_and(Option::is_some)
+}
+
+/// The remembered git if it is still there, else the first candidate that is.
+fn pick(hint: Option<&Path>, mut candidates: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
+    let there = |git: &Path| git.is_file() && runs(git);
+    hint.filter(|h| there(h)).map(Path::to_path_buf).or_else(|| candidates.find(|g| there(g)))
 }
 
 /// False for the `/usr/bin/git` that macOS ships without the developer
@@ -350,6 +378,24 @@ mod tests {
         assert_eq!(tone("b...o/b [ahead 1]"), Tone::Ahead);
         assert_eq!(tone("b...o/b [behind 1]"), Tone::Behind);
         assert_eq!(tone("b...o/b [ahead 1, behind 1]"), Tone::Diverged);
+    }
+
+    #[test]
+    fn the_remembered_git_wins_while_it_is_there() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-pick-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("a")).unwrap();
+        fs::create_dir_all(dir.join("b")).unwrap();
+        let (a, b, gone) = (dir.join("a/git"), dir.join("b/git"), dir.join("gone/git"));
+        fs::write(&a, "").unwrap();
+        fs::write(&b, "").unwrap();
+        let candidates = || [a.clone(), b.clone()].into_iter();
+        assert_eq!(pick(Some(&b), candidates()), Some(b.clone()));
+        // A remembered git that has gone is searched for again.
+        assert_eq!(pick(Some(&gone), candidates()), Some(a.clone()));
+        assert_eq!(pick(None, candidates()), Some(a.clone()));
+        assert_eq!(pick(Some(&gone), std::iter::once(gone.clone())), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

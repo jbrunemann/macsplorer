@@ -23,7 +23,7 @@ use macsplorer_core::history::History;
 use macsplorer_core::isearch::{self, IncrementalSearch};
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
 use macsplorer_core::marquee::{self, Marquee};
-use macsplorer_core::listing::{Entry, SortSpec, format_byte_size, format_size, free_space, list_dir, sort_entries};
+use macsplorer_core::listing::{Entry, SortSpec, format_byte_size, format_size, free_space, list_dir, list_dir_with, sort_entries};
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::preferences::Preferences;
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
@@ -240,6 +240,10 @@ pub struct Explorer {
     list_rx: Receiver<ListResult>,
     list_request: u64,
     listing: bool,
+    /// Whether the latest listing was asked to look for branches, which costs
+    /// a look for `.git` in every folder, so it is only done while the Branch
+    /// column is shown.
+    list_branches: bool,
     /// The open folder's Git status. `git status` can take a while in a big
     /// repository, so it runs on a worker thread, and the summary is kept
     /// while you move around inside the working tree: it is asked for again
@@ -343,6 +347,7 @@ impl Explorer {
             list_rx,
             list_request: 0,
             listing: false,
+            list_branches: false,
             git: None,
             git_tx,
             git_rx,
@@ -666,10 +671,11 @@ impl Explorer {
     fn reload_list(&mut self) {
         self.list_request += 1;
         self.listing = true;
-        let (request, dir, show_hidden) = (self.list_request, self.current().to_path_buf(), self.settings.show_hidden);
+        self.list_branches = self.columns.is_visible(Column::Branch);
+        let (request, dir, show_hidden, branches) = (self.list_request, self.current().to_path_buf(), self.settings.show_hidden, self.list_branches);
         let (tx, ctx) = (self.list_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let result = list_dir(&dir, show_hidden).map_err(|e| platform::open_error(&dir, &e));
+            let result = list_dir_with(&dir, show_hidden, branches).map_err(|e| platform::open_error(&dir, &e));
             if tx.send((request, result, free_space(&dir))).is_ok() {
                 ctx.request_repaint();
             }
@@ -693,6 +699,14 @@ impl Explorer {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// The Branch column was turned on, or git turned up, after the listing was
+    /// made without branches: list again with them.
+    fn list_branches_if_missing(&mut self) {
+        if self.columns.is_visible(Column::Branch) && !self.list_branches {
+            self.reload_list();
+        }
     }
 
     fn poll_git(&mut self) {
@@ -1010,6 +1024,17 @@ impl Explorer {
             self.columns = columns.clone();
         }
         self.saved_columns = Some(self.columns.clone());
+        // Finding git can take a moment (and `main` has told the lookup where
+        // it was last time): not on this thread. When it is done the Branch
+        // column can appear, and the settings file learns where git is.
+        let (known, ctx) = (prefs.git.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let found = git::executable().map(Path::to_path_buf);
+            if found != known {
+                Preferences::update(|p| p.git = found);
+            }
+            ctx.request_repaint();
+        });
     }
 
     /// Writes the column layout when it changed, but not while a divider is
@@ -2370,6 +2395,7 @@ impl eframe::App for Explorer {
         self.poll_loads();
         self.poll_lists();
         self.poll_git();
+        self.list_branches_if_missing();
         self.poll_ejects();
         self.poll_ops();
         self.refresh_clipboard();
@@ -3227,6 +3253,37 @@ mod clipboard {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Looking for `.git` in every folder is only done for the Branch column.
+    #[test]
+    fn branches_are_only_looked_up_while_the_branch_column_is_shown() {
+        // Waits for the lookup that `main` starts in the background.
+        if git::executable().is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("macsplorer-branch-col-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("repo/.git")).unwrap();
+        fs::write(dir.join("repo/.git/HEAD"), "ref: refs/heads/topic\n").unwrap();
+        let branch = |app: &Explorer| app.entries.iter().find(|e| e.name == "repo").and_then(|e| e.branch.clone());
+
+        let mut app = Explorer::new(egui::Context::default(), dir.clone());
+        app.finish_listing();
+        assert!(!app.list_branches);
+        assert_eq!(branch(&app), None);
+
+        app.columns.toggle(Column::Branch);
+        app.list_branches_if_missing();
+        app.finish_listing();
+        assert!(app.list_branches);
+        assert_eq!(branch(&app).as_deref(), Some("topic"));
+
+        // Once listed with branches, nothing lists again.
+        let request = app.list_request;
+        app.list_branches_if_missing();
+        assert_eq!(app.list_request, request);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The Git summary is asked for when a working tree is entered or the
     /// folder is reloaded, not again for every folder inside it.
     #[test]
@@ -3497,6 +3554,8 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn git_branch_column() {
         shoot("git-branch-column", egui::vec2(900.0, 400.0), |app| {
+            // `main` does the lookup in the background; a test waits for it.
+            git::executable();
             app.columns.toggle(Column::Branch);
         });
     }

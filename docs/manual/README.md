@@ -382,7 +382,7 @@ Press ⌘Z right away, or open the **Trash** in the Folders pane.
 Check that the search box is empty, then turn on **View › Hidden files and folders** to see the items your Mac normally hides.
 
 **The Git summary or the Branch column is missing.**
-Both need Git to be installed on your Mac. If you have it and they still don't show, [Git repositories](#git-repositories) explains when they appear. After changes made by other programs, press ⌘R to bring the summary up to date.
+Both need Git to be installed on your Mac. Macsplorer looks for it when it starts, so if you install Git while Macsplorer is open, close and reopen it. If you have Git and they still don't show, [Git repositories](#git-repositories) explains when they appear. After changes made by other programs, press ⌘R to bring the summary up to date.
 
 **Which version do I have?**
 Choose **Help › About Macsplorer**. The version appears in the status bar.
