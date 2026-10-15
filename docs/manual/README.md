@@ -172,14 +172,14 @@ The status bar shows how many items you have selected and how much space they ta
 | **Show in Finder** | Opens a Finder window with the item selected. |
 | **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |
 | **Eject** | For disks and drives: safely disconnects them. |
-| **Cut**, **Copy**, **Copy as Path**, **Paste** | See [Copying, moving and deleting](#8-copying-moving-and-deleting). |
+| **Cut**, **Copy**, **Copy as Path**, **Paste**, **Move Here** | See [Copying, moving and deleting](#8-copying-moving-and-deleting). |
 | **Delete** | Moves the item to the Trash. |
 | **Rename** | See [Renaming](#7-renaming). |
 | **Properties** | See [Properties](#10-properties). |
 
 <img src="images/open-with-menu.png" alt="The Open With list" width="900">
 
-Right-click an empty spot in the list for **Paste**, **Refresh**, and **Properties** of the folder you're in.
+Right-click an empty spot in the list for **Paste**, **Move Here**, **Refresh**, and **Properties** of the folder you're in.
 
 ## 7. Renaming
 
@@ -210,6 +210,12 @@ If you paste into the same folder, or a folder that already has an item with tha
 ### Cut and Paste (moving)
 
 Use **Edit › Cut** (⌘X) instead of Copy to move the items. They are shown faded until you paste them somewhere. If the destination already has an item with the same name, the move stops and the status bar tells you, so nothing is lost.
+
+### Between windows and Finder
+
+Copy and Cut use the Mac's own clipboard, so you can copy in one Macsplorer window and paste in another, or copy in Finder and paste in Macsplorer, and the other way round.
+
+Finder has no Cut. Items you cut in Macsplorer are pasted as copies in Finder; to move them there, use **Edit › Move Item Here** (⌥⌘V) in Finder. The same goes for Macsplorer: items copied (or cut with a helper such as Command X) in Finder are pasted here as copies, and **Edit › Move Here** (⌥⌘V) moves them instead. It is also in the right-click menus.
 
 ### Copy as Path
 
@@ -322,6 +328,7 @@ Macsplorer remembers your text size, dark mode and columns the next time you ope
 | ⌘C | Copy |
 | ⌘X | Cut |
 | ⌘V | Paste |
+| ⌥⌘V | Move Here (paste as a move) |
 | ⌘⌥C | Copy as Path |
 | ⌦ or ⌘⌫ | Move to Trash |
 | ⌘Z | Undo |

@@ -34,6 +34,7 @@ use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_
 use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
 use crate::column_dialog::{self, ColumnDialog};
+use crate::pasteboard::{self, Pasteboard};
 use crate::icons::{FileIcons, IconState};
 use crate::locale;
 use crate::open_with;
@@ -145,6 +146,8 @@ enum Action {
     CopyAsPath,
     /// Paste into a folder; `None` is the open folder.
     Paste(Option<PathBuf>),
+    /// Finder's "Move Item Here" (Option+Cmd+V): paste as a move, even a copy.
+    MoveHere(Option<PathBuf>),
     Delete,
     TreeSelect(NodeKey),
     TreeToggle(NodeKey),
@@ -166,14 +169,23 @@ enum Action {
     ItemProperties(PathBuf),
 }
 
-/// What Cut or Copy remembered. The paths' text is also put on the system
-/// clipboard: egui only reports Cmd+V when it holds text, and a paste only
-/// counts while that text is still the clipboard's, i.e. nothing newer was
-/// copied elsewhere.
+/// What this window's Cut or Copy remembered. Where the system pasteboard
+/// carries files (`pasteboard::SUPPORTED`) they are on it too, so other windows
+/// and Finder can paste them, and this is only the cache of that: `change` is the
+/// pasteboard's change count after the write, and the cache is dropped once it
+/// moves on. Elsewhere the paths' text is put on the system clipboard instead:
+/// egui only reports Cmd+V when it holds text, and a paste only counts while
+/// that text is still the clipboard's, i.e. nothing newer was copied elsewhere.
 struct Clipboard {
     paths: Vec<PathBuf>,
     cut: bool,
     token: String,
+    change: isize,
+}
+
+/// The items the clipboard has cut, which the list draws dimmed.
+fn cut_paths(clipboard: &Option<Clipboard>) -> &[PathBuf] {
+    clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths)
 }
 
 /// The outcome of a paste, delete or undo that ran on a worker thread.
@@ -262,6 +274,12 @@ pub struct Explorer {
     eject_tx: Sender<(PathBuf, Result<(), String>)>,
     eject_rx: Receiver<(PathBuf, Result<(), String>)>,
     clipboard: Option<Clipboard>,
+    /// The system pasteboard Cut and Copy go through where it carries files.
+    pb: Pasteboard,
+    /// Its change count when `pb_files` was last looked up.
+    pb_seen: isize,
+    /// Whether it holds files to paste.
+    pb_files: bool,
     /// Paste, delete and undo run on worker threads and report back here.
     op_tx: Sender<OpDone>,
     op_rx: Receiver<OpDone>,
@@ -325,6 +343,9 @@ impl Explorer {
             eject_tx,
             eject_rx,
             clipboard: None,
+            pb: Pasteboard::general(),
+            pb_seen: -1,
+            pb_files: false,
             op_tx,
             op_rx,
             undo: UndoStack::default(),
@@ -407,9 +428,42 @@ impl Explorer {
         if paths.is_empty() {
             return;
         }
+        if pasteboard::SUPPORTED {
+            if self.pb.write(&paths, cut) {
+                let change = self.pb.change_count().unwrap_or_default();
+                (self.pb_seen, self.pb_files) = (change, true);
+                self.clipboard = Some(Clipboard { paths, cut, token: String::new(), change });
+            }
+            return;
+        }
         let token = paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
         self.ctx.copy_text(token.clone());
-        self.clipboard = Some(Clipboard { paths, cut, token });
+        self.clipboard = Some(Clipboard { paths, cut, token, change: 0 });
+    }
+
+    /// Notices that something else changed the system pasteboard: whether it
+    /// still holds files, and dropping what this window remembered.
+    fn refresh_clipboard(&mut self) {
+        let Some(change) = self.pb.change_count() else { return };
+        if change == self.pb_seen {
+            return;
+        }
+        self.pb_seen = change;
+        self.pb_files = self.pb.has_files();
+        if self.clipboard.as_ref().is_some_and(|c| c.change != change) {
+            self.clipboard = None;
+        }
+    }
+
+    /// Whether there is something to paste.
+    fn can_paste(&self) -> bool {
+        if pasteboard::SUPPORTED { self.pb_files } else { self.clipboard.is_some() }
+    }
+
+    /// Whether egui's paste event, carrying the clipboard's text, is a paste of
+    /// the files this app cut or copied.
+    fn is_file_paste(&self, text: &str) -> bool {
+        if pasteboard::SUPPORTED { self.pb_files } else { self.clipboard.as_ref().is_some_and(|c| c.token == text) }
     }
 
     /// Puts the selection's quoted full paths on the system clipboard as text.
@@ -424,12 +478,26 @@ impl Explorer {
     }
 
     /// Copies or moves the clipboard's items into `dest` on a worker thread.
-    fn paste(&mut self, dest: PathBuf) {
-        let Some(clip) = self.clipboard.as_ref() else { return };
-        let (paths, cut) = (clip.paths.clone(), clip.cut);
-        if cut {
+    /// `move_here` moves even what was only copied, and leaves the copy on the
+    /// clipboard like Finder's "Move Item Here".
+    fn paste(&mut self, dest: PathBuf, move_here: bool) {
+        self.refresh_clipboard();
+        let (paths, was_cut) = match &self.clipboard {
+            Some(clip) => (clip.paths.clone(), clip.cut),
+            // Cut or copied in another window, or in Finder.
+            None => match pasteboard::SUPPORTED.then(|| self.pb.read()).flatten() {
+                Some(files) => (files.paths, files.cut),
+                None => return,
+            },
+        };
+        let cut = was_cut || move_here;
+        if was_cut {
             // Like Explorer, a cut can be pasted once.
             self.clipboard = None;
+            if pasteboard::SUPPORTED {
+                self.pb.clear();
+                (self.pb_seen, self.pb_files) = (self.pb.change_count().unwrap_or_default(), false);
+            }
         }
         self.status = Some(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len()));
         let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
@@ -994,7 +1062,11 @@ impl Explorer {
                 Action::CopyAsPath => self.copy_as_path(),
                 Action::Paste(dir) => {
                     let dir = dir.unwrap_or_else(|| self.current().to_path_buf());
-                    self.paste(dir);
+                    self.paste(dir, false);
+                }
+                Action::MoveHere(dir) => {
+                    let dir = dir.unwrap_or_else(|| self.current().to_path_buf());
+                    self.paste(dir, true);
                 }
                 Action::Delete => self.delete_selection(),
                 Action::TreeSelect(key) => {
@@ -1119,9 +1191,10 @@ impl Explorer {
             } else if in_list && i.events.iter().any(|e| matches!(e, egui::Event::Copy)) {
                 actions.push(Action::Copy);
             }
-            let pasted = i.events.iter().any(|e| matches!(e, egui::Event::Paste(text) if self.clipboard.as_ref().is_some_and(|c| &c.token == text)));
+            // Option+Cmd+V is Finder's "Move Item Here"; egui reports it as a Paste too.
+            let pasted = i.events.iter().any(|e| matches!(e, egui::Event::Paste(text) if self.is_file_paste(text)));
             if pasted {
-                actions.push(Action::Paste(None));
+                actions.push(if alt { Action::MoveHere(None) } else { Action::Paste(None) });
             }
             if cmd && !i.modifiers.shift && i.key_pressed(Key::N) {
                 actions.push(Action::NewWindow);
@@ -1257,8 +1330,11 @@ impl Explorer {
                 if ui.add_enabled(has_selection, egui::Button::new("Copy as Path")).clicked() {
                     actions.push(Action::CopyAsPath);
                 }
-                if ui.add_enabled(self.clipboard.is_some(), egui::Button::new("Paste")).clicked() {
+                if ui.add_enabled(self.can_paste(), egui::Button::new("Paste")).clicked() {
                     actions.push(Action::Paste(None));
+                }
+                if ui.add_enabled(self.can_paste(), egui::Button::new("Move Here")).clicked() {
+                    actions.push(Action::MoveHere(None));
                 }
                 ui.separator();
                 if ui.add_enabled(has_selection, egui::Button::new("Delete")).clicked() {
@@ -1564,9 +1640,9 @@ impl Explorer {
         let header_rect = egui::Rect::from_min_size(viewport.min, egui::vec2(viewport.width(), LIST_HEADER_HEIGHT));
         let header_hit = self.header_input(ui, header_rect, visible);
         let focused = self.focus == Pane::List && window_focused(ui);
-        let can_paste = self.clipboard.is_some();
+        let can_paste = self.can_paste();
         let folder = self.current().to_path_buf();
-        let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
+        let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("details-menu");
         let shown = self.columns.visible();
@@ -1879,9 +1955,9 @@ impl Explorer {
             return;
         }
         let focused = self.focus == Pane::List && window_focused(ui);
-        let can_paste = self.clipboard.is_some();
+        let can_paste = self.can_paste();
         let folder = self.current().to_path_buf();
-        let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
+        let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let font = egui::TextStyle::Body.resolve(ui.style());
         let line_height = ui.fonts_mut(|f| f.row_height(&font));
@@ -2026,9 +2102,9 @@ impl Explorer {
             return;
         }
         let focused = self.focus == Pane::List && window_focused(ui);
-        let can_paste = self.clipboard.is_some();
+        let can_paste = self.can_paste();
         let folder = self.current().to_path_buf();
-        let cut: &[PathBuf] = self.clipboard.as_ref().filter(|c| c.cut).map_or(&[], |c| &c.paths);
+        let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("list-menu");
         let Self { entries, selection, rename, settings, search, icons, open_with, listing, marquee, anchor, .. } = self;
@@ -2179,6 +2255,7 @@ impl eframe::App for Explorer {
         self.poll_lists();
         self.poll_ejects();
         self.poll_ops();
+        self.refresh_clipboard();
         self.icons.begin_frame();
         let visible = self.visible();
         self.slow_click_rename(ui);
@@ -2300,6 +2377,9 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
     if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
         actions.push(Action::Paste(Some(entry.path.clone())));
     }
+    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, egui::Button::new("Move Here")).clicked() {
+        actions.push(Action::MoveHere(Some(entry.path.clone())));
+    }
     ui.separator();
     if ui.button("Delete").clicked() {
         actions.push(Action::Delete);
@@ -2317,6 +2397,9 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
 fn background_menu(ui: &mut Ui, folder: &Path, can_paste: bool, actions: &mut Vec<Action>) {
     if ui.add_enabled(can_paste, egui::Button::new("Paste")).clicked() {
         actions.push(Action::Paste(None));
+    }
+    if ui.add_enabled(can_paste, egui::Button::new("Move Here")).clicked() {
+        actions.push(Action::MoveHere(None));
     }
     ui.separator();
     if ui.button("Refresh").clicked() {
@@ -2962,6 +3045,8 @@ mod clipboard {
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::write(dir.join("a.txt"), "hi").unwrap();
         let mut app = Explorer::new(egui::Context::default(), dir.clone());
+        // Not the user's clipboard.
+        app.pb = Pasteboard::private();
         app.finish_listing();
         (app, dir)
     }
@@ -3015,6 +3100,53 @@ mod clipboard {
         assert!(!dir.join("a.txt").exists());
         assert_eq!(fs::read_to_string(dir.join("sub/a.txt")).unwrap(), "hi");
         assert!(app.clipboard.is_none(), "a cut is pasted once");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Another Macsplorer window is another process, so all it shares with this
+    /// one is the pasteboard.
+    #[test]
+    fn a_second_window_pastes_what_the_first_copied_or_cut() {
+        let (mut one, dir) = explorer("windows");
+        let mut two = Explorer::new(egui::Context::default(), dir.join("sub"));
+        two.pb = one.pb.clone();
+        two.finish_listing();
+        two.refresh_clipboard();
+        assert!(!two.can_paste());
+
+        one.selection = BTreeSet::from([dir.join("a.txt")]);
+        one.apply(vec![Action::Copy], &[]);
+        two.refresh_clipboard();
+        assert_eq!(two.can_paste(), pasteboard::SUPPORTED);
+        if !pasteboard::SUPPORTED {
+            fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        two.apply(vec![Action::Paste(None)], &[]);
+        wait(&mut two);
+        assert_eq!(fs::read_to_string(dir.join("sub/a.txt")).unwrap(), "hi");
+        assert!(dir.join("a.txt").exists());
+        assert!(two.can_paste(), "a copy can be pasted again");
+
+        // Move Item Here moves a copy and leaves it on the clipboard.
+        fs::create_dir(dir.join("moved")).unwrap();
+        two.apply(vec![Action::MoveHere(Some(dir.join("moved")))], &[]);
+        wait(&mut two);
+        assert!(dir.join("moved/a.txt").exists() && !dir.join("a.txt").exists());
+
+        // A cut in one window is pasted once, as a move, in the other.
+        fs::write(dir.join("b.txt"), "b").unwrap();
+        one.reload();
+        one.finish_listing();
+        one.selection = BTreeSet::from([dir.join("b.txt")]);
+        one.apply(vec![Action::Cut], &[]);
+        two.refresh_clipboard();
+        two.apply(vec![Action::Paste(None)], &[]);
+        wait(&mut two);
+        assert!(dir.join("sub/b.txt").exists() && !dir.join("b.txt").exists());
+        two.refresh_clipboard();
+        one.refresh_clipboard();
+        assert!(!two.can_paste() && !one.can_paste(), "the cut was used up");
         fs::remove_dir_all(&dir).unwrap();
     }
 

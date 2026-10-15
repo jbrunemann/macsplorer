@@ -4,6 +4,7 @@ mod icons;
 mod locale;
 mod native_icon;
 mod open_with;
+mod pasteboard;
 mod platform;
 mod properties;
 mod scrollbar;
