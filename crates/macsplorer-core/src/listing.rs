@@ -41,9 +41,8 @@ pub struct Entry {
     pub hidden: bool,
     /// Finder shows its own icon for this item (`kHasCustomIcon`).
     pub custom_icon: bool,
-    /// A folder that is the top of a Git working tree (see [`is_git_repo`]).
-    pub git_repo: bool,
-    /// For a [`git_repo`](Self::git_repo): its branch, as `git::branch_label` writes it.
+    /// For a folder that is the top of a Git working tree (see
+    /// [`is_git_repo`]): its branch, as `git::branch_label` writes it.
     pub branch: Option<String>,
     /// The item is a symlink or Finder alias.
     pub link: Option<Link>,
@@ -144,7 +143,6 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
             RenameKind::Folder
         };
         let flags = finder_flags(&path);
-        let git_repo = kind == RenameKind::Folder && is_git_repo(&path);
         let link = match (symlink, broken) {
             (true, true) => Some(Link::Broken),
             (true, false) => Some(Link::Symlink),
@@ -162,8 +160,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
             group: group_name(own.gid()),
             comment: comment(&path),
             custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
-            git_repo,
-            branch: git_repo.then(|| crate::git::branch_label(&path)).flatten(),
+            branch: (kind == RenameKind::Folder && is_git_repo(&path)).then(|| crate::git::branch_label(&path)).flatten(),
             link,
             name,
             path,
@@ -489,7 +486,6 @@ mod tests {
             comment: None,
             hidden: false,
             custom_icon: false,
-            git_repo: false,
             branch: None,
             link: None,
         }
@@ -576,7 +572,7 @@ mod tests {
         assert!(is_git_repo(&worktree));
         assert!(!is_git_repo(&repo.join("src")));
         let listed = list_dir(&dir, true).unwrap();
-        let flag = |n: &str| listed.iter().find(|e| e.name == n).unwrap().git_repo;
+        let flag = |n: &str| listed.iter().find(|e| e.name == n).unwrap().branch.is_some();
         assert!(flag("repo") && flag("worktree") && !flag("plain"));
         fs::remove_dir_all(&dir).unwrap();
     }

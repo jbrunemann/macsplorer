@@ -135,13 +135,13 @@ Small icons with names, arranged in columns that run from top to bottom. When th
 
 ### What the icons tell you
 
-- **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them. A folder that holds a Git repository shows a small branch symbol.
+- **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them.
 - **Paper pages** are files. A colored mark on the page shows the kind of file, for example a spreadsheet, a picture, a PDF or a program's source code. A plain page with gray lines is a file of a kind Macsplorer doesn't know.
 - **Apps**, and anything you have given a custom icon in Finder, show their real icon.
 
 ### Git repositories
 
-A folder that holds a Git repository shows a small branch symbol on its icon. While you are anywhere inside a repository, the status bar gets an extra pane with the branch symbol and a summary in the format of [posh-git](https://github.com/dahlbyk/posh-git#git-status-summary-information):
+The **Branch** column (add it from the column header's right-click menu) shows which folders are Git repositories and which branch they are on. While you are anywhere inside a repository, the status bar gets an extra pane with the branch symbol and a summary in the format of [posh-git](https://github.com/dahlbyk/posh-git#git-status-summary-information):
 
 `[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`
 

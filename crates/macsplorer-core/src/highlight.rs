@@ -67,7 +67,6 @@ mod tests {
             comment: None,
             hidden: false,
             custom_icon: false,
-            git_repo: false,
             branch: None,
             link,
         }

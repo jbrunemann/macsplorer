@@ -49,7 +49,8 @@ frame. The fixture folder is built in `app.rs` `mod screenshot`.
   `/System/Library/Fonts/Supplemental`, not bundled). Every file icon is the
   Win2000 paper page (`theme::paint_page`) with the Seti glyph as an emblem;
   apps/packages/Finder custom icons use the real macOS icon; folders are the
-  yellow Win2000 folder (the user folders Finder gives a sidebar glyph carry that SF Symbol as an emblem; the top folder of a Git working tree, i.e. one holding `.git`, carries a branch glyph (`icons::paint_git_branch`, vector shapes, also on Linux) unless it has a Finder glyph or custom icon).
+  yellow Win2000 folder (the user folders Finder gives a sidebar glyph carry that SF Symbol as an emblem).
+  The branch glyph (`icons::paint_git_branch`, vector shapes) only appears beside text, in the status bar and the Branch column, not on folder icons.
 - Dark mode (View menu, remembered in `settings.json` in the config dir, see `preferences`) is not
   from the Windows binaries: build 10240 has no dark mode code, Explorer got it in
   Windows 10 1809. `theme::color` are functions that read the palette flag, so

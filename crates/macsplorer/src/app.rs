@@ -2871,7 +2871,7 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
     if row.depth == 0 && row.section == Section::Locations {
         theme::paint_icon(p, icon_rect, Icon::Drive, true);
     } else {
-        icons.paint_tree_folder(ui, icon_rect, &row.key.path, row.git_repo);
+        icons.paint_tree_folder(ui, icon_rect, &row.key.path);
     }
     let text_rect = egui::Rect::from_min_size(egui::pos2(label_x - 2.0, rect.center().y - 7.0), egui::vec2(text_w + 4.0, 14.0));
     let text_color = if row.selected {
@@ -3054,7 +3054,6 @@ mod tests {
             name: Path::new(path).file_name().unwrap().to_string_lossy().into(),
             path: path.into(),
             has_subfolders: true,
-            git_repo: false,
         };
         let mut t = FolderTree::new(vec![root("Home", "/u"), root("Apps", "/a")]);
         t.expand(NodeKey { root: 0, path: "/u".into() });
@@ -3325,7 +3324,7 @@ mod screenshot {
 
     /// Turns `dir` into a Git repository on `main` with one change staged, one
     /// not staged and a file that isn't tracked. Falls back to an empty `.git`
-    /// folder (which still gets the folder emblem) if git can't run.
+    /// folder (which still shows in the Branch column) if git can't run.
     fn make_repo(dir: &Path) {
         let git = |args: &[&str]| {
             std::process::Command::new("git")
