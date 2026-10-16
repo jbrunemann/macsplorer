@@ -128,6 +128,8 @@ struct RenameState {
 /// needs shared borrows of the listing.
 enum Action {
     Navigate(PathBuf),
+    /// New > Folder in the open folder.
+    NewFolder,
     /// A path typed in the address bar: a folder is opened, a file is shown selected in its folder.
     GoTo(PathBuf),
     Open(PathBuf),
@@ -387,6 +389,8 @@ pub struct Explorer {
     window_pending: Option<([f32; 2], f64)>,
     undo: UndoStack,
     pending_select: BTreeSet<PathBuf>,
+    /// The listing that brings `pending_select` also starts renaming it (a new folder).
+    rename_pending_select: bool,
     focus: Pane,
     /// Set while navigating from a tree click, so the clicked row stays
     /// selected instead of jumping to another root that has the same folder.
@@ -481,6 +485,7 @@ impl Explorer {
             window_pending: None,
             undo: UndoStack::default(),
             pending_select: BTreeSet::new(),
+            rename_pending_select: false,
             focus: Pane::List,
             navigating_from_tree: false,
             icons: FileIcons::new(),
@@ -1006,6 +1011,7 @@ impl Explorer {
         (self.focus_item, self.anchor) = (index_of(focus), index_of(anchor));
         let present: BTreeSet<_> = self.entries.iter().map(|e| &e.path).collect();
         self.selection.retain(|p| present.contains(p));
+        let rename_picked = std::mem::take(&mut self.rename_pending_select);
         let picked: Vec<PathBuf> = std::mem::take(&mut self.pending_select).into_iter().filter(|p| present.contains(p)).collect();
         if !picked.is_empty() {
             self.selection = picked.into_iter().collect();
@@ -1014,6 +1020,9 @@ impl Explorer {
             // (`SVSI_FOCUSED | SVSI_ENSUREVISIBLE`, from memory).
             let first = self.entries.iter().position(|e| self.selection.contains(&e.path));
             (self.focus_item, self.anchor, self.reveal) = (first, first, first);
+            if rename_picked {
+                self.begin_rename();
+            }
         }
     }
 
@@ -1087,6 +1096,22 @@ impl Explorer {
         }
         self.history.push(path);
         self.after_navigation();
+    }
+
+    /// New > Folder: makes "New Folder" in the open folder and starts renaming
+    /// it once the listing shows it, as Explorer does (the name is left to the
+    /// user). Like Explorer's, the creation has no undo step.
+    fn new_folder(&mut self) {
+        let path = fileops::new_folder_name(self.current());
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                self.status = None;
+                self.pending_select = BTreeSet::from([path]);
+                self.rename_pending_select = true;
+                self.reload();
+            }
+            Err(e) => self.status = Some(format!("Couldn't create the folder: {e}")),
+        }
     }
 
     /// Address bar entry: a folder is opened, an existing file is revealed
@@ -1257,6 +1282,8 @@ impl Explorer {
             return;
         }
         if let Some(target) = self.rename_item(&r.path, &name) {
+            // The new name sorts elsewhere: the listing on its way scrolls to it.
+            self.pending_select = BTreeSet::from([target.clone()]);
             self.selection = BTreeSet::from([target]);
         }
     }
@@ -1445,6 +1472,7 @@ impl Explorer {
             match action {
                 Action::Navigate(p) => self.navigate(p),
                 Action::GoTo(p) => self.go_to(p),
+                Action::NewFolder => self.new_folder(),
                 Action::Open(p) => {
                     // The second click of a double-click.
                     self.slow_click.cancel();
@@ -3217,6 +3245,12 @@ fn background_menu(ui: &mut Ui, folder: &Path, can_paste: bool, actions: &mut Ve
         actions.push(Action::OpenTerminal(folder.to_path_buf()));
     }
     ui.separator();
+    delayed_menu_button(ui, "New", false, |ui| {
+        if ui.button("Folder").clicked() {
+            actions.push(Action::NewFolder);
+        }
+    });
+    ui.separator();
     if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
         actions.push(Action::Properties(folder.to_path_buf()));
     }
@@ -4016,6 +4050,36 @@ mod clipboard {
         app.go_to(dir.join("nope"));
         assert_eq!(app.current(), dir.join("sub"));
         assert!(app.status.as_deref().is_some_and(|s| s.contains("is not a folder")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn new_folder_is_created_selected_and_ready_to_rename() {
+        let (mut app, dir) = explorer("newfolder");
+        app.new_folder();
+        app.finish_listing();
+        let made = dir.join("New Folder");
+        assert!(made.is_dir());
+        assert_eq!(app.selection, BTreeSet::from([made.clone()]));
+        assert_eq!(app.rename.as_ref().map(|r| (r.path.clone(), r.text.clone())), Some((made, "New Folder".to_string())));
+        app.rename = None;
+        app.new_folder();
+        app.finish_listing();
+        assert_eq!(app.rename.as_ref().map(|r| r.text.as_str()), Some("New Folder (2)"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn renamed_item_is_scrolled_into_view() {
+        let (mut app, dir) = explorer("renamescroll");
+        app.new_folder();
+        app.finish_listing();
+        app.rename.as_mut().unwrap().text = "zzzz".into();
+        app.commit_rename();
+        app.finish_listing();
+        let target = dir.join("zzzz");
+        assert_eq!(app.selection, BTreeSet::from([target.clone()]));
+        assert_eq!(app.reveal.map(|i| app.entries[i].path.clone()), Some(target));
         fs::remove_dir_all(&dir).unwrap();
     }
 

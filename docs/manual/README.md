@@ -201,7 +201,7 @@ The status bar shows how many items you have selected and how much space they ta
 
 <img src="images/open-with-menu.png" alt="The Open With list" width="900">
 
-Right-click an empty spot in the list for **Paste**, **Move Here**, **Refresh**, and **Properties** of the folder you're in.
+Right-click an empty spot in the list for **Paste**, **Move Here**, **Refresh**, **New**, and **Properties** of the folder you're in. **New › Folder** makes a folder called New Folder (or New Folder (2) and so on if that name is taken) and lets you type its name right away.
 
 ## 7. Renaming
 

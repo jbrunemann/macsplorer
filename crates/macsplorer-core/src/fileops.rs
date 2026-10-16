@@ -393,6 +393,15 @@ pub fn copy_name(dir: &Path, name: &OsStr, is_dir: bool) -> PathBuf {
         .expect("an unbounded range always yields a free name")
 }
 
+/// The first free "New Folder", "New Folder (2)", ... in `dir`: the name
+/// Explorer gives a folder made with New > Folder.
+pub fn new_folder_name(dir: &Path) -> PathBuf {
+    (1..)
+        .map(|n| dir.join(if n == 1 { "New Folder".to_string() } else { format!("New Folder ({n})") }))
+        .find(|p| p.symlink_metadata().is_err())
+        .expect("an unbounded range always yields a free name")
+}
+
 /// The first free "Name - Shortcut.ext", "Name - Shortcut (2).ext", ... in
 /// `dir`. Windows 10 names a shortcut "Name.ext - Shortcut.lnk"; a symbolic
 /// link has no `.lnk`, so the extension stays last and the link keeps its
@@ -620,6 +629,17 @@ mod tests {
         assert_eq!(name("noext", false), "noext - Copy");
         fs::write(dir.join("a - Copy.txt"), "").unwrap();
         assert_eq!(name("a.txt", false), "a - Copy (2).txt");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn new_folders_count_up() {
+        let dir = scratch("newfolder");
+        assert_eq!(new_folder_name(&dir), dir.join("New Folder"));
+        fs::create_dir(dir.join("New Folder")).unwrap();
+        assert_eq!(new_folder_name(&dir), dir.join("New Folder (2)"));
+        fs::write(dir.join("New Folder (2)"), "").unwrap();
+        assert_eq!(new_folder_name(&dir), dir.join("New Folder (3)"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
