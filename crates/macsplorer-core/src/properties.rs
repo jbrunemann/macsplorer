@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -53,8 +54,14 @@ pub fn item_info(path: &Path) -> io::Result<ItemInfo> {
         created: meta.created().ok(),
         modified: meta.modified().ok(),
         accessed: meta.accessed().ok(),
+        #[cfg(unix)]
         on_fat: is_fat_volume(path),
+        #[cfg(not(unix))]
+        on_fat: false,
+        #[cfg(unix)]
         mode: meta.mode(),
+        #[cfg(not(unix))]
+        mode: 0,
         link,
     })
 }
@@ -88,6 +95,7 @@ pub fn with_permissions(mode: u32, bits: [[bool; 3]; 3]) -> u32 {
 /// Sets `path`'s permission bits to `bits`, keeping the special bits. A
 /// symlink's target is changed, like `chmod`, which is also what the
 /// dialog shows.
+#[cfg(unix)]
 pub fn set_permissions(path: &Path, bits: [[bool; 3]; 3]) -> io::Result<()> {
     let mode = with_permissions(fs::metadata(path)?.mode(), bits) & 0o7777;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))

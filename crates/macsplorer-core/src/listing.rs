@@ -1,12 +1,16 @@
 //! Directory listing and sorting for the details view.
 
 use std::cmp::Ordering;
+#[cfg(unix)]
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
-use std::sync::{Mutex, OnceLock};
+#[cfg(unix)]
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use crate::columns::Column;
@@ -168,16 +172,22 @@ fn read_entry(path: PathBuf, name: String, own: &fs::Metadata, branches: bool) -
         // on a real folder, which must still open as one.
         _ => (!meta.is_dir() && flags & K_IS_ALIAS != 0).then_some(Link::Alias),
     };
-    let own = if symlink { own } else { &meta };
+    #[cfg(unix)]
+    let (mode, owner, group, comment) = {
+        let own = if symlink { own } else { &meta };
+        (own.mode(), user_name(own.uid()), group_name(own.gid()), comment(&path))
+    };
+    #[cfg(not(unix))]
+    let (mode, owner, group, comment) = Default::default();
     Entry {
         size: (kind == RenameKind::File).then_some(meta.len()),
         modified: meta.modified().ok(),
         created: meta.created().ok(),
         accessed: meta.accessed().ok(),
-        mode: own.mode(),
-        owner: user_name(own.uid()),
-        group: group_name(own.gid()),
-        comment: comment(&path),
+        mode,
+        owner,
+        group,
+        comment,
         custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
         branch: (branches && kind == RenameKind::Folder && is_git_repo(&path)).then(|| crate::git::branch_label(&path)).flatten(),
         link,
@@ -254,6 +264,7 @@ pub fn format_mode(mode: u32) -> String {
 }
 
 /// The account name for a user ID, or the number if there is none.
+#[cfg(unix)]
 pub fn user_name(uid: u32) -> String {
     static CACHE: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
     cached(&CACHE, uid, || {
@@ -266,6 +277,7 @@ pub fn user_name(uid: u32) -> String {
 }
 
 /// The group name for a group ID, or the number if there is none.
+#[cfg(unix)]
 pub fn group_name(gid: u32) -> String {
     static CACHE: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
     cached(&CACHE, gid, || {
@@ -276,12 +288,14 @@ pub fn group_name(gid: u32) -> String {
     })
 }
 
+#[cfg(unix)]
 fn cached(cache: &OnceLock<Mutex<HashMap<u32, String>>>, id: u32, look_up: impl FnOnce() -> Option<String>) -> String {
     let mut map = cache.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     map.entry(id).or_insert_with(|| look_up().unwrap_or_else(|| id.to_string())).clone()
 }
 
 /// Reads an extended attribute, `None` if it isn't there.
+#[cfg(unix)]
 fn read_xattr(path: &Path, name: &std::ffi::CStr) -> Option<Vec<u8>> {
     use std::os::unix::ffi::OsStrExt;
     let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -402,6 +416,7 @@ pub fn sort_entries(entries: &mut [Entry], spec: SortSpec) {
 /// Bytes available to the current user on the volume holding `path`, like
 /// `GetDiskFreeSpaceEx`'s `lpFreeBytesAvailable` (what the status bar's
 /// "Disk free space" shows). `None` if the volume can't be queried.
+#[cfg(unix)]
 pub fn free_space(path: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
     let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;

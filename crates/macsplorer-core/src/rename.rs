@@ -126,6 +126,7 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
             return Err(err);
         }
     }
+    #[cfg(unix)]
     if let (Ok(a), Ok(b)) = (fs::symlink_metadata(from), fs::symlink_metadata(to)) {
         use std::os::unix::fs::MetadataExt;
         if (a.dev(), a.ino()) != (b.dev(), b.ino()) {

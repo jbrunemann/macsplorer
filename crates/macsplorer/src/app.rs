@@ -24,10 +24,15 @@ use macsplorer_core::history::History;
 use macsplorer_core::isearch::{self, IncrementalSearch};
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
 use macsplorer_core::marquee::{self, Marquee};
-use macsplorer_core::listing::{Entry, SortSpec, entry_at, format_byte_size, format_size, free_space, list_dir, list_dir_with, sort_entries};
+use macsplorer_core::listing::{Entry, SortSpec, entry_at, format_byte_size, format_size, list_dir, list_dir_with, sort_entries};
+#[cfg(unix)]
+use macsplorer_core::listing::free_space;
 use macsplorer_core::natural::natural_cmp;
 use macsplorer_core::preferences::{Preferences, SortOrder, ViewMode};
-use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
+use macsplorer_core::places::{favorites, volumes};
+#[cfg(unix)]
+use macsplorer_core::places::{computer_name, is_ejectable};
+#[cfg(unix)]
 use macsplorer_core::properties::set_permissions;
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::slow_click::{self, SlowClick};
@@ -158,7 +163,9 @@ enum Action {
     /// Help > Open config file: the settings file in a text editor.
     OpenConfig,
     /// Nautilus' "Open in Terminal": a terminal window in this folder.
+    #[cfg(unix)]
     OpenTerminal(PathBuf),
+    #[cfg(unix)]
     Eject(PathBuf),
     Cut,
     Copy,
@@ -318,6 +325,7 @@ pub struct Explorer {
     load_tx: Sender<LoadResult>,
     load_rx: Receiver<LoadResult>,
     /// `platform::eject` runs on a worker thread; (volume, error text).
+    #[cfg_attr(not(unix), allow(dead_code))]
     eject_tx: Sender<(PathBuf, Result<(), String>)>,
     eject_rx: Receiver<(PathBuf, Result<(), String>)>,
     clipboard: Option<Clipboard>,
@@ -374,7 +382,10 @@ impl Explorer {
             visible_cache: None,
             load_error: None,
             free_space: None,
+            #[cfg(unix)]
             computer_name: computer_name().unwrap_or_else(|| "My Computer".into()),
+            #[cfg(not(unix))]
+            computer_name: "My Computer".into(),
             list_tx,
             list_rx,
             list_request: 0,
@@ -470,6 +481,7 @@ impl Explorer {
     }
 
     /// Unmounts and ejects a volume off the UI thread; `poll_ejects` reports.
+    #[cfg(unix)]
     fn eject(&mut self, volume: PathBuf) {
         self.status = Some(format!("Ejecting {}...", volume.display()));
         let (tx, ctx) = (self.eject_tx.clone(), self.ctx.clone());
@@ -727,7 +739,11 @@ impl Explorer {
         let (tx, ctx) = (self.list_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let result = list_dir_with(&dir, show_hidden, branches).map_err(|e| platform::open_error(&dir, &e));
-            if tx.send((request, result, free_space(&dir))).is_ok() {
+            #[cfg(unix)]
+            let free = free_space(&dir);
+            #[cfg(not(unix))]
+            let free = None;
+            if tx.send((request, result, free)).is_ok() {
                 ctx.request_repaint();
             }
         });
@@ -1103,7 +1119,10 @@ impl Explorer {
     fn open_properties(&mut self, path: PathBuf) {
         let entry = self.entries.iter().find(|e| e.path == path).cloned().unwrap_or_else(|| Properties::folder_entry(&path));
         // The root and mounted volumes can't be renamed from here.
+        #[cfg(unix)]
         let editable = path.parent().is_some() && !is_ejectable(&path);
+        #[cfg(not(unix))]
+        let editable = path.parent().is_some();
         self.properties.push(Properties::new(&self.ctx, entry, self.settings.show_extensions, editable));
     }
 
@@ -1122,6 +1141,7 @@ impl Explorer {
                         None => return true,
                     }
                 }
+                #[cfg(unix)]
                 if let Some(bits) = dialog.new_permissions() {
                     match set_permissions(dialog.path(), bits) {
                         Ok(()) => {
@@ -1355,11 +1375,13 @@ impl Explorer {
                         self.status = Some(format!("Couldn't open the config file: {e}"));
                     }
                 }
+                #[cfg(unix)]
                 Action::OpenTerminal(p) => {
                     if let Err(e) = platform::open_terminal(&p, Preferences::load().terminal.as_deref()) {
                         self.status = Some(format!("Couldn't open a terminal in {}: {e}", p.display()));
                     }
                 }
+                #[cfg(unix)]
                 Action::Eject(p) => self.eject(p),
                 Action::Cut => self.set_clipboard(true),
                 Action::Copy => self.set_clipboard(false),
@@ -2739,6 +2761,7 @@ impl eframe::App for Explorer {
     }
 }
 
+#[cfg(unix)]
 const TERMINAL_LABEL: &str = "Open in Terminal";
 
 /// The "Open With" submenu: the file's apps, then "Choose Program...".
@@ -2784,9 +2807,11 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
     if ui.button(platform::REVEAL_LABEL).clicked() {
         actions.push(Action::RevealInFinder(entry.path.clone()));
     }
+    #[cfg(unix)]
     if entry.kind == RenameKind::Folder && ui.button(TERMINAL_LABEL).clicked() {
         actions.push(Action::OpenTerminal(entry.path.clone()));
     }
+    #[cfg(unix)]
     if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
         actions.push(Action::Eject(entry.path.clone()));
     }
@@ -2831,6 +2856,7 @@ fn background_menu(ui: &mut Ui, folder: &Path, can_paste: bool, actions: &mut Ve
     if ui.add(menu_item("Refresh", platform::shortcut(false, "R"))).clicked() {
         actions.push(Action::Refresh);
     }
+    #[cfg(unix)]
     if ui.button(TERMINAL_LABEL).clicked() {
         actions.push(Action::OpenTerminal(folder.to_path_buf()));
     }
@@ -3295,9 +3321,11 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
         if ui.button(platform::REVEAL_LABEL).clicked() {
             actions.push(Action::RevealInFinder(row.key.path.clone()));
         }
+        #[cfg(unix)]
         if ui.button(TERMINAL_LABEL).clicked() {
             actions.push(Action::OpenTerminal(row.key.path.clone()));
         }
+        #[cfg(unix)]
         if is_ejectable(&row.key.path) && ui.button("Eject").clicked() {
             actions.push(Action::Eject(row.key.path.clone()));
         }

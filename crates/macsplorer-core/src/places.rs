@@ -1,5 +1,6 @@
 //! Sidebar locations: the macOS (and Linux) stand-ins for Explorer's known folders.
 
+#[cfg(unix)]
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -101,6 +102,7 @@ pub fn favorites() -> Vec<Place> {
 /// The machine's name for the status bar's zone pane ("My Computer" in
 /// Explorer): the host name without its domain, e.g. "pc192" for
 /// "pc192.example.com". `None` if it can't be read.
+#[cfg(unix)]
 pub fn computer_name() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: the buffer is valid for its length; gethostname NUL-terminates
@@ -119,13 +121,17 @@ const ROOT_LABEL: &str = if cfg!(target_os = "macos") { "Macintosh HD" } else { 
 
 /// Mounted volumes, Explorer's "This PC" drives.
 pub fn volumes() -> Vec<Place> {
+    #[allow(unused_mut)]
     let mut out = vec![Place { label: ROOT_LABEL.into(), path: PathBuf::from("/") }];
-    let mut vols: Vec<Place> = mounted_volumes()
-        .into_iter()
-        .map(|path| Place { label: path.file_name().unwrap_or_default().to_string_lossy().into_owned(), path })
-        .collect();
-    vols.sort_by(|a, b| crate::natural::natural_cmp(&a.label, &b.label));
-    out.extend(vols);
+    #[cfg(unix)]
+    {
+        let mut vols: Vec<Place> = mounted_volumes()
+            .into_iter()
+            .map(|path| Place { label: path.file_name().unwrap_or_default().to_string_lossy().into_owned(), path })
+            .collect();
+        vols.sort_by(|a, b| crate::natural::natural_cmp(&a.label, &b.label));
+        out.extend(vols);
+    }
     out
 }
 
@@ -147,6 +153,7 @@ fn mounted_volumes() -> Vec<PathBuf> {
 
 /// True if `path` is a mounted volume that can be ejected (disk images, USB
 /// drives, network shares), never the boot volume.
+#[cfg(unix)]
 pub fn is_ejectable(path: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {

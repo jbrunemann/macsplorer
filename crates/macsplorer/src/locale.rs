@@ -6,12 +6,15 @@
 use std::path::Path;
 use std::time::SystemTime;
 
+#[cfg(unix)]
 use chrono::{DateTime, Local};
 
+#[cfg(unix)]
 use macsplorer_core::properties::{RelativeDay, relative_day};
 
 /// Reads the number separators. Call once at startup, before any thread
 /// starts (Linux's `setlocale` isn't thread-safe).
+#[cfg(unix)]
 pub fn install() {
     let (group, decimal) = imp::separators();
     // Narrow no-break spaces (French and others) are missing from Tahoma.
@@ -24,14 +27,28 @@ pub fn install() {
 /// date the file system doesn't keep.
 pub fn long_date_time(when: Option<SystemTime>, with_time: bool) -> String {
     let Some(when) = when else { return String::new() };
-    let relative = relative_day(DateTime::<Local>::from(when).date_naive(), Local::now().date_naive());
-    imp::long_date_time(when, relative, with_time)
+    #[cfg(unix)]
+    {
+        let relative = relative_day(DateTime::<Local>::from(when).date_naive(), Local::now().date_naive());
+        imp::long_date_time(when, relative, with_time)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (when, with_time);
+        String::new()
+    }
 }
 
 /// The Details view's Modified column: the locale's short date and short
 /// time.
 pub fn short_date_time(when: SystemTime) -> String {
-    imp::short_date_time(when)
+    #[cfg(unix)]
+    return imp::short_date_time(when);
+    #[cfg(not(unix))]
+    {
+        let _ = when;
+        String::new()
+    }
 }
 
 /// Finder's Kind for an item, in the system language: "Microsoft Excel
@@ -40,7 +57,13 @@ pub fn short_date_time(when: SystemTime) -> String {
 /// `SHGFI_TYPENAME` in `_InitSingleFilePrsht`). Reads metadata, so call it
 /// off the UI thread. `None` on Linux or when the system has no name.
 pub fn kind_name(path: &Path) -> Option<String> {
-    imp::kind_name(path)
+    #[cfg(unix)]
+    return imp::kind_name(path);
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]

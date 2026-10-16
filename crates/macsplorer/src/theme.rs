@@ -164,6 +164,7 @@ pub fn bold(size: f32) -> FontId {
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let mut bold_fonts = Vec::new();
+    #[cfg(unix)]
     for (key, paths, family) in [("tahoma", platform::TAHOMA, FontFamily::Proportional), ("tahoma-bold", platform::TAHOMA_BOLD, bold_family())] {
         if let Some(bytes) = paths.iter().find_map(|path| std::fs::read(path).ok()) {
             fonts.font_data.insert(key.into(), Arc::new(FontData::from_owned(bytes)));

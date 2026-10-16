@@ -145,6 +145,7 @@ fn parse_frame(text: &str) -> Option<([f32; 2], [f32; 2])> {
 
 /// Shows `path` selected in the file manager. Blocks briefly; call it off
 /// the UI thread.
+#[cfg_attr(not(unix), allow(unused_variables))]
 pub fn reveal(path: &Path) {
     #[cfg(target_os = "macos")]
     {
@@ -172,6 +173,7 @@ pub fn reveal(path: &Path) {
 /// the user's choice from the settings file: on macOS an app name, which gets
 /// the folder like Finder's drop on the Dock icon (Terminal, iTerm and Ghostty
 /// open a window there); on Linux a command. The error is what to tell the user.
+#[cfg(unix)]
 pub fn open_terminal(folder: &Path, preferred: Option<&str>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -208,6 +210,7 @@ pub fn open_terminal(folder: &Path, preferred: Option<&str>) -> Result<(), Strin
 
 /// Unmounts and ejects a mounted volume. Blocks; call it off the UI thread.
 /// The error is the tool's own message.
+#[cfg(unix)]
 pub fn eject(volume: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let attempts: [(&str, &[&str]); 1] = [("diskutil", &["eject"])];

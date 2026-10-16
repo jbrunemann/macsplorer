@@ -276,6 +276,7 @@ impl Properties {
     }
 
     /// The boxes' state when they differ from what is on disk.
+    #[cfg(unix)]
     pub fn new_permissions(&self) -> Option<Permissions> {
         self.permissions.filter(|_| self.permissions_changed())
     }
@@ -286,6 +287,7 @@ impl Properties {
     }
 
     /// The permissions went through: the boxes are the saved state now.
+    #[cfg(unix)]
     pub fn permissions_applied(&mut self) {
         self.saved_permissions = self.permissions;
     }

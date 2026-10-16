@@ -260,12 +260,14 @@ fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
 fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
     let meta = src.symlink_metadata()?;
+    #[cfg(unix)]
     if meta.is_symlink() {
-        std::os::unix::fs::symlink(std::fs::read_link(src)?, dest)
-    } else if meta.is_dir() {
+        return std::os::unix::fs::symlink(std::fs::read_link(src)?, dest);
+    }
+    if meta.is_dir() {
         std::fs::create_dir(dest)?;
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
