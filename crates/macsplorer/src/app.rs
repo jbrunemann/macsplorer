@@ -3752,7 +3752,20 @@ fn view_choices(ui: &mut Ui, current: ViewMode, actions: &mut Vec<Action>) {
     }
 }
 
+/// The typed or pasted address without the quotes a path copied from a shell
+/// or a document often carries ('/Users/me/', "/Users/me/", or curly ones).
+fn unquote(input: &str) -> &str {
+    let input = input.trim();
+    for (open, close) in [('\'', '\''), ('"', '"'), ('\u{2018}', '\u{2019}'), ('\u{201c}', '\u{201d}')] {
+        if let Some(inner) = input.strip_prefix(open).and_then(|s| s.strip_suffix(close)) {
+            return inner.trim();
+        }
+    }
+    input
+}
+
 fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
+    let input = unquote(input);
     match (input.strip_prefix('~'), home) {
         (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
         _ => PathBuf::from(input),
@@ -3763,6 +3776,17 @@ fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn pasted_paths_lose_their_quotes() {
+        let home = Path::new("/Users/me");
+        for typed in ["'/Users/me/'", "\"/Users/me/\"", " '/Users/me/' ", "\u{2018}/Users/me/\u{2019}", "\u{201c}/Users/me/\u{201d}"] {
+            assert_eq!(expand_tilde(typed, Some(home)), PathBuf::from("/Users/me/"), "{typed}");
+        }
+        assert_eq!(expand_tilde("'~/Documents'", Some(home)), PathBuf::from("/Users/me/Documents"));
+        assert_eq!(expand_tilde("/it's", Some(home)), PathBuf::from("/it's"));
+        assert_eq!(expand_tilde("/a'b'", Some(home)), PathBuf::from("/a'b'"));
+    }
 
     fn tree() -> FolderTree {
         let root = |label: &str, path: &str| Root { label: label.into(), path: path.into(), section: Section::Favorites };
