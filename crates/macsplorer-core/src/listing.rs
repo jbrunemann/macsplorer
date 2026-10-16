@@ -129,53 +129,63 @@ pub fn list_dir_with(dir: &Path, show_hidden: bool, branches: bool) -> io::Resul
     for item in fs::read_dir(dir)? {
         let Ok(item) = item else { continue };
         let name = item.file_name().to_string_lossy().into_owned();
-        let hidden = is_hidden_name(&name);
-        if hidden && !show_hidden {
+        if is_hidden_name(&name) && !show_hidden {
             continue;
         }
-        let path = item.path();
-        // Follow symlinks so a link to a folder behaves like a folder.
-        let target = fs::metadata(&path);
-        let broken = target.is_err();
-        let Ok(meta) = target.or_else(|_| item.metadata()) else { continue };
-        // The Attributes column describes the link itself, like `ls -l`.
-        let symlink = item.file_type().is_ok_and(|t| t.is_symlink());
-        let own = if symlink { item.metadata().ok() } else { None };
-        let own = own.as_ref().unwrap_or(&meta);
-        let kind = if !meta.is_dir() {
-            RenameKind::File
-        } else if is_package_name(&name) {
-            RenameKind::Package
-        } else {
-            RenameKind::Folder
-        };
-        let flags = finder_flags(&path);
-        let link = match (symlink, broken) {
-            (true, true) => Some(Link::Broken),
-            (true, false) => Some(Link::Symlink),
-            // An alias is always a file. Copy tools sometimes leave the flag
-            // on a real folder, which must still open as one.
-            _ => (!meta.is_dir() && flags & K_IS_ALIAS != 0).then_some(Link::Alias),
-        };
-        out.push(Entry {
-            size: (kind == RenameKind::File).then_some(meta.len()),
-            modified: meta.modified().ok(),
-            created: meta.created().ok(),
-            accessed: meta.accessed().ok(),
-            mode: own.mode(),
-            owner: user_name(own.uid()),
-            group: group_name(own.gid()),
-            comment: comment(&path),
-            custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
-            branch: (branches && kind == RenameKind::Folder && is_git_repo(&path)).then(|| crate::git::branch_label(&path)).flatten(),
-            link,
-            name,
-            path,
-            kind,
-            hidden,
-        });
+        let Ok(own) = item.metadata() else { continue };
+        out.push(read_entry(item.path(), name, &own, branches));
     }
     Ok(out)
+}
+
+/// The listing's entry for one item, or `None` when it can't be read.
+pub fn entry_at(path: &Path) -> Option<Entry> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let own = fs::symlink_metadata(path).ok()?;
+    Some(read_entry(path.to_path_buf(), name, &own, false))
+}
+
+/// An entry from the item's own metadata (`own`, not following a link).
+fn read_entry(path: PathBuf, name: String, own: &fs::Metadata, branches: bool) -> Entry {
+    // Follow symlinks so a link to a folder behaves like a folder.
+    let target = fs::metadata(&path);
+    let broken = target.is_err();
+    let meta = target.unwrap_or_else(|_| own.clone());
+    // The Attributes column describes the link itself, like `ls -l`.
+    let symlink = own.file_type().is_symlink();
+    let kind = if !meta.is_dir() {
+        RenameKind::File
+    } else if is_package_name(&name) {
+        RenameKind::Package
+    } else {
+        RenameKind::Folder
+    };
+    let flags = finder_flags(&path);
+    let link = match (symlink, broken) {
+        (true, true) => Some(Link::Broken),
+        (true, false) => Some(Link::Symlink),
+        // An alias is always a file. Copy tools sometimes leave the flag
+        // on a real folder, which must still open as one.
+        _ => (!meta.is_dir() && flags & K_IS_ALIAS != 0).then_some(Link::Alias),
+    };
+    let own = if symlink { own } else { &meta };
+    Entry {
+        size: (kind == RenameKind::File).then_some(meta.len()),
+        modified: meta.modified().ok(),
+        created: meta.created().ok(),
+        accessed: meta.accessed().ok(),
+        mode: own.mode(),
+        owner: user_name(own.uid()),
+        group: group_name(own.gid()),
+        comment: comment(&path),
+        custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
+        branch: (branches && kind == RenameKind::Folder && is_git_repo(&path)).then(|| crate::git::branch_label(&path)).flatten(),
+        link,
+        hidden: is_hidden_name(&name),
+        name,
+        path,
+        kind,
+    }
 }
 
 /// `kHasCustomIcon` in the Finder flags: Finder shows the item's own icon.

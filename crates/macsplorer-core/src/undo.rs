@@ -44,6 +44,9 @@ pub enum UndoOp {
     /// The copies that were made.
     Copy(Vec<PathBuf>),
     Delete(Vec<Trashed>),
+    /// Several steps of one operation (a paste that replaced items), undone
+    /// last to first.
+    Group(Vec<UndoOp>),
 }
 
 impl UndoOp {
@@ -54,6 +57,7 @@ impl UndoOp {
             UndoOp::Move(_) => "Move",
             UndoOp::Copy(_) => "Copy",
             UndoOp::Delete(_) => "Delete",
+            UndoOp::Group(ops) => ops.last().map_or("Delete", UndoOp::label),
         }
     }
 
@@ -63,16 +67,24 @@ impl UndoOp {
             UndoOp::Move(items) => items.is_empty(),
             UndoOp::Copy(items) => items.is_empty(),
             UndoOp::Delete(items) => items.is_empty(),
+            UndoOp::Group(ops) => ops.iter().all(UndoOp::is_empty),
         }
     }
 
     /// The folders whose contents an undo changes.
     pub fn dirs(&self) -> Vec<PathBuf> {
+        if let UndoOp::Group(ops) = self {
+            let mut dirs: Vec<PathBuf> = ops.iter().flat_map(UndoOp::dirs).collect();
+            dirs.sort();
+            dirs.dedup();
+            return dirs;
+        }
         let paths: Vec<&Path> = match self {
             UndoOp::Rename { from, .. } => vec![from],
             UndoOp::Move(items) => items.iter().flat_map(|(a, b)| [a.as_path(), b.as_path()]).collect(),
             UndoOp::Copy(items) => items.iter().map(PathBuf::as_path).collect(),
             UndoOp::Delete(items) => items.iter().map(|t| t.original.as_path()).collect(),
+            UndoOp::Group(_) => unreachable!("handled above"),
         };
         let mut dirs: Vec<PathBuf> = paths.into_iter().filter_map(Path::parent).map(Path::to_path_buf).collect();
         dirs.sort();
@@ -92,6 +104,10 @@ impl UndoOp {
             }
             UndoOp::Move(items) => {
                 for (original, moved) in items.iter().rev() {
+                    // A merge removed the source folders it emptied.
+                    if let Some(parent) = original.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| (moved.clone(), e))?;
+                    }
                     move_to(moved, original).map_err(|e| (moved.clone(), e))?;
                     back.push(original.clone());
                 }
@@ -105,6 +121,11 @@ impl UndoOp {
                 for item in items.iter().rev() {
                     trash.restore(item).map_err(|e| (item.original.clone(), e))?;
                     back.push(item.original.clone());
+                }
+            }
+            UndoOp::Group(ops) => {
+                for op in ops.iter().rev() {
+                    back.extend(op.undo(trash)?);
                 }
             }
         }

@@ -11,12 +11,48 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use crate::columns::ColumnSet;
+use crate::columns::{Column, ColumnSet};
 use crate::text_size;
 
 const FILE: &str = "settings.json";
 /// The empty file older versions used to mean "dark mode is on".
 const LEGACY_DARK_MARKER: &str = "dark-mode";
+
+/// The item view's mode. Windows 2000's View menu also had Small Icons and
+/// Thumbnails.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewMode {
+    LargeIcons,
+    List,
+    #[default]
+    Details,
+}
+
+impl ViewMode {
+    fn key(self) -> &'static str {
+        match self {
+            ViewMode::LargeIcons => "large_icons",
+            ViewMode::List => "list",
+            ViewMode::Details => "details",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<ViewMode> {
+        [ViewMode::LargeIcons, ViewMode::List, ViewMode::Details].into_iter().find(|v| v.key() == key)
+    }
+}
+
+/// The column the item view is sorted by, and which way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SortOrder {
+    pub column: Column,
+    pub ascending: bool,
+}
+
+/// The smallest window size that is stored; anything smaller is ignored.
+pub const MIN_WINDOW: [f32; 2] = [520.0, 320.0];
+/// Larger stored sizes are cut down to this.
+const MAX_WINDOW: f32 = 16384.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Preferences {
@@ -32,11 +68,18 @@ pub struct Preferences {
     /// Where git was found the last time, so the next launch doesn't have to
     /// search for it. Written by the app, and dropped when git is gone.
     pub git: Option<PathBuf>,
+    /// The item view's mode the last time it was changed.
+    pub view: ViewMode,
+    /// The sort the last time it was changed; `None` until then.
+    pub sort: Option<SortOrder>,
+    /// The window's inner size (in macOS points, before Text Size zoom)
+    /// when it was last resized; `None` until then.
+    pub window: Option<[f32; 2]>,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None }
     }
 }
 
@@ -101,6 +144,13 @@ impl Preferences {
         if let Some(columns) = &self.columns {
             map.insert("columns".into(), columns.to_json());
         }
+        map.insert("view".into(), Value::from(self.view.key()));
+        if let Some(sort) = self.sort {
+            map.insert("sort".into(), serde_json::json!({ "column": sort.column.key(), "ascending": sort.ascending }));
+        }
+        if let Some([w, h]) = self.window {
+            map.insert("window".into(), serde_json::json!({ "width": w.round(), "height": h.round() }));
+        }
         let text = serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
         // Replace the file in one step, so another window reading it never
         // sees half of it.
@@ -118,8 +168,22 @@ impl Preferences {
             zoom: map.get("zoom").and_then(Value::as_f64).map_or(text_size::NORMAL, |z| text_size::snap(z as f32)),
             terminal: map.get("terminal").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(String::from),
             git: map.get("git").and_then(Value::as_str).map(str::trim).filter(|g| !g.is_empty()).map(PathBuf::from),
+            view: map.get("view").and_then(Value::as_str).and_then(ViewMode::from_key).unwrap_or_default(),
+            sort: map.get("sort").and_then(read_sort),
+            window: map.get("window").and_then(read_window),
         }
     }
+}
+
+fn read_sort(value: &Value) -> Option<SortOrder> {
+    let column = value.get("column")?.as_str().and_then(Column::from_key)?;
+    Some(SortOrder { column, ascending: value.get("ascending").and_then(Value::as_bool).unwrap_or(true) })
+}
+
+/// A stored size below [`MIN_WINDOW`] or not a number is ignored.
+fn read_window(value: &Value) -> Option<[f32; 2]> {
+    let side = |key: &str, min: f32| value.get(key)?.as_f64().map(|v| v as f32).filter(|v| v.is_finite() && *v >= min).map(|v| v.min(MAX_WINDOW));
+    Some([side("width", MIN_WINDOW[0])?, side("height", MIN_WINDOW[1])?])
 }
 
 /// A damaged or unexpected file reads as empty.
@@ -219,6 +283,32 @@ mod tests {
         assert_eq!(Preferences::load_from(&dir).zoom, 2.0);
         fs::write(dir.join(FILE), r#"{"zoom": "big"}"#).unwrap();
         assert_eq!(Preferences::load_from(&dir).zoom, 1.0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn view_sort_and_window_are_stored() {
+        let dir = temp("view");
+        let prefs = Preferences::load_from(&dir);
+        assert_eq!((prefs.view, prefs.sort, prefs.window), (ViewMode::Details, None, None));
+        let sort = SortOrder { column: Column::Modified, ascending: false };
+        Preferences { view: ViewMode::List, sort: Some(sort), window: Some([900.4, 600.0]), ..Default::default() }.save_to(&dir).unwrap();
+        let back = Preferences::load_from(&dir);
+        assert_eq!((back.view, back.sort, back.window), (ViewMode::List, Some(sort), Some([900.0, 600.0])));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bad_view_sort_and_window_entries_are_ignored() {
+        let dir = temp("badview");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(FILE), r#"{"view": "tiles", "sort": {"column": "colour"}, "window": {"width": 100, "height": 500}}"#).unwrap();
+        let prefs = Preferences::load_from(&dir);
+        assert_eq!((prefs.view, prefs.sort, prefs.window), (ViewMode::Details, None, None));
+        fs::write(dir.join(FILE), r#"{"sort": {"column": "size"}, "window": {"width": 99999, "height": 700}}"#).unwrap();
+        let prefs = Preferences::load_from(&dir);
+        assert_eq!(prefs.sort, Some(SortOrder { column: Column::Size, ascending: true }));
+        assert_eq!(prefs.window, Some([MAX_WINDOW, 700.0]));
         fs::remove_dir_all(&dir).unwrap();
     }
 

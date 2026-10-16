@@ -111,7 +111,7 @@ impl Column {
 
     /// The name a column is stored under, which stays the same whatever the
     /// caption says.
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Column::Name => "name",
             Column::Size => "size",
@@ -127,7 +127,7 @@ impl Column {
         }
     }
 
-    fn from_key(key: &str) -> Option<Column> {
+    pub fn from_key(key: &str) -> Option<Column> {
         Column::ALL.into_iter().find(|c| c.key() == key)
     }
 }

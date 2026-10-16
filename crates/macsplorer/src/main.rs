@@ -1,5 +1,6 @@
 mod app;
 mod column_dialog;
+mod conflict_dialog;
 mod icons;
 mod locale;
 mod native_icon;
@@ -22,12 +23,14 @@ fn main() -> eframe::Result {
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| "/".into());
 
+    let prefs = macsplorer_core::preferences::Preferences::load();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Macsplorer")
         // Wayland and X11 match the window to its .desktop file by this.
         .with_app_id("macsplorer")
-        .with_inner_size([1000.0, 680.0])
-        .with_min_inner_size([520.0, 320.0])
+        // The size the last window was resized to, else Macsplorer's own.
+        .with_inner_size(prefs.window.unwrap_or([1000.0, 680.0]))
+        .with_min_inner_size(macsplorer_core::preferences::MIN_WINDOW)
         // The Windows 2000 caption and frame are drawn by the app. A
         // borderless window is the only kind macOS doesn't round, and it
         // keeps edge resizing and minimize (winit sets those style bits).
@@ -44,7 +47,6 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(egui::Theme::Light);
             theme::install(&cc.egui_ctx);
-            let prefs = macsplorer_core::preferences::Preferences::load();
             theme::set_dark(&cc.egui_ctx, prefs.dark);
             // The app's Text Size steps replace egui's 10% zoom keys.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);

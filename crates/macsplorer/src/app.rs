@@ -17,15 +17,15 @@ use egui_extras::{Column as TableColumn, TableBuilder};
 use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
-use macsplorer_core::fileops::{copy_into, move_into};
+use macsplorer_core::fileops::{Choice, transfer};
 use macsplorer_core::git;
 use macsplorer_core::history::History;
 use macsplorer_core::isearch::{self, IncrementalSearch};
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
 use macsplorer_core::marquee::{self, Marquee};
-use macsplorer_core::listing::{Entry, SortSpec, format_byte_size, format_size, free_space, list_dir, list_dir_with, sort_entries};
+use macsplorer_core::listing::{Entry, SortSpec, entry_at, format_byte_size, format_size, free_space, list_dir, list_dir_with, sort_entries};
 use macsplorer_core::natural::natural_cmp;
-use macsplorer_core::preferences::Preferences;
+use macsplorer_core::preferences::{Preferences, SortOrder, ViewMode};
 use macsplorer_core::places::{computer_name, favorites, is_ejectable, volumes};
 use macsplorer_core::properties::set_permissions;
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
@@ -35,6 +35,7 @@ use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_
 use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
 use crate::column_dialog::{self, ColumnDialog};
+use crate::conflict_dialog::{self, ConflictDialog};
 use crate::pasteboard::{self, Pasteboard};
 use crate::icons::{self, FileIcons, IconState};
 use crate::locale;
@@ -49,6 +50,9 @@ const LIST_ROW_HEIGHT: f32 = 17.0;
 const LIST_HEADER_HEIGHT: f32 = 18.0;
 const TREE_ROW_HEIGHT: f32 = 18.0;
 const TREE_INDENT: f32 = 19.0;
+/// How long a new window size has to stay before it is written, so a
+/// resize writes the settings file once, at its end.
+const WINDOW_SAVE_DELAY: f64 = 0.5;
 
 type LoadResult = (PathBuf, bool, Result<Vec<Node>, String>);
 /// The Git branch glyph beside text (status bar, Branch column): the room
@@ -69,15 +73,6 @@ enum GitUpdate {
 }
 /// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
 type VisibleCache = ((u64, bool, String), Rc<[usize]>);
-
-/// The item view's mode. Windows 2000's View menu also had Small Icons and
-/// Thumbnails.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ViewMode {
-    LargeIcons,
-    List,
-    Details,
-}
 
 /// Last frame's Large Icons or List layout, for arrow keys handled before
 /// the view is drawn.
@@ -313,6 +308,20 @@ pub struct Explorer {
     /// Paste, delete and undo run on worker threads and report back here.
     op_tx: Sender<OpDone>,
     op_rx: Receiver<OpDone>,
+    /// A paste asks here when the destination has an item of the same name,
+    /// and waits for the answer.
+    conflict_tx: Sender<conflict_dialog::Ask>,
+    conflict_rx: Receiver<conflict_dialog::Ask>,
+    /// The question on screen; the others wait in the channel.
+    conflict: Option<ConflictDialog>,
+    /// Set by `restore_preferences`: changes to the view, the sort and the
+    /// window size are written to the settings file. Off in tests.
+    persist: bool,
+    /// The window size as last read from or written to the settings file.
+    saved_window: Option<[f32; 2]>,
+    /// A new window size and when it was first seen; written once it has
+    /// stayed the same for `WINDOW_SAVE_DELAY`.
+    window_pending: Option<([f32; 2], f64)>,
     undo: UndoStack,
     pending_select: BTreeSet<PathBuf>,
     focus: Pane,
@@ -335,6 +344,7 @@ impl Explorer {
         let (git_tx, git_rx) = channel();
         let (eject_tx, eject_rx) = channel();
         let (op_tx, op_rx) = channel();
+        let (conflict_tx, conflict_rx) = channel();
         let mut app = Self {
             history: History::new(start),
             entries: Vec::new(),
@@ -385,6 +395,12 @@ impl Explorer {
             pb_files: false,
             op_tx,
             op_rx,
+            conflict_tx,
+            conflict_rx,
+            conflict: None,
+            persist: false,
+            saved_window: None,
+            window_pending: None,
             undo: UndoStack::default(),
             pending_select: BTreeSet::new(),
             focus: Pane::List,
@@ -537,40 +553,49 @@ impl Explorer {
             }
         }
         self.status = Some(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len()));
-        let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
+        let (tx, ctx, ask_tx) = (self.op_tx.clone(), self.ctx.clone(), self.conflict_tx.clone());
         thread::spawn(move || {
-            let mut done = OpDone { dirs: vec![dest.clone()], select: Vec::new(), error: None, undo: None };
-            let (mut moved, mut copies) = (Vec::new(), Vec::new());
-            for src in &paths {
-                let result = if cut { move_into(src, &dest) } else { copy_into(src, &dest) };
-                match result {
-                    Ok(new) => {
-                        done.select.push(new.clone());
-                        if cut && let Some(parent) = src.parent() {
-                            done.dirs.push(parent.to_path_buf());
-                        }
-                        if !cut {
-                            copies.push(new);
-                        } else if new != *src {
-                            moved.push((src.clone(), new));
-                        }
-                    }
-                    Err(e) => {
-                        let name = src.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                        let reason = match e.kind() {
-                            std::io::ErrorKind::AlreadyExists => format!("There is already an item named \"{name}\" here."),
-                            _ => format!("Couldn't {} \"{name}\": {e}", if cut { "move" } else { "copy" }),
-                        };
-                        done.error = Some(reason);
-                        break;
-                    }
+            let ask_ctx = ctx.clone();
+            let ask = |conflict: &macsplorer_core::fileops::Conflict| {
+                let (reply, answer) = channel();
+                let folder = conflict.existing.parent().and_then(entry_at);
+                let ask = conflict_dialog::Ask { conflict: conflict.clone(), folder, existing: entry_at(&conflict.existing), source: entry_at(&conflict.source), reply };
+                if ask_tx.send(ask).is_err() {
+                    return Choice::Cancel;
                 }
+                ask_ctx.request_repaint();
+                // The window closing drops the dialog, and with it the sender.
+                answer.recv().unwrap_or(Choice::Cancel)
+            };
+            let result = transfer(&paths, &dest, cut, &SystemTrash, ask);
+            let mut dirs = vec![dest.clone()];
+            if cut {
+                dirs.extend(paths.iter().filter_map(|p| p.parent()).map(Path::to_path_buf));
             }
-            done.undo = Some(if cut { UndoOp::Move(moved) } else { UndoOp::Copy(copies) });
+            let error = result.error.map(|(path, e)| {
+                let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                format!("Couldn't {} \"{name}\": {e}", if cut { "move" } else { "copy" })
+            });
+            let done = OpDone { dirs, select: result.placed, error, undo: result.undo };
             if tx.send(done).is_ok() {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// Shows the question a paste is waiting on, taking the next one when
+    /// it is answered.
+    fn show_conflict(&mut self) {
+        if self.conflict.is_none() {
+            self.conflict = self.conflict_rx.try_recv().ok().map(ConflictDialog::new);
+        }
+        let Some(dialog) = &mut self.conflict else { return };
+        if let Some(choice) = dialog.show(&self.ctx, &mut self.icons) {
+            if let Some(dialog) = self.conflict.take() {
+                dialog.answer(choice);
+            }
+            self.ctx.request_repaint();
+        }
     }
 
     /// Moves the selection to the Trash on a worker thread.
@@ -1024,6 +1049,13 @@ impl Explorer {
             self.columns = columns.clone();
         }
         self.saved_columns = Some(self.columns.clone());
+        self.settings.view = prefs.view;
+        if let Some(sort) = prefs.sort {
+            (self.sort.column, self.sort.ascending) = (sort.column, sort.ascending);
+            self.resort();
+        }
+        self.saved_window = prefs.window;
+        self.persist = true;
         // Finding git can take a moment (and `main` has told the lookup where
         // it was last time): not on this thread. When it is done the Branch
         // column can appear, and the settings file learns where git is.
@@ -1035,6 +1067,39 @@ impl Explorer {
             }
             ctx.request_repaint();
         });
+    }
+
+    /// Writes the window's size once a resize has ended. Not while the
+    /// window is maximized or full screen, which isn't a size to come back
+    /// to. The size is in macOS points: Text Size zooms egui's points.
+    fn save_window_size(&mut self) {
+        if !self.persist {
+            return;
+        }
+        let (rect, maximized, now) = self.ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized == Some(true) || i.viewport().fullscreen == Some(true), i.time));
+        let Some(rect) = rect.filter(|_| !maximized) else { return };
+        let zoom = self.ctx.zoom_factor();
+        let size = [(rect.width() * zoom).round(), (rect.height() * zoom).round()];
+        if Some(size) == self.saved_window {
+            self.window_pending = None;
+            return;
+        }
+        match self.window_pending {
+            Some((pending, since)) if pending == size => {
+                let waited = now - since;
+                if waited >= WINDOW_SAVE_DELAY {
+                    Preferences::update(|p| p.window = Some(size));
+                    self.saved_window = Some(size);
+                    self.window_pending = None;
+                } else {
+                    self.ctx.request_repaint_after(std::time::Duration::from_secs_f64(WINDOW_SAVE_DELAY - waited));
+                }
+            }
+            _ => {
+                self.window_pending = Some((size, now));
+                self.ctx.request_repaint_after(std::time::Duration::from_secs_f64(WINDOW_SAVE_DELAY));
+            }
+        }
     }
 
     /// Writes the column layout when it changed, but not while a divider is
@@ -1107,6 +1172,10 @@ impl Explorer {
                         self.sort.ascending = true;
                     }
                     self.resort();
+                    if self.persist {
+                        let sort = SortOrder { column: self.sort.column, ascending: self.sort.ascending };
+                        Preferences::update(|p| p.sort = Some(sort));
+                    }
                 }
                 Action::ToggleColumn(column) => self.columns.toggle(column),
                 Action::ChooseColumns => {
@@ -1219,6 +1288,9 @@ impl Explorer {
                 }
                 Action::SetView(mode) => {
                     self.settings.view = mode;
+                    if self.persist {
+                        Preferences::update(|p| p.view = mode);
+                    }
                     // Keep the focused item in sight across the switch.
                     self.reveal = self.focus_item;
                 }
@@ -2457,7 +2529,9 @@ impl eframe::App for Explorer {
                 }
             }
         }
+        self.show_conflict();
         self.save_columns();
+        self.save_window_size();
     }
 }
 
@@ -3177,12 +3251,16 @@ mod tests {
         app.columns.toggle(Column::Type);
         app.save_columns();
         assert!(app.saved_columns.is_none());
+        assert!(!app.persist);
 
         let mut stored = ColumnSet::default();
         stored.set_visible(&[Column::Name, Column::Modified]);
-        app.restore_preferences(&Preferences { columns: Some(stored.clone()), ..Default::default() });
+        let sort = SortOrder { column: Column::Modified, ascending: false };
+        app.restore_preferences(&Preferences { columns: Some(stored.clone()), view: ViewMode::List, sort: Some(sort), ..Default::default() });
         assert_eq!(app.columns, stored);
         assert_eq!(app.saved_columns, Some(stored));
+        assert_eq!(app.settings.view, ViewMode::List);
+        assert_eq!((app.sort.column, app.sort.ascending), (Column::Modified, false));
         fs::remove_dir_all(&dir).unwrap();
     }
 }
@@ -3410,20 +3488,21 @@ mod clipboard {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A paste onto a name the folder has asks, and No leaves both alone.
+    /// (Yes would put the old file in the real Trash.)
     #[test]
-    fn paste_conflict_is_reported() {
+    fn paste_conflict_asks() {
         let (mut app, dir) = explorer("conflict");
         fs::write(dir.join("sub/a.txt"), "old").unwrap();
         app.selection = BTreeSet::from([dir.join("a.txt")]);
         app.apply(vec![Action::Cut, Action::Paste(Some(dir.join("sub")))], &[]);
-        for _ in 0..500 {
-            app.poll_ops();
-            if !app.status.as_deref().is_some_and(|s| s.starts_with("Moving")) {
-                break;
-            }
-            thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(app.status.as_deref().unwrap().contains("already an item named"));
+        let ask = app.conflict_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("a question");
+        assert_eq!(ask.conflict.kind, macsplorer_core::fileops::ConflictKind::Item);
+        assert_eq!(ask.conflict.existing, dir.join("sub/a.txt"));
+        assert_eq!(ask.existing.as_ref().map(|e| e.size), Some(Some(3)));
+        ConflictDialog::new(ask).answer(Choice::No);
+        wait(&mut app);
+        assert_eq!(app.status, None);
         assert_eq!(fs::read_to_string(dir.join("sub/a.txt")).unwrap(), "old");
         assert!(dir.join("a.txt").exists());
         fs::remove_dir_all(&dir).unwrap();
@@ -3752,6 +3831,53 @@ mod screenshot {
         let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
         fs::create_dir_all(&out).unwrap();
         image.save(out.join("column-settings.png")).unwrap();
+    }
+
+    /// Confirm File Replace and Confirm Folder Replace for two real items.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn confirm_replace() {
+        use macsplorer_core::fileops::{Conflict, ConflictKind};
+        let dir = std::env::temp_dir().join(format!("macsplorer-shot-replace-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for sub in ["old/Reports", "new/Reports"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(dir.join("old/notes.md"), "x".repeat(2200)).unwrap();
+        fs::write(dir.join("new/notes.md"), "x".repeat(3080)).unwrap();
+        for (name, kind, item) in [("confirm-file-replace", ConflictKind::Item, "notes.md"), ("confirm-folder-replace", ConflictKind::Folder, "Reports")] {
+            let (existing, source) = (dir.join("old").join(item), dir.join("new").join(item));
+            let (reply, _answer) = channel();
+            let ask = conflict_dialog::Ask {
+                conflict: Conflict { kind, source: source.clone(), existing: existing.clone(), moving: false },
+                folder: entry_at(&dir.join("old")),
+                existing: entry_at(&existing),
+                source: entry_at(&source),
+                reply,
+            };
+            let dialog = ConflictDialog::new(ask);
+            let mut harness = Harness::builder().with_size(dialog.size()).with_pixels_per_point(2.0).wgpu().build_ui_state(
+                |ui, state: &mut (ConflictDialog, Option<FileIcons>)| {
+                    let Some(icons) = &mut state.1 else {
+                        theme::install(ui.ctx());
+                        theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                        state.1 = Some(FileIcons::new());
+                        return;
+                    };
+                    let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                    state.0.ui(&mut window, icons);
+                },
+                (dialog, None),
+            );
+            for _ in 0..3 {
+                harness.run();
+            }
+            let image = harness.render().expect("render");
+            let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+            fs::create_dir_all(&out).unwrap();
+            image.save(out.join(format!("{name}.png"))).unwrap();
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Undo enabled after a rename, and the Views menu open.

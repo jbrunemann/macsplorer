@@ -226,11 +226,24 @@ Press **Enter** or click somewhere else to keep the new name. Press **Esc** to c
 
 You can also right-click a folder in the list and choose **Paste** to put the items straight into it.
 
-If you paste into the same folder, or a folder that already has an item with that name, the copy is called "Name - Copy", then "Name - Copy (2)" and so on. Nothing is ever overwritten.
+If you paste into the folder the items came from, each copy is called "Name - Copy", then "Name - Copy (2)" and so on.
+
+### When the name is already taken
+
+If the folder you paste into already has an item with the same name, Macsplorer asks what to do:
+
+<img src="images/confirm-file-replace.png" alt="The Confirm File Replace question" width="430">
+
+- **Yes** replaces the item that's there. It isn't lost: it goes to the Trash, and ⌘Z brings it back.
+- **Yes to All** replaces this one and every other item with a name that's taken, without asking again.
+- **No** leaves both alone and goes on with the next item.
+- **Cancel** stops. What was already copied or moved stays where it is.
+
+When a folder goes into a folder of the same name, the two are merged: the contents end up together in one folder. If none of the names inside clash, this happens without a question. If some do, Macsplorer first asks whether to merge the folders, then asks about each file whose name is taken.
 
 ### Cut and Paste (moving)
 
-Use **Edit › Cut** (⌘X) instead of Copy to move the items. They are shown faded until you paste them somewhere. If the destination already has an item with the same name, the move stops and the status bar tells you, so nothing is lost.
+Use **Edit › Cut** (⌘X) instead of Copy to move the items. They are shown faded until you paste them somewhere. If the destination already has an item with the same name, Macsplorer asks first, as described above.
 
 ### Between windows and Finder
 
@@ -323,7 +336,7 @@ You can also press **⌘+** to go one size up, **⌘−** to go one size down, a
 
 <img src="images/window-dark.png" alt="Macsplorer in dark mode" width="900">
 
-Macsplorer remembers your text size, dark mode and columns the next time you open it. Windows that are already open pick up a change the next time they're opened.
+Macsplorer remembers your text size, dark mode, columns, view, sort order and window size the next time you open it. Windows that are already open pick up a change the next time they're opened.
 
 ## 13. Keyboard shortcuts
 
@@ -374,7 +387,7 @@ Macsplorer doesn't notice changes made elsewhere on its own yet. Click **Refresh
 Not yet. Use Cut and Paste, or Copy and Paste.
 
 **What happens if I paste a file where one with the same name already exists?**
-A copy gets a new name ending in "- Copy". A move stops and tells you, and nothing is replaced.
+Macsplorer asks whether to replace it. If you say yes, the old one goes to the Trash, so ⌘Z can bring it back. See [When the name is already taken](#when-the-name-is-already-taken).
 
 **I deleted something by mistake.**
 Press ⌘Z right away, or open the **Trash** in the Folders pane.

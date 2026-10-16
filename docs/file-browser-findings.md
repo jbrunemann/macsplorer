@@ -599,6 +599,34 @@ Attributes, Comment, Created, Accessed, then More..., so the first eight are the
 `PSFormatForDisplay(PKEY_FileAttributes)`, so the letters come from propsys.dll, which isn't in this setup.
 From memory: one letter per set attribute (R, H, S, A, C, E...), blank if none.
 
+### 2.11 Name conflicts in a copy or move (Windows.Storage `CCopyWorkItem`)
+
+Decompiled from Windows.Storage.dll build 10240 (Ghidra, names from the PDB publics).
+
+- `CCopyWorkItem::_CheckSameName` (0x18001a1e0): when the destination name equals the source's
+  name (`StrCmpCW`) and the destination folder is the source's own folder
+  (`CompareItemsByParsingName` == 0), the item is reported with `FileFailure(...,
+  COPYENGINE_E_SAME_FILE)`. That is the case Explorer turns into "Name - Copy" for a copy;
+  a move into its own folder does nothing.
+- `CCopyWorkItem::ConfirmOverwrite` (0x180018920), when the destination has an item of that name:
+  - If the source is a folder (`IsFolder`) and the existing item merges
+    (`IShellItem_ShouldMergeOnConflict`): in a folder that allows only unique names
+    (`IShellItem_ParentHasUniqueFileNames`), `CFileOperation::GetMergeFolderStats` counts the
+    conflicts inside. With none, and not a rename, the result is `COPYENGINE_S_MERGE` (0x270006)
+    without a prompt. Otherwise the prompt is `COPYENGINE_E_ALREADY_EXISTS_FOLDER` (0x8027002C).
+    A parent without unique names gives `COPYENGINE_S_KEEP_BOTH` (0x27000C).
+  - Anything else prompts with `COPYENGINE_E_ALREADY_EXISTS_NORMAL` (0x80270029). With operation
+    flag 0x400000 set (not used by Explorer's paste, not traced further) it doesn't prompt but
+    compares the times (`CFileOperation::CompareFileTimes`): `COPYENGINE_S_YES` (replace) for
+    one result, `COPYENGINE_S_USER_IGNORED` (skip) for two others.
+  - The prompt (`_ConfirmWorker` → `CFileOperation::PromptUserOrQueue`) is only shown while the
+    work item's stored answer (offset 0x398) is still `COPYENGINE_S_NOT_HANDLED` (0x270003):
+    an "apply to all" answer stands for the rest of the operation (`_AllowsApplyToAll`).
+
+Not traced: the dialog itself. Build 10240 shows the Windows 8 "Replace or Skip Files" UI
+(`COperationStatusBroker`, `CFileOperationConflictItems`); its strings are in the MUI file.
+macsplorer draws Windows 2000's "Confirm File Replace" / "Confirm Folder Replace" from memory.
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
@@ -615,6 +643,7 @@ From memory: one letter per set attribute (R, H, S, A, C, E...), blank if none.
 | Choosing columns (§2.10) | Header menu, toggle and More... dialog as traced (`macsplorer_core::columns::ColumnSet`, `column_dialog.rs`), without the Win7 "Size Column to Fit" items. Shown by default: Name, Size, Modified, Attributes (the user's choice; Windows shows Name, Size, Type, Modified). Columns: the Win2000 eight plus Owner and Group as secondary columns (More... only until shown). **Attributes** shows the Unix permissions as `ls -l` does (`-rw-r--r--`, symlinks as the link itself): like Explorer's attribute letters, each position says whether a flag is set, and it reads the same as `ls`, Finder's Get Info and Linux file managers, where octal (`0644`) needs decoding. **Comment** is Finder's comment (the `kMDItemFinderComment` attribute; Linux: `user.xdg.comment`). Created is the birth time, Accessed the atime. Hidden columns keep their place in the full list, so the menu order doesn't change after a toggle (inferred). Name can be moved in the dialog like in Windows. No beep when Name is unchecked. The dialog wording is XP's from memory (the strings are in the MUI file). Shown columns are per window like the widths. Default widths for the new columns are guesses. |
 | Text size | **Not from Explorer and not traced; from Windows documentation.** Explorer has no text size option of its own: its list view and tree take the system Icon font, and Windows 2000 scaled every program through Display Properties > Settings > Advanced > Font Size (Small Fonts 96 DPI, Large Fonts 120 DPI = 125%, or a custom percentage; a restart applies it) and the Appearance schemes "Windows Standard (large)" and "(extra large)". Build 10240 has DPI scaling at 100 to 200% in Settings > Display, plus "Change only the text size" per element in Control Panel. A DPI change grows text and layout together, so Macsplorer does the same with egui's zoom factor rather than enlarging only the letters (`macsplorer_core::text_size`): View > Text Size, worded after Internet Explorer 5's menu of that name, with Normal 100%, Large 125% (the Win2000 Large Fonts), Larger 150% and Largest 200%. Cmd + / Cmd - step through those choices and Cmd 0 goes back to Normal. Remembered in `settings.json`. |
 | Show Package Contents | **Not from Explorer, from Finder (macOS 27, disassembled).** `-[TBaseBrowserViewController validateShowPackageContents:]` enables it for exactly one selected item that is a package (two further checks on the item weren't traced). `cmdShowPackageContents:` passes that item and the originating window to `+[TGlobalWindowController targetSelectOrCreateWindow:inTarget:selectNodes:]`, which reads the modifier keys like any folder open (`optionsForModifiers:windowController:`): without modifiers the package opens as a folder in the same window, with nothing selected. macsplorer puts it in the item menu under Open for `RenameKind::Package` and navigates in place; the new window with Command isn't done. |
+| Name conflicts (§2.11) | `macsplorer_core::fileops::transfer` asks a callback, which the paste worker turns into a question on a channel and waits on; `conflict_dialog.rs` shows Win2000's dialogs with Yes, Yes to All, No and Cancel (Enter, Y, A, N, Esc). The folder question's second sentence says what macsplorer does: it asks about each file inside. Yes to All covers both kinds of question. **Not from Windows:** a replaced item goes to the Trash instead of being destroyed, and Undo brings it back (`UndoOp::Group`). A move removes the source folders a merge emptied, and Undo recreates them. A file and a folder of one name get the replace question, like build 10240 (only folder onto folder merges). |
 | `CTravelLog` | `Vec<Location>` with a cursor. The back/forward dropdown menu lists entries (`_ShowBackForwardMenu`). |
 | Breadcrumb (`CBreadcrumbBar`) | Each crumb is a button with a chevron dropdown listing subfolders (`_OnDropDown`). Click empty space → edit mode with the full path (`_GoToEditMode`). Crumbs are drag sources and drop targets. Collapse overflow into a root dropdown (`_AddRootDropdownItems`). |
 | `CNscTree` change notifications | FSEvents per expanded node; enumerate in the background (`_StartBackgroundEnum`). |
@@ -627,7 +656,6 @@ Each one can be answered from this setup:
 - Breadcrumb overflow rules and dropdown contents.
 - Travel log limits and back-menu length.
 - Per-folder view defaults per folder type (`CViewSettings::_GetPropertyBagFromTemplate`).
-- Copy/move conflict dialog rules (`CFileOperation`, `CCopyWorkItem`).
 - Navigation pane default roots and expand-to-current-folder behavior.
 - Search box: query syntax and filters.
 - "Open With" submenu contents and order (`COpenWithMenu::QueryContextMenu`, `COpenWithMenu::InitMenuPopup` in shell32). macsplorer currently guesses: default app first, the rest alphabetical, then "Choose Program...".
