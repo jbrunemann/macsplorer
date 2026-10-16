@@ -188,6 +188,7 @@ The status bar shows how many items you have selected and how much space they ta
 | Choice | What it does |
 |---|---|
 | **Open** | Same as a double-click. |
+| **Show Package Contents** | For apps and other packages: shows the files inside them as a folder instead of opening them. **Back** returns to where you were. |
 | **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons. **Choose Program...** lets you pick any app. |
 | **Show in Finder** | Opens a Finder window with the item selected. |
 | **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |

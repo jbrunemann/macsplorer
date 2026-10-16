@@ -2495,6 +2495,11 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
     if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
         actions.push(Action::Open(entry.path.clone()));
     }
+    // After Finder's -[TBaseBrowserViewController cmdShowPackageContents:]:
+    // the package opens as a folder in the same window.
+    if entry.kind == RenameKind::Package && ui.button("Show Package Contents").clicked() {
+        actions.push(Action::Navigate(entry.path.clone()));
+    }
     if open_with::SUPPORTED && entry.kind == RenameKind::File {
         open_with_menu(ui, &entry.path, open_with, icons, actions);
     }
