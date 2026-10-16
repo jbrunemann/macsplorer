@@ -2624,6 +2624,7 @@ impl Explorer {
             let width = (4.0 + GIT_ICON_WIDTH + 4.0 + text_w + 6.0).min(rect.width() * 0.5);
             (segments, width)
         });
+        let grip = !theme::is_maximized(ui.ctx());
         let right = egui::Rect::from_min_max(egui::pos2(rect.right() - place_w, rect.top()), rect.max);
         let mid = egui::Rect::from_min_max(egui::pos2(right.left() - 2.0 - size_w, rect.top()), egui::pos2(right.left() - 2.0, rect.bottom()));
         let git_pane = git.as_ref().map(|(_, w)| egui::Rect::from_min_max(egui::pos2(mid.left() - 2.0 - w, rect.top()), egui::pos2(mid.left() - 2.0, rect.bottom())));
@@ -2632,6 +2633,12 @@ impl Explorer {
         for r in [left, mid, right].into_iter().chain(git_pane) {
             theme::bevel(p, r, Bevel::SunkenThin);
         }
+        // The grip sits inside the last pane's border, in its bottom right corner.
+        if grip {
+            let inner = right.shrink(2.0);
+            theme::size_grip(ui, egui::Rect::from_min_max(egui::pos2(inner.right() - theme::GRIP_WIDTH, inner.top()), inner.max));
+        }
+        let p = ui.painter();
         if let (Some((segments, _)), Some(pane)) = (git, git_pane) {
             let clip = p.with_clip_rect(pane.shrink(2.0));
             let icon = egui::pos2(pane.left() + 4.0 + GIT_ICON_WIDTH / 2.0, pane.center().y);
@@ -2647,7 +2654,8 @@ impl Explorer {
         p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
         let icon = egui::Rect::from_min_size(egui::pos2(right.left() + 4.0, right.center().y - 8.0), egui::vec2(16.0, 16.0));
         theme::paint_icon(p, icon, Icon::Drive, true);
-        p.with_clip_rect(right.shrink(2.0)).text(
+        let name_clip = if grip { right.shrink(2.0).with_max_x(right.right() - 2.0 - theme::GRIP_WIDTH) } else { right.shrink(2.0) };
+        p.with_clip_rect(name_clip).text(
             egui::pos2(icon.right() + 4.0, right.center().y),
             egui::Align2::LEFT_CENTER,
             &self.computer_name,

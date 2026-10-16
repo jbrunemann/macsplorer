@@ -696,6 +696,52 @@ pub fn resize_frame(ui: &Ui, outer: Rect) {
     }
 }
 
+/// Width of the size grip at the right end of the status bar.
+pub const GRIP_WIDTH: f32 = 16.0;
+
+/// Whether the window is maximized (the grip is hidden then, as in Windows).
+pub fn is_maximized(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.viewport().maximized.unwrap_or(false))
+}
+
+/// The status bar's size grip: three diagonal ridges (shadow with a highlight
+/// line beside it) in the bottom right corner, and a drag handle that resizes
+/// the window. On macOS winit cannot start a resize drag, so the size follows
+/// the pointer instead.
+pub fn size_grip(ui: &Ui, area: Rect) {
+    let p = ui.painter();
+    let (right, bottom) = (area.right(), area.bottom());
+    let pixel = |dx: f32, dy: f32, c: Color32| {
+        let min = pos2(right - dx - 1.0, bottom - dy - 1.0);
+        p.rect_filled(Rect::from_min_size(min, vec2(1.0, 1.0)), 0.0, c);
+    };
+    for n in 0..3 {
+        let sum = 3 + 4 * n;
+        for dx in 0..=sum + 1 {
+            pixel(dx as f32, (sum + 1 - dx) as f32, highlight());
+        }
+        for dx in 0..=sum {
+            pixel(dx as f32, (sum - dx) as f32, shadow());
+        }
+    }
+    let resp = ui.interact(area, ui.id().with("size_grip"), Sense::drag());
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+    if cfg!(target_os = "macos") {
+        if resp.dragged() {
+            let size = ui.ctx().input(|i| i.viewport().inner_rect.map(|r| r.size()));
+            if let Some(size) = size {
+                let min = macsplorer_core::preferences::MIN_WINDOW;
+                let to = vec2((size.x + resp.drag_delta().x).max(min[0]), (size.y + resp.drag_delta().y).max(min[1]));
+                ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(to));
+            }
+        }
+    } else if resp.drag_started() {
+        ui.ctx().send_viewport_cmd(ViewportCommand::BeginResize(egui::viewport::ResizeDirection::SouthEast));
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Caption {
     Minimize,
