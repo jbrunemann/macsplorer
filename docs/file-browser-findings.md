@@ -812,5 +812,6 @@ Each one can be answered from this setup:
 - Navigation pane default roots and expand-to-current-folder behavior.
 - Search box: query syntax and filters.
 - "Open With" submenu contents and order (`COpenWithMenu::QueryContextMenu`, `COpenWithMenu::InitMenuPopup` in shell32). macsplorer currently guesses: default app first, the rest alphabetical, then "Choose Program...".
+  The Choose Program dialog (list, "Always use this program to open these files", Other...) is Windows 2000's from memory, untraced. Where Windows keeps the choice per extension in the registry, macsplorer keeps it per type (UTI) in `settings.json`, and the chosen app is listed first.
 
 Unknown: what the folder flag tested in `CDefView::OnBeginLabelEdit` means (`FOLDERFLAGS & 0x80000000`, passed as `SHBeginLabelEdit`'s 5th parameter). When the flag is clear, it removes `WS_EX_RTLREADING` from the edit control.

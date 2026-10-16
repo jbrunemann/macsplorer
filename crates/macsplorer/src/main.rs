@@ -10,6 +10,7 @@ mod locale;
 mod native_drag;
 mod native_icon;
 mod open_with;
+mod open_with_dialog;
 mod pasteboard;
 mod platform;
 mod progress_dialog;

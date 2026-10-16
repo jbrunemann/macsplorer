@@ -190,7 +190,7 @@ The status bar shows how many items you have selected and how much space they ta
 |---|---|
 | **Open** | Same as a double-click. |
 | **Show Package Contents** | For apps and other packages: shows the files inside them as a folder instead of opening them. **Back** returns to where you were. |
-| **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons. **Choose Program...** lets you pick any app. |
+| **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons. **Choose Program...** opens a list where you pick an app, or use **Other...** for any app on your Mac. Tick **Always use this program to open these files** and double-clicking that kind of file (all `.jpg` and `.jpeg` files, say) opens it with that app from then on, in Macsplorer only. Finder isn't affected. |
 | **Show in Finder** | Opens a Finder window with the item selected. |
 | **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |
 | **Eject** | For disks and drives: safely disconnects them. |
@@ -359,6 +359,27 @@ You can also press **⌘+** to go one size up, **⌘−** to go one size down, a
 ### Using another terminal
 
 **Open in Terminal** starts the Terminal app. To use another one, add its app name to `~/Library/Application Support/macsplorer/settings.json`, for example `"terminal": "iTerm"` or `"terminal": "Ghostty"`. The name is the one shown in the Applications folder, without `.app`. **Help › Open config file** opens that file in your text editor. The next **Open in Terminal** uses it, no restart needed. If the name is wrong, the status bar says so.
+
+### Choosing which app opens which files
+
+The **Open With** dialog remembers one app per kind of file (see chapter 6). You can also set several at once by editing `~/Library/Application Support/macsplorer/settings.json` (**Help › Open config file** opens it). Add an `associations` list that matches a file type to an app. For example, to open all the common picture formats in Preview:
+
+```json
+"associations": {
+  "public.jpeg": "/System/Applications/Preview.app",
+  "public.png": "/System/Applications/Preview.app",
+  "com.compuserve.gif": "/System/Applications/Preview.app",
+  "public.tiff": "/System/Applications/Preview.app",
+  "com.microsoft.bmp": "/System/Applications/Preview.app",
+  "public.heic": "/System/Applications/Preview.app",
+  "org.webmproject.webp": "/System/Applications/Preview.app",
+  "public.svg-image": "/System/Applications/Preview.app"
+}
+```
+
+Each line is a file type, then the app's full path. File types are the names macOS uses for them, so `.jpg` and `.jpeg` files are both `public.jpeg`. Each type needs its own line. To find the name for another kind of file, run `mdls -raw -name kMDItemContentType` followed by a file's path in Terminal, or tick **Always use this program** once in the Open With dialog and look at the line it adds.
+
+Keep the commas between lines and put the list inside the outer `{ }`. A mistake in the file makes Macsplorer ignore all your settings until it is fixed. A change counts the next time you open a file, no restart needed. If the app is no longer installed, the file opens the normal way.
 
 ### Dark mode
 

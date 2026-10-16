@@ -3,6 +3,7 @@
 //! Behaviors marked as Explorer-derived are documented, with their evidence,
 //! in `docs/file-browser-findings.md`.
 
+pub mod associations;
 pub mod breadcrumb;
 pub mod columns;
 pub mod copy_path;

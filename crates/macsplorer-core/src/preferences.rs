@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::associations::Associations;
 use crate::columns::{Column, ColumnSet};
 use crate::text_size;
 
@@ -75,11 +76,13 @@ pub struct Preferences {
     /// The window's inner size (in macOS points, before Text Size zoom)
     /// when it was last resized; `None` until then.
     pub window: Option<[f32; 2]>,
+    /// The apps chosen with "Always use this program", by file type.
+    pub associations: Associations,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default() }
     }
 }
 
@@ -151,6 +154,11 @@ impl Preferences {
         if let Some([w, h]) = self.window {
             map.insert("window".into(), serde_json::json!({ "width": w.round(), "height": h.round() }));
         }
+        if self.associations.is_empty() {
+            map.remove("associations");
+        } else {
+            map.insert("associations".into(), self.associations.to_json());
+        }
         let text = serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
         // Replace the file in one step, so another window reading it never
         // sees half of it.
@@ -171,6 +179,7 @@ impl Preferences {
             view: map.get("view").and_then(Value::as_str).and_then(ViewMode::from_key).unwrap_or_default(),
             sort: map.get("sort").and_then(read_sort),
             window: map.get("window").and_then(read_window),
+            associations: map.get("associations").map(Associations::from_json).unwrap_or_default(),
         }
     }
 }
@@ -235,6 +244,20 @@ mod tests {
         // Saving without columns leaves the stored ones alone.
         Preferences { dark: false, columns: None, ..Default::default() }.save_to(&dir).unwrap();
         assert!(Preferences::load_from(&dir).columns.is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn associations_are_stored_and_can_be_emptied() {
+        let dir = temp("associations");
+        let mut prefs = Preferences::default();
+        prefs.associations.set("public.json", Path::new("/Applications/Zed.app"));
+        prefs.save_to(&dir).unwrap();
+        let mut back = Preferences::load_from(&dir);
+        assert_eq!(back.associations.app_for("public.json"), Some(Path::new("/Applications/Zed.app")));
+        back.associations.clear("public.json");
+        back.save_to(&dir).unwrap();
+        assert!(Preferences::load_from(&dir).associations.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -50,6 +50,7 @@ use crate::item_drag::{self, DragFrame, ItemDrag, Mark, Pointer, Step};
 use crate::native_drag;
 use crate::locale;
 use crate::open_with;
+use crate::open_with_dialog::{self, OpenWithDialog};
 use crate::platform;
 use crate::progress_dialog::ProgressDialog;
 use crate::properties::{Outcome, Properties};
@@ -319,6 +320,8 @@ pub struct Explorer {
     saved_columns: Option<ColumnSet>,
     /// The open "More..." dialog.
     column_dialog: Option<ColumnDialog>,
+    /// "Choose Program...", while it is open.
+    open_with_dialog: Option<OpenWithDialog>,
     /// A header divider drag, and whether it started on a divider proper
     /// (where a double-click auto-sizes) rather than a hidden column's.
     column_drag: Option<(ColumnDrag, bool)>,
@@ -440,6 +443,7 @@ impl Explorer {
             columns: ColumnSet::default(),
             saved_columns: None,
             column_dialog: None,
+            open_with_dialog: None,
             column_drag: None,
             header_left: 0.0,
             rename: None,
@@ -661,6 +665,25 @@ impl Explorer {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// The Open With dialog; OK opens the file and, when asked, remembers
+    /// the app for the file's type.
+    fn show_open_with(&mut self) {
+        let Some(dialog) = &mut self.open_with_dialog else { return };
+        match dialog.show(&self.ctx, &mut self.icons) {
+            open_with_dialog::Outcome::Keep => {}
+            open_with_dialog::Outcome::Cancel => self.open_with_dialog = None,
+            open_with_dialog::Outcome::Open { app, always } => {
+                if let Some(dialog) = self.open_with_dialog.take() {
+                    let file = dialog.file().to_path_buf();
+                    if always {
+                        open_with::remember(&file, Some(&app));
+                    }
+                    self.open_with(file, Some(app));
+                }
+            }
+        }
     }
 
     /// Shows the question a paste is waiting on, taking the next one when
@@ -1064,6 +1087,8 @@ impl Explorer {
         let is_folder = self.entries.iter().find(|e| e.path == path).map_or(path.is_dir(), Entry::is_folder);
         if is_folder {
             self.navigate(path);
+        } else if let Some(app) = open_with::chosen_app(&path) {
+            self.open_with(path, Some(app));
         } else if let Err(e) = platform::open_default(&path) {
             self.status = Some(format!("Couldn't open {}: {e}", path.display()));
         }
@@ -1071,16 +1096,11 @@ impl Explorer {
 
     fn open_with(&mut self, path: PathBuf, app: Option<PathBuf>) {
         let Some(app) = app else {
-            // Like Windows' "Choose Program..." dialog. Runs off the UI
-            // thread since the picker blocks until the user answers.
-            thread::spawn(move || {
-                let script = "POSIX path of (choose application with prompt \"Choose the program you want to use to open this file:\" as alias)";
-                let Ok(out) = Command::new("osascript").arg("-e").arg(script).output() else { return };
-                let app = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-                if out.status.success() && !app.is_empty() {
-                    let _ = Command::new("open").arg("-a").arg(app).arg(path).spawn();
-                }
-            });
+            // Windows' "Choose Program..." dialog.
+            if self.open_with_dialog.is_none() {
+                let apps = open_with::apps_for(&path);
+                self.open_with_dialog = Some(OpenWithDialog::new(path, apps));
+            }
             return;
         };
         if let Err(e) = Command::new("open").arg("-a").arg(&app).arg(&path).spawn() {
@@ -2994,6 +3014,7 @@ impl eframe::App for Explorer {
                 }
             }
         }
+        self.show_open_with();
         self.show_conflict();
         self.show_transfers();
         self.save_columns();
@@ -4697,6 +4718,36 @@ mod screenshot {
             image.save(out.join(format!("{name}.png"))).unwrap();
         }
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The Open With dialog with the apps that open a text file.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn open_with_dialog() {
+        let file = std::env::temp_dir().join("macsplorer-open-with-dialog.txt");
+        fs::write(&file, "hi").unwrap();
+        let dialog = OpenWithDialog::new(file.clone(), open_with::apps_for(&file));
+        let mut harness = Harness::builder().with_size(open_with_dialog::SIZE).with_pixels_per_point(2.0).wgpu().build_ui_state(
+            |ui, state: &mut (OpenWithDialog, Option<FileIcons>)| {
+                let Some(icons) = &mut state.1 else {
+                    theme::install(ui.ctx());
+                    theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                    state.1 = Some(FileIcons::new());
+                    return;
+                };
+                let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                state.0.ui(&mut window, icons);
+            },
+            (dialog, None),
+        );
+        for _ in 0..3 {
+            harness.run();
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("open-with-dialog.png")).unwrap();
+        fs::remove_file(&file).ok();
     }
 
     /// The Copying... dialog part way through a paste.
