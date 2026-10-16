@@ -1886,7 +1886,7 @@ impl Explorer {
 
     fn menu_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(theme::menu_style)).ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
+            bar_menu_button(ui, "File", |ui| {
                 if ui.add(menu_item("New Window", platform::NEW_WINDOW_KEYS.to_owned())).clicked() {
                     actions.push(Action::NewWindow);
                 }
@@ -1899,7 +1899,7 @@ impl Explorer {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
-            ui.menu_button("Edit", |ui| {
+            bar_menu_button(ui, "Edit", |ui| {
                 let undo = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
                 if ui.add_enabled(self.undo.peek().is_some(), menu_item(&undo, platform::shortcut(false, "Z"))).clicked() {
                     actions.push(Action::Undo);
@@ -1933,7 +1933,7 @@ impl Explorer {
                     actions.push(Action::InvertSelection);
                 }
             });
-            ui.menu_button("View", |ui| {
+            bar_menu_button(ui, "View", |ui| {
                 ui.menu_button("Explorer Bar", |ui| {
                     if theme::menu_checkbox(ui, &mut self.settings.show_folders, "Folders").changed() {
                         ui.close();
@@ -1983,7 +1983,7 @@ impl Explorer {
                     actions.push(Action::Refresh);
                 }
             });
-            ui.menu_button("Help", |ui| {
+            bar_menu_button(ui, "Help", |ui| {
                 if ui.button("Open config file").clicked() {
                     actions.push(Action::OpenConfig);
                 }
@@ -3032,6 +3032,27 @@ impl eframe::App for Explorer {
 
 #[cfg(unix)]
 const TERMINAL_LABEL: &str = "Open in Terminal";
+
+/// A menu bar entry. While one bar menu is open, resting the pointer on
+/// another entry opens that one instead and closes the first, as in Windows
+/// and macOS. egui's `menu_button` only opens on a click.
+fn bar_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui) -> R) {
+    use egui::Popup;
+    let ctx = ui.ctx().clone();
+    let popup = ui.next_auto_id().with("popup");
+    let response = ui.menu_button(text, content).response;
+    let siblings_key = egui::Id::new("bar_menu_popups");
+    let mut ids: Vec<egui::Id> = ctx.data(|d| d.get_temp(siblings_key)).unwrap_or_default();
+    if !ids.contains(&popup) {
+        ids.push(popup);
+        ctx.data_mut(|d| d.insert_temp(siblings_key, ids.clone()));
+    }
+    let other_open = ids.iter().any(|&id| id != popup && Popup::is_id_open(&ctx, id));
+    if response.hovered() && other_open {
+        Popup::open_id(&ctx, popup);
+        ctx.request_repaint();
+    }
+}
 
 /// A submenu item that opens when the pointer has rested on it for
 /// [`menu_delay::SHOW_DELAY_MS`], as Windows' menus do (`MenuShowDelay`); a
