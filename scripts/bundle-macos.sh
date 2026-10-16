@@ -40,7 +40,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>Macsplorer</string>
   <key>CFBundleDisplayName</key><string>Macsplorer</string>
-  <key>CFBundleIdentifier</key><string>dev.macsplorer.app</string>
+  <key>CFBundleIdentifier</key><string>dev.macsplorer.ai</string>
   <key>CFBundleExecutable</key><string>macsplorer</string>
   <key>CFBundleIconFile</key><string>macsplorer</string>
   <key>CFBundlePackageType</key><string>APPL</string>

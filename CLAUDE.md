@@ -115,4 +115,3 @@ licenses.
 - Type column with language names ("Rust Source") and image thumbnails.
 - Trace remaining Explorer behaviors listed in `docs/file-browser-findings.md` §4.
 - Persist the rest of the settings (View menu options); the dark mode choice, the text size, the view mode, the sort, the window size (saved half a second after a resize ends) and the Details column layout (shown, order, widths, shared by all folders and windows) already are, in `settings.json`; pinning favorites; tabs.
-- Replace the placeholder bundle id `dev.macsplorer.app` once the user picks one.
