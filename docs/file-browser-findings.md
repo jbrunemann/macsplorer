@@ -553,9 +553,8 @@ is `_IncrementalSearch` (0x171bc00bc, `LVN_FIRST - 63`).
 
 Macsplorer (`core::isearch`, `Explorer::keyboard` → `Action::TypeAhead`): steps 1 to 8 for the
 item view in all three view modes, matching on `Entry::display_name`, in the order shown (sort and
-search filter included). Left out: the beep, the Space toggle (a leading space is ignored), the
-Ctrl "focus only" variant, and typing in the Folders pane (the tree has its own search that
-wasn't traced). Mouse clicks don't clear the buffer; the 1 s timeout covers them. Rust's
+search filter included). The Space toggle is in (§2.12). Left out: the beep and the Ctrl "focus
+only" variant. Typing in the Folders pane reuses the same search, see §2.12. Mouse clicks don't clear the buffer; the 1 s timeout covers them. Rust's
 `to_lowercase` stands in for the locale's case folding.
 
 ### 2.10 Choosing columns (shell32 `CDefView`, `CColumnDlg`)
@@ -626,6 +625,91 @@ Decompiled from Windows.Storage.dll build 10240 (Ghidra, names from the PDB publ
 Not traced: the dialog itself. Build 10240 shows the Windows 8 "Replace or Skip Files" UI
 (`COperationStatusBroker`, `CFileOperationConflictItems`); its strings are in the MUI file.
 macsplorer draws Windows 2000's "Confirm File Replace" / "Confirm Folder Replace" from memory.
+
+### 2.12 Keyboard use: the focus cycle, list and tree keys
+
+Traced in ExplorerFrame.dll: `CShellBrowser::_CycleFocus` (0x18011f974),
+`_CycleFocusHelper` (0x18011fa60), `_MayGetNextToolbarFocus` (0x1801218d4), `_OnFocusChange`
+(0x180047c7c), `_ExplorerTreeHasFocus` (0x18011ff04), `CBandSite::_GetNextTabstopBand`
+(0x1800db308) and the `IsVK_TABCycler` helper (0x1800acff4). In comctl32 v6.10:
+`CLVKeyboardManager::OnKey` (0x171a33128), `TV_KeyDown` (0x171ad9a28), `TV_OnChar`
+(0x171ad9dc0). The accelerator tables (F4, Alt+D, Ctrl+F, Backspace and so on) live in the `.mui`
+resource files, which aren't part of this setup, so the key list for the frame is from Windows'
+documentation, not traced.
+
+**Focus cycle, observed:**
+
+1. A key cycles when it is a `WM_KEYDOWN` of **Tab or F6** with **Ctrl up**. Shift reverses the
+   direction. Any other key, or Ctrl+Tab, goes to the focused control as usual.
+2. The same check sends `WM_CHANGEUISTATE(UIS_CLEAR, UISF_HIDEFOCUS)` to the window, so focus
+   rectangles become visible from then on (the "hide keyboard navigation indicators" state).
+   `OnKey` and `TV_KeyDown` do the same after a navigation key.
+3. The frame keeps its toolbars (bands and explorer bars) in an array plus the index of the one
+   holding the focus, `-1` for the view. From the view, forward starts at toolbar 0 and backward
+   at the last one. From toolbar *i* it tries *i ± 1* onwards, each toolbar deciding whether it takes
+   the focus (`UIActivateIO`). When none does, the focus goes back to the view.
+4. Before leaving the view forward, the view itself is asked first, so a view with several parts
+   can step through them.
+5. Inside a rebar the bands are visited in band order, and a band only counts when it is visible
+   and has `WS_TABSTOP`.
+
+**Inferred:** the order of the toolbars in the array. In Windows 2000 the rebar with the menu,
+the buttons and the address bar comes first and the Folders explorer bar after it, so Tab from
+the list reaches the address bar, then the Folders pane. Build 10240's order wasn't decoded (its
+`AddToolbar` calls go through the vtable).
+
+**List view keys (`OnKey`), observed:**
+
+- Arrows, Home, End, Page Up and Down move the focus and select the new item alone. **Shift**
+  selects from the anchor to it. **Ctrl** moves only the focus: the selection and the anchor stay.
+- **Ctrl+Space** toggles the focused item and sets the anchor there. **Shift+Space** selects from
+  the anchor to the focus. A plain Space reaches `OnChar` as a one-space search buffer, which
+  toggles the focused item (§2.9 step 3).
+- With **Alt** held, `OnKey` returns without doing anything (Alt+arrows belong to the frame).
+- In Details, Left and Right scroll sideways (a line, a page with Ctrl) instead of
+  moving the focus.
+- **Ctrl+keypad +** sizes every Details column to fit (`LVSCW_AUTOSIZE` for each).
+- Enter sends `NM_RETURN`, which the shell turns into the default verb (Open).
+
+**Tree view keys (`TV_KeyDown`), observed:**
+
+- Up and Down move the selection through the shown rows. Home and End go to the first and last
+  shown row. Page Up and Down move by the number of fully visible rows **minus one**.
+- Right expands a collapsed item that has children; on an expanded one it moves to the first
+  child. Left collapses an expanded item, otherwise it moves to the parent. Backspace moves to
+  the parent too.
+- Keypad **+** expands and **−** collapses without moving; keypad __*__ expands the whole branch.
+- With **Ctrl**, the arrows, Page and Home/End keys scroll the tree and leave the selection.
+
+**Tree type-ahead (`TV_OnChar`), observed:** it shares the list's typed-text buffer rules
+(`IncrementalSearch`, 1 s timeout). The search starts **after** the item that had the focus when
+the text began and goes through the shown rows, wrapping once, comparing the first *n* characters
+without case. Repeating one letter ("aaa") also tries the last letter alone, so the letter steps
+through the rows. A match is selected as if by keyboard (`TVC_BYKEYBOARD`).
+
+Macsplorer (`core::focus`, `Explorer::keyboard`, `tree_key_action`):
+
+- Tab and F6 cycle through the item view, the address bar (switched to its text field with the
+  path selected, like the Win2000 address combo), the search field and the Folders pane, and back.
+  Shift reverses; Ctrl, Alt and Command don't cycle. egui's own Tab traversal through buttons is
+  turned off in the main window. A hidden Folders pane is skipped. While a rename is open, Tab does
+  nothing. When the view gets the focus with no focused item, the first item gets it (inferred).
+- Focus rectangles are drawn once any of these keys was used, around the focused item's label in
+  all three views and around the selected row of the tree, in the color an XOR gives on that
+  background. While the address or search field has the keyboard, the panes draw their selection
+  gray as unfocused.
+- F4, Alt+D and Cmd+L go to the address bar; F3 and Cmd+F to the search field (Windows: F3, Ctrl+F,
+  Ctrl+E; Cmd+E is New Window here). Esc in either field gives the keyboard back to the pane that
+  had it.
+- List: Space and Shift+Space as observed. Ctrl+arrows and Ctrl+Space are left out on purpose:
+  on macOS they are system shortcuts (Mission Control, input sources). Details Page Up and Down move by the rows that fit minus one, the tree's rule (inferred; the report view's
+  paging wasn't traced).
+- Tree: Home, End, Page Up/Down, + and − as observed (egui doesn't tell keypad keys apart, so the
+  main + and − keys do it). Typing selects with `core::isearch`, which gives the same results as
+  `TV_OnChar` except right after a wrap. Backspace stays Back (the frame's accelerator).
+- **Not done:** Shift+F10 and the menu key (egui's popup menus can't be driven by the keyboard),
+  Alt and F10 to the menu bar, Ctrl+scroll in the tree and Details, Ctrl+keypad +, keypad *, and
+  Tab inside the view.
 
 ## 3. Mapping to macsplorer (design choices)
 

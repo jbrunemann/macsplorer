@@ -18,6 +18,7 @@ use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{Choice, transfer};
+use macsplorer_core::focus::{self, Stop};
 use macsplorer_core::git;
 use macsplorer_core::history::History;
 use macsplorer_core::isearch::{self, IncrementalSearch};
@@ -80,6 +81,8 @@ type VisibleCache = ((u64, bool, String), Rc<[usize]>);
 enum NavLayout {
     Icons { grid: IconGrid, client_height: f32 },
     List { columns: ListColumns, client_width: f32 },
+    /// Details: how many rows fit under the header.
+    Details { rows: usize },
 }
 
 struct Settings {
@@ -120,12 +123,19 @@ enum Action {
     Click { index: usize, toggle: bool, extend: bool, on_label: bool },
     /// Scroll the item view so this entry is visible.
     Reveal(usize),
-    /// Characters typed in the item view at `time_ms`.
-    TypeAhead { text: String, time_ms: u64 },
+    /// Characters typed in the item view at `time_ms`. `extend`: Shift was
+    /// down, which turns a Space into a range selection.
+    TypeAhead { text: String, time_ms: u64, extend: bool },
+    /// Characters typed in the Folders pane.
+    TreeTypeAhead { text: String, time_ms: u64 },
     /// A key that ends the typed text (Enter, Esc, Tab, Backspace, navigation keys).
     EndTypeAhead,
     /// Clear the selection (a click on empty space in the view).
     Deselect,
+    /// Tab, F6 and the address and search keys: give that pane the keyboard.
+    FocusStop(Stop),
+    /// The keyboard was used to move around: draw focus rectangles from now on.
+    ShowFocus,
     /// Start a marquee at this content point; `extend` (Cmd or Shift) keeps
     /// the selection.
     MarqueeBegin { origin: (f32, f32), extend: bool },
@@ -257,10 +267,18 @@ pub struct Explorer {
     anchor: Option<usize>,
     /// The focused item, which arrow keys move from (`entries` index).
     focus_item: Option<usize>,
+    /// Focus rectangles are drawn once the keyboard has been used to move
+    /// around, like Windows' "hide keyboard navigation indicators" (the
+    /// `UISF_HIDEFOCUS` state that Tab, F6 and the arrow keys clear).
+    show_focus: bool,
     /// An entry to scroll into view on the next frame.
     reveal: Option<usize>,
     /// Letters typed in the item view, which select the item they spell.
     type_ahead: IncrementalSearch,
+    /// The same for the Folders pane.
+    tree_type_ahead: IncrementalSearch,
+    /// Rows that fit in the Folders pane last frame, for Page Up and Down.
+    tree_page: usize,
     nav_layout: Option<NavLayout>,
     /// The widest visible name in the List view, keyed like `visible_cache`.
     widest_name: Option<((u64, bool, String), f32)>,
@@ -288,6 +306,8 @@ pub struct Explorer {
     address_edit: Option<String>,
     address_needs_focus: bool,
     search: String,
+    /// Give the search field the keyboard, its text selected, next frame.
+    search_needs_focus: bool,
     status: Option<String>,
     tree: FolderTree,
     /// Tree folder listings run on worker threads and report back here.
@@ -368,8 +388,11 @@ impl Explorer {
             selection: BTreeSet::new(),
             anchor: None,
             focus_item: None,
+            show_focus: false,
             reveal: None,
             type_ahead: IncrementalSearch::default(),
+            tree_type_ahead: IncrementalSearch::default(),
+            tree_page: 1,
             nav_layout: None,
             widest_name: None,
             marquee: None,
@@ -383,6 +406,7 @@ impl Explorer {
             address_edit: None,
             address_needs_focus: false,
             search: String::new(),
+            search_needs_focus: false,
             status: None,
             tree: FolderTree::new(tree_roots()),
             load_tx,
@@ -882,6 +906,56 @@ impl Explorer {
         }
     }
 
+    fn tree_select(&mut self, key: NodeKey) {
+        self.focus = Pane::Tree;
+        let path = key.path.clone();
+        self.tree.select(key);
+        if path != self.current() {
+            self.navigating_from_tree = true;
+            self.navigate(path);
+            self.navigating_from_tree = false;
+        }
+    }
+
+    /// Which pane has the keyboard, as a stop of the Tab cycle.
+    fn current_stop(&self) -> Stop {
+        match self.ctx.memory(|m| m.focused()) {
+            Some(id) if id == address_id() => Stop::Address,
+            Some(id) if id == search_id() => Stop::Search,
+            _ if self.focus == Pane::Tree => Stop::Folders,
+            _ => Stop::View,
+        }
+    }
+
+    /// Gives a pane the keyboard (`CShellBrowser::_CycleFocus`). The fields
+    /// take it with their text selected, as an edit control does on Tab.
+    fn focus_stop(&mut self, stop: Stop, visible: &[usize]) {
+        self.show_focus = true;
+        self.slow_click.cancel();
+        match stop {
+            Stop::View | Stop::Folders => {
+                self.ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+                self.focus = if stop == Stop::Folders { Pane::Tree } else { Pane::List };
+                // Something to show the focus on. **Inferred**: the list view
+                // focuses its first item when it gets the focus with none.
+                if stop == Stop::View && self.focus_item.is_none_or(|f| !visible.contains(&f)) {
+                    self.focus_item = visible.first().copied();
+                }
+            }
+            Stop::Address => {
+                if self.address_edit.is_none() {
+                    self.address_edit = Some(self.current().display().to_string());
+                }
+                self.address_needs_focus = true;
+            }
+            Stop::Search => self.search_needs_focus = true,
+        }
+    }
+
     fn click(&mut self, index: usize, toggle: bool, extend: bool, visible: &[usize]) {
         self.focus_item = Some(index);
         let path = self.entries[index].path.clone();
@@ -1136,18 +1210,47 @@ impl Explorer {
                     self.click(index, toggle, extend, visible);
                 }
                 Action::Reveal(index) => self.reveal = Some(index),
-                Action::EndTypeAhead => self.type_ahead.reset(),
-                Action::TypeAhead { text, time_ms } => {
+                Action::EndTypeAhead => {
+                    self.type_ahead.reset();
+                    self.tree_type_ahead.reset();
+                }
+                Action::TypeAhead { text, time_ms, extend } => {
                     let show_extensions = self.settings.show_extensions;
                     for c in text.chars() {
                         let focus = self.focus_item.and_then(|f| visible.iter().position(|&v| v == f));
                         let names: Vec<&str> = visible.iter().map(|&i| self.entries[i].display_name(show_extensions)).collect();
-                        if let isearch::Outcome::Found(pos) = self.type_ahead.type_char(c, time_ms, &names, focus) {
-                            self.click(visible[pos], false, false, visible);
-                            self.reveal = Some(visible[pos]);
+                        match self.type_ahead.type_char(c, time_ms, &names, focus) {
+                            isearch::Outcome::Found(pos) => {
+                                self.click(visible[pos], false, false, visible);
+                                self.reveal = Some(visible[pos]);
+                            }
+                            // Space toggles the focused item; Shift+Space selects
+                            // from the anchor to it (`CLVKeyboardManager::OnKey`).
+                            isearch::Outcome::Space => {
+                                if let Some(pos) = focus {
+                                    self.slow_click.cancel();
+                                    self.click(visible[pos], !extend, extend, visible);
+                                    self.show_focus = true;
+                                }
+                            }
+                            isearch::Outcome::NotFound | isearch::Outcome::Ignored => {}
                         }
                     }
                 }
+                Action::TreeTypeAhead { text, time_ms } => {
+                    let rows = self.tree.rows();
+                    let real: Vec<&Row> = rows.iter().filter(|r| !r.placeholder).collect();
+                    for c in text.chars() {
+                        let focus = real.iter().position(|r| r.selected);
+                        let names: Vec<&str> = real.iter().map(|r| r.label.as_str()).collect();
+                        if let isearch::Outcome::Found(pos) = self.tree_type_ahead.type_char(c, time_ms, &names, focus) {
+                            self.tree_select(real[pos].key.clone());
+                            break;
+                        }
+                    }
+                }
+                Action::FocusStop(stop) => self.focus_stop(stop, visible),
+                Action::ShowFocus => self.show_focus = true,
                 Action::Deselect => {
                     self.slow_click.cancel();
                     self.focus = Pane::List;
@@ -1243,16 +1346,7 @@ impl Explorer {
                     self.paste(dir, true);
                 }
                 Action::Delete => self.delete_selection(),
-                Action::TreeSelect(key) => {
-                    self.focus = Pane::Tree;
-                    let path = key.path.clone();
-                    self.tree.select(key);
-                    if path != self.current() {
-                        self.navigating_from_tree = true;
-                        self.navigate(path);
-                        self.navigating_from_tree = false;
-                    }
-                }
+                Action::TreeSelect(key) => self.tree_select(key),
                 Action::TreeToggle(key) => {
                     let loads = self.tree.toggle(key);
                     self.load(loads);
@@ -1348,13 +1442,41 @@ impl Explorer {
         if let Some(target) = target.filter(|&t| t != zoom) {
             actions.push(Action::SetZoom(target));
         }
-        // Text fields own the keyboard while they are focused.
+        // Tab and F6 move between the panes, not through egui's widgets
+        // (which would park the keyboard on an invisible button).
+        ui.ctx().memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+        let (cycle, address, find) = ui.input(|i| {
+            let m = i.modifiers;
+            let cycle = focus::direction(i.key_pressed(Key::Tab) || i.key_pressed(Key::F6), m.ctrl, m.alt || m.mac_cmd, m.shift);
+            // Explorer's F4 and Alt+D (below), and the browsers' Cmd+L.
+            let address = i.key_pressed(Key::F4) || (m.command && i.key_pressed(Key::L));
+            // Explorer's F3 and Ctrl+F, Finder's Cmd+F.
+            let find = i.key_pressed(Key::F3) || (m.command && i.key_pressed(Key::F));
+            (cycle, address, find)
+        });
+        if let Some(forward) = cycle
+            && self.rename.is_none()
+        {
+            let show_folders = self.settings.show_folders;
+            actions.push(Action::FocusStop(focus::next(self.current_stop(), forward, |s| s != Stop::Folders || show_folders)));
+        }
+        if address {
+            actions.push(Action::FocusStop(Stop::Address));
+        }
+        if find {
+            actions.push(Action::FocusStop(Stop::Search));
+        }
+        // Text fields own the rest of the keyboard while they are focused.
         if ui.ctx().memory(|m| m.focused().is_some()) {
             return;
         }
         ui.input(|i| {
             let cmd = i.modifiers.command;
             let alt = i.modifiers.alt;
+            if alt && !cmd && i.key_pressed(Key::D) {
+                actions.push(Action::FocusStop(Stop::Address));
+                return;
+            }
             let in_list = self.focus == Pane::List;
             if cmd && i.key_pressed(Key::A) {
                 actions.push(Action::SelectAll);
@@ -1412,9 +1534,22 @@ impl Explorer {
             if !in_list {
                 if !(cmd || alt) {
                     let rows = self.tree.rows();
-                    for key in [Key::ArrowDown, Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight] {
+                    let mut moved = false;
+                    for key in TREE_KEYS {
                         if i.key_pressed(key) {
-                            actions.extend(tree_key_action(&rows, key));
+                            moved = true;
+                            actions.extend(tree_key_action(&rows, key, self.tree_page));
+                        }
+                    }
+                    if moved || [Key::Enter, Key::Escape, Key::Backspace].into_iter().any(|k| i.key_pressed(k)) {
+                        actions.push(Action::EndTypeAhead);
+                    }
+                    if moved {
+                        actions.push(Action::ShowFocus);
+                    } else {
+                        let text: String = i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.as_str()) } else { None }).collect();
+                        if !text.is_empty() {
+                            actions.push(Action::TreeTypeAhead { text, time_ms: (i.time * 1000.0) as u64 });
                         }
                     }
                 }
@@ -1433,12 +1568,14 @@ impl Explorer {
             if [Key::Enter, Key::Escape, Key::Tab, Key::Backspace].into_iter().chain(KEYS.map(|(k, _)| k)).any(|k| i.key_pressed(k)) {
                 actions.push(Action::EndTypeAhead);
             }
-            if cmd || visible.is_empty() {
+            // Explorer's Ctrl+arrow and Ctrl+Space (focus only, toggle) are
+            // left out: on the Mac they are system shortcuts.
+            if cmd || i.modifiers.ctrl || visible.is_empty() {
                 return;
             }
             let text: String = i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.as_str()) } else { None }).collect();
             if !text.is_empty() {
-                actions.push(Action::TypeAhead { text, time_ms: (i.time * 1000.0) as u64 });
+                actions.push(Action::TypeAhead { text, time_ms: (i.time * 1000.0) as u64, extend: i.modifiers.shift });
             }
             if alt {
                 return;
@@ -1448,6 +1585,7 @@ impl Explorer {
                 actions.push(Action::Click { index: visible[to], toggle: false, extend: i.modifiers.shift, on_label: false });
                 actions.push(Action::Reveal(visible[to]));
             }
+            actions.push(Action::ShowFocus);
         });
     }
 
@@ -1467,13 +1605,23 @@ impl Explorer {
             (ViewMode::List, Some(NavLayout::List { columns, client_width })) if columns.count == visible.len() => {
                 columns.navigate(from, nav, client_width)
             }
-            (ViewMode::Details, _) => match nav {
-                Nav::Up => Some(from.saturating_sub(1)),
-                Nav::Down => Some((from + 1).min(last)),
-                Nav::Home => Some(0),
-                Nav::End => Some(last),
-                _ => None,
-            },
+            (ViewMode::Details, layout) => {
+                // A page is one row less than fit, as in the tree view
+                // (`TV_KeyDown`). **Inferred**: the report view's paging wasn't traced.
+                let page = match layout {
+                    Some(NavLayout::Details { rows }) => rows.saturating_sub(1).max(1),
+                    _ => 1,
+                };
+                match nav {
+                    Nav::Up => Some(from.saturating_sub(1)),
+                    Nav::Down => Some((from + 1).min(last)),
+                    Nav::Home => Some(0),
+                    Nav::End => Some(last),
+                    Nav::PageUp => Some(from.saturating_sub(page)),
+                    Nav::PageDown => Some((from + page).min(last)),
+                    Nav::Left | Nav::Right => None,
+                }
+            }
             _ => None,
         }
     }
@@ -1669,11 +1817,13 @@ impl Explorer {
             let (srect, _) = ui.allocate_exact_size(egui::vec2(search_w, 22.0), Sense::hover());
             let sinner = theme::sunken_field(ui.painter(), srect);
             let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sinner.shrink2(egui::vec2(3.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
-            sui.add(TextEdit::singleline(&mut self.search).hint_text("Search this folder").frame(egui::Frame::NONE).desired_width(f32::INFINITY));
+            let id = search_id();
+            let resp = sui.add(TextEdit::singleline(&mut self.search).id(id).hint_text("Search this folder").frame(egui::Frame::NONE).desired_width(f32::INFINITY));
+            if std::mem::take(&mut self.search_needs_focus) {
+                resp.request_focus();
+                select_all(&sui, id, &self.search);
+            }
         });
-        if ui.input(|i| i.modifiers.command && i.key_pressed(Key::L)) {
-            self.begin_address_edit();
-        }
     }
 
     fn begin_address_edit(&mut self) {
@@ -1687,7 +1837,7 @@ impl Explorer {
         let (icon, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
         theme::paint_icon(ui.painter(), icon, Icon::Folder, true);
         if let Some(text) = &mut self.address_edit {
-            let id = ui.make_persistent_id("address-edit");
+            let id = address_id();
             let resp = ui.add(TextEdit::singleline(text).id(id).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
             if std::mem::take(&mut self.address_needs_focus) {
                 resp.request_focus();
@@ -1766,8 +1916,10 @@ impl Explorer {
         let rows = self.tree.rows();
         let guides = tree_guides(&rows);
         let scroll = self.tree.take_scroll_request();
-        let focused = self.focus == Pane::Tree && window_focused(ui);
+        let focused = self.focus == Pane::Tree && window_focused(ui) && !text_field_focused(ui);
+        let cue = focused && self.show_focus;
         let (bars, viewport) = Bars::begin(ui, ui.id().with("tree-bars"), ui.max_rect(), true, TREE_ROW_HEIGHT);
+        self.tree_page = ((viewport.height() / TREE_ROW_HEIGHT).floor() as usize).max(1);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
         let hidden = scrollbar::hidden(&mut ui);
         let out = egui::ScrollArea::both().auto_shrink(false).scroll_bar_visibility(hidden).show(&mut ui, |ui| {
@@ -1783,7 +1935,7 @@ impl Explorer {
                     });
                     ui.add_space(1.0);
                 }
-                tree_row(ui, &mut self.icons, row, guide, scroll, focused, actions);
+                tree_row(ui, &mut self.icons, row, guide, scroll, focused, cue, actions);
             }
         });
         bars.end(&mut ui, &out);
@@ -1795,10 +1947,7 @@ impl Explorer {
         match self.settings.view {
             ViewMode::LargeIcons => self.icons_view(ui, visible, actions),
             ViewMode::List => self.list_view(ui, visible, actions),
-            ViewMode::Details => {
-                self.nav_layout = None;
-                self.details(ui, visible, actions);
-            }
+            ViewMode::Details => self.details(ui, visible, actions),
         }
     }
 
@@ -1820,18 +1969,20 @@ impl Explorer {
         }
         let header_rect = egui::Rect::from_min_size(viewport.min, egui::vec2(viewport.width(), LIST_HEADER_HEIGHT));
         let header_hit = self.header_input(ui, header_rect, visible);
-        let focused = self.focus == Pane::List && window_focused(ui);
+        let pitch = LIST_ROW_HEIGHT + ui.spacing().item_spacing.y;
+        self.nav_layout = Some(NavLayout::Details { rows: (((viewport.height() - LIST_HEADER_HEIGHT) / pitch).floor() as usize).max(1) });
+        let focused = self.focus == Pane::List && window_focused(ui) && !text_field_focused(ui);
+        let cue = focused && self.show_focus;
         let can_paste = self.can_paste();
         let folder = self.current().to_path_buf();
         let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("details-menu");
         let shown = self.columns.visible();
-        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, columns, header_left, .. } = self;
+        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, columns, header_left, focus_item, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::window();
         ui.spacing_mut().item_spacing.x = 0.0;
-        let pitch = LIST_ROW_HEIGHT + ui.spacing().item_spacing.y;
         let font = egui::TextStyle::Body.resolve(ui.style());
         let (press, mods) = ui.input(|i| (i.pointer.press_origin(), i.modifiers));
         let extend = mods.command || mods.shift;
@@ -1978,7 +2129,11 @@ impl Explorer {
                                 }
                                 None => {
                                     let name = entry.display_name(settings.show_extensions);
-                                    selectable_name(ui, name, name_color(entry, settings, selected && focused), selected, focused)
+                                    let label = selectable_name(ui, name, name_color(entry, settings, selected && focused), selected, focused);
+                                    if cue && *focus_item == Some(index) {
+                                        paint_focus(ui, label, selected);
+                                    }
+                                    label
                                 }
                             };
                             item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
@@ -2145,7 +2300,8 @@ impl Explorer {
             ui.centered_and_justified(|ui| ui.label(err));
             return;
         }
-        let focused = self.focus == Pane::List && window_focused(ui);
+        let focused = self.focus == Pane::List && window_focused(ui) && !text_field_focused(ui);
+        let cue = focused && self.show_focus;
         let can_paste = self.can_paste();
         let folder = self.current().to_path_buf();
         let cut = cut_paths(&self.clipboard);
@@ -2211,6 +2367,9 @@ impl Explorer {
                 }
                 if let Some((label, galley, selected, false)) = on_top {
                     paint_label(ui, label, galley, selected, focused);
+                    if cue {
+                        paint_focus(ui, label, selected);
+                    }
                 }
                 if let Some(r) = rename.as_mut()
                     && let Some(pos) = visible.iter().position(|&i| entries[i].path == r.path)
@@ -2292,13 +2451,14 @@ impl Explorer {
             ui.centered_and_justified(|ui| ui.label(err));
             return;
         }
-        let focused = self.focus == Pane::List && window_focused(ui);
+        let focused = self.focus == Pane::List && window_focused(ui) && !text_field_focused(ui);
+        let cue = focused && self.show_focus;
         let can_paste = self.can_paste();
         let folder = self.current().to_path_buf();
         let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("list-menu");
-        let Self { entries, selection, rename, settings, search, icons, open_with, listing, marquee, anchor, .. } = self;
+        let Self { entries, selection, rename, settings, search, icons, open_with, listing, marquee, anchor, focus_item, .. } = self;
         // An item's icon rect and label box (text plus `SM_CXEDGE` each side,
         // within the column), in content coordinates. Unverified: that the
         // label box hugs the text as in Large Icons (`CLVListView::v_ItemHitTest`
@@ -2367,6 +2527,9 @@ impl Explorer {
                     let name = entry.display_name(settings.show_extensions).to_owned();
                     let galley = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), color));
                     paint_label(ui, screen(label), galley, selected, focused);
+                    if cue && *focus_item == Some(index) {
+                        paint_focus(ui, screen(label), selected);
+                    }
                 }
                 if let Some(origin) = press
                     && !press_hit
@@ -2786,6 +2949,17 @@ fn name_color(entry: &Entry, settings: &Settings, highlighted: bool) -> egui::Co
     }
 }
 
+/// The dotted focus rectangle on an item label's box.
+fn paint_focus(ui: &Ui, rect: egui::Rect, selected: bool) {
+    theme::focus_rect_over(ui.painter(), rect, if selected { theme::color::selection() } else { theme::color::window() });
+}
+
+/// Whether the address or search field has the keyboard, which takes the
+/// focus from the panes (their selection turns gray, as in Windows).
+fn text_field_focused(ui: &Ui) -> bool {
+    ui.ctx().memory(|m| m.focused()).is_some_and(|id| id == address_id() || id == search_id())
+}
+
 /// Paints an item label in its box: the text alone, or on the selection
 /// color (button face while the view isn't focused).
 fn paint_label(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, selected: bool, focused: bool) {
@@ -2920,6 +3094,16 @@ fn now_ms(ctx: &egui::Context) -> u64 {
     ctx.input(|i| (i.time * 1000.0) as u64)
 }
 
+/// The address bar's text field, which keys can give the focus to.
+fn address_id() -> egui::Id {
+    egui::Id::new("address-edit")
+}
+
+/// The search field.
+fn search_id() -> egui::Id {
+    egui::Id::new("search-field")
+}
+
 fn window_focused(ui: &Ui) -> bool {
     ui.ctx().input(|i| i.viewport().focused.unwrap_or(true))
 }
@@ -2966,7 +3150,8 @@ fn tree_guides(rows: &[Row]) -> Vec<Guide> {
 /// One Folders pane row in the Windows 2000 tree view style: dotted
 /// connector lines, a +/− box, a folder icon and a label that highlights
 /// only its text.
-fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll: bool, focused: bool, actions: &mut Vec<Action>) {
+#[allow(clippy::too_many_arguments)]
+fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll: bool, focused: bool, cue: bool, actions: &mut Vec<Action>) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let text_w = ui.painter().layout_no_wrap(row.label.clone(), font.clone(), theme::color::text()).size().x;
     let x0 = ui.max_rect().left() + 2.0;
@@ -3028,6 +3213,10 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
         theme::color::text()
     };
     p.text(egui::pos2(label_x, rect.center().y), egui::Align2::LEFT_CENTER, &row.label, font, text_color);
+    // The tree's focus is its selected row.
+    if row.selected && cue {
+        theme::focus_rect_over(p, text_rect, theme::color::selection());
+    }
     if row.selected && scroll {
         ui.scroll_to_rect(rect, Some(Align::Center));
     }
@@ -3075,18 +3264,34 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
     });
 }
 
-/// Arrow keys in the navigation pane, following tree view conventions.
-fn tree_key_action(rows: &[Row], key: Key) -> Option<Action> {
+/// The keys the Folders pane handles, see [`tree_key_action`].
+const TREE_KEYS: [Key; 10] =
+    [Key::ArrowDown, Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight, Key::Home, Key::End, Key::PageUp, Key::PageDown, Key::Plus, Key::Minus];
+
+/// Keys in the navigation pane, after the tree view's `TV_KeyDown`
+/// (comctl32): arrows walk the shown rows, Right expands or steps into a
+/// folder, Left collapses or steps out, Home and End go to the first and
+/// last row, Page Up and Down move by one row less than `page` (the rows
+/// that fit), + and - expand and collapse (the keypad keys in Windows).
+fn tree_key_action(rows: &[Row], key: Key, page: usize) -> Option<Action> {
     let real: Vec<usize> = (0..rows.len()).filter(|&i| !rows[i].placeholder).collect();
     let cur = real.iter().position(|&i| rows[i].selected);
-    let select = |pos: usize| Some(Action::TreeSelect(rows[real[pos]].key.clone()));
+    let select = |pos: usize| real.get(pos).map(|&i| Action::TreeSelect(rows[i].key.clone()));
     let Some(pos) = cur else {
-        return matches!(key, Key::ArrowDown | Key::ArrowUp).then(|| select(0)).flatten();
+        let moves = matches!(key, Key::ArrowDown | Key::ArrowUp | Key::Home | Key::End | Key::PageUp | Key::PageDown);
+        return moves.then(|| select(0)).flatten();
     };
     let row = &rows[real[pos]];
+    let step = page.saturating_sub(1).max(1);
     match key {
         Key::ArrowDown if pos + 1 < real.len() => select(pos + 1),
         Key::ArrowUp if pos > 0 => select(pos - 1),
+        Key::Home if pos > 0 => select(0),
+        Key::End if pos + 1 < real.len() => select(real.len() - 1),
+        Key::PageUp if pos > 0 => select(pos.saturating_sub(step)),
+        Key::PageDown if pos + 1 < real.len() => select((pos + step).min(real.len() - 1)),
+        Key::Plus if row.expandable && !row.expanded => Some(Action::TreeExpand(row.key.clone())),
+        Key::Minus if row.expanded => Some(Action::TreeCollapse(row.key.clone())),
         Key::ArrowRight if row.expandable && !row.expanded => Some(Action::TreeExpand(row.key.clone())),
         Key::ArrowRight => real
             .get(pos + 1)
@@ -3218,7 +3423,7 @@ mod tests {
 
     fn at(t: &mut FolderTree, root: usize, path: &str, key: Key) -> Option<(&'static str, PathBuf)> {
         t.select(NodeKey { root, path: path.into() });
-        target(tree_key_action(&t.rows(), key))
+        target(tree_key_action(&t.rows(), key, 3))
     }
 
     #[test]
@@ -3238,7 +3443,25 @@ mod tests {
     #[test]
     fn down_with_no_selection_picks_first_row() {
         let t = tree();
-        assert_eq!(target(tree_key_action(&t.rows(), Key::ArrowDown)), Some(("select", "/u".into())));
+        assert_eq!(target(tree_key_action(&t.rows(), Key::ArrowDown, 3)), Some(("select", "/u".into())));
+        assert_eq!(target(tree_key_action(&t.rows(), Key::End, 3)), Some(("select", "/u".into())));
+    }
+
+    #[test]
+    fn home_end_page_and_plus_minus_in_the_tree() {
+        // Rows: /u, /u/x, /u/y, /a. A page of 3 rows moves by 2.
+        let mut t = tree();
+        assert_eq!(at(&mut t, 0, "/u/x", Key::Home), Some(("select", "/u".into())));
+        assert_eq!(at(&mut t, 0, "/u", Key::End), Some(("select", "/a".into())));
+        assert_eq!(at(&mut t, 0, "/u", Key::PageDown), Some(("select", "/u/y".into())));
+        assert_eq!(at(&mut t, 0, "/u/y", Key::PageDown), Some(("select", "/a".into())));
+        assert_eq!(at(&mut t, 1, "/a", Key::PageUp), Some(("select", "/u/x".into())));
+        assert_eq!(at(&mut t, 0, "/u/x", Key::PageUp), Some(("select", "/u".into())));
+        assert_eq!(at(&mut t, 0, "/u", Key::Home), None);
+        assert_eq!(at(&mut t, 0, "/u/x", Key::Plus), Some(("expand", "/u/x".into())));
+        assert_eq!(at(&mut t, 0, "/u", Key::Plus), None);
+        assert_eq!(at(&mut t, 0, "/u", Key::Minus), Some(("collapse", "/u".into())));
+        assert_eq!(at(&mut t, 0, "/u/x", Key::Minus), None);
     }
 
     #[test]
@@ -3466,7 +3689,7 @@ mod clipboard {
         app.finish_listing();
         let visible: Vec<usize> = (0..app.entries.len()).collect();
         let name = |app: &Explorer| app.focus_item.map(|i| app.entries[i].name.clone());
-        let ty = |app: &mut Explorer, text: &str, time_ms| app.apply(vec![Action::TypeAhead { text: text.into(), time_ms }], &visible);
+        let ty = |app: &mut Explorer, text: &str, time_ms| app.apply(vec![Action::TypeAhead { text: text.into(), time_ms, extend: false }], &visible);
 
         ty(&mut app, "b", 0);
         assert_eq!(name(&app), Some("Banana.txt".into()));
@@ -3485,6 +3708,58 @@ mod clipboard {
         assert_eq!(name(&app), Some("Banana.txt".into()));
         ty(&mut app, "zz", 9000);
         assert_eq!(app.selection.len(), 1, "no match keeps the selection");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn space_works_on_the_focused_item() {
+        let (mut app, dir) = explorer("space");
+        for name in ["a", "b", "c"] {
+            fs::write(dir.join(name), "").unwrap();
+        }
+        app.reload();
+        app.finish_listing();
+        let visible: Vec<usize> = (0..app.entries.len()).collect();
+        let index = |app: &Explorer, name: &str| app.entries.iter().position(|e| e.name == name).unwrap();
+        let space = |app: &mut Explorer, extend| app.apply(vec![Action::TypeAhead { text: " ".into(), time_ms: 5000, extend }], &visible);
+        let (a, b, c) = (index(&app, "a"), index(&app, "b"), index(&app, "c"));
+
+        app.apply(vec![Action::Click { index: a, toggle: false, extend: false, on_label: false }], &visible);
+        // The focus moved off the selection, as a click with ⌘ leaves it.
+        app.focus_item = Some(b);
+        // Space toggles the focused item in and out of the selection.
+        space(&mut app, false);
+        assert_eq!(app.selection, BTreeSet::from([dir.join("a"), dir.join("b")]));
+        space(&mut app, false);
+        assert_eq!(app.selection, BTreeSet::from([dir.join("a")]));
+        // Shift+Space selects from the anchor to the focus.
+        app.apply(vec![Action::Click { index: a, toggle: false, extend: false, on_label: false }], &visible);
+        app.focus_item = Some(c);
+        space(&mut app, true);
+        // With the fixture's "sub" first and "a.txt" between a and b.
+        assert_eq!(app.selection, BTreeSet::from(["a", "a.txt", "b", "c"].map(|n| dir.join(n))));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn focus_stops() {
+        let (mut app, dir) = explorer("stops");
+        fs::write(dir.join("a"), "").unwrap();
+        app.reload();
+        app.finish_listing();
+        let visible: Vec<usize> = (0..app.entries.len()).collect();
+        assert!(!app.show_focus);
+        // The view gets a focused item to show the focus on.
+        app.apply(vec![Action::FocusStop(Stop::View)], &visible);
+        assert_eq!(app.focus_item, Some(0));
+        assert!(app.show_focus && app.selection.is_empty());
+        app.apply(vec![Action::FocusStop(Stop::Address)], &visible);
+        assert_eq!(app.address_edit.as_deref(), Some(dir.to_str().unwrap()));
+        assert!(app.address_needs_focus);
+        app.apply(vec![Action::FocusStop(Stop::Search)], &visible);
+        assert!(app.search_needs_focus);
+        app.apply(vec![Action::FocusStop(Stop::Folders)], &visible);
+        assert!(app.focus == Pane::Tree);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -3682,6 +3957,43 @@ mod screenshot {
             harness.hover_at(from + (to - from) * (step as f32 / 8.0));
             harness.run();
         }
+    }
+
+    /// After keyboard use the focused item gets a dotted rectangle, here
+    /// on an item outside the selection.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn keyboard_focus() {
+        shoot("keyboard-focus", egui::vec2(900.0, 400.0), |app| {
+            select(app, &["main.rs"]);
+            app.focus_item = app.entries.iter().position(|e| e.name == "Pictures");
+            app.show_focus = true;
+        });
+    }
+
+    /// The focus rectangle on a selected item, in the List view.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn keyboard_focus_list() {
+        shoot("keyboard-focus-list", egui::vec2(900.0, 400.0), |app| {
+            app.settings.view = ViewMode::List;
+            select(app, &["main.rs"]);
+            app.show_focus = true;
+        });
+    }
+
+    /// With the Folders pane focused by Tab, its selected row has it.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn keyboard_focus_tree() {
+        shoot("keyboard-focus-tree", egui::vec2(900.0, 400.0), |app| {
+            select(app, &["main.rs"]);
+            // A row in sight; the fixture folder is deep under the disk.
+            let key = app.tree.rows()[1].key.clone();
+            app.tree.select(key);
+            app.focus = Pane::Tree;
+            app.show_focus = true;
+        });
     }
 
     #[test]

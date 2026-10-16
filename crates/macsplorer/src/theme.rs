@@ -337,6 +337,16 @@ pub fn dot(p: &Painter, pos: Pos2, color: Color32) {
 /// alternate points of a checkerboard, so the pattern holds still while the
 /// rectangle moves. Windows XORs the dots; black is the closest egui can do.
 pub fn focus_rect(p: &Painter, r: Rect) {
+    focus_rect_colored(p, r, text());
+}
+
+/// [`focus_rect`] over a known solid background `bg`, in the color the XOR
+/// gives there: light dots on the selection's blue, dark ones on white.
+pub fn focus_rect_over(p: &Painter, r: Rect, bg: Color32) {
+    focus_rect_colored(p, r, Color32::from_rgb(!bg.r(), !bg.g(), !bg.b()));
+}
+
+fn focus_rect_colored(p: &Painter, r: Rect, color: Color32) {
     let (x0, y0) = (r.left().round(), r.top().round());
     let (x1, y1) = (r.right().round() - 1.0, r.bottom().round() - 1.0);
     if x1 < x0 || y1 < y0 {
@@ -344,7 +354,7 @@ pub fn focus_rect(p: &Painter, r: Rect) {
     }
     let dot = |x: f32, y: f32| {
         if (x + y).rem_euclid(2.0) == 0.0 {
-            dot(p, pos2(x, y), text());
+            dot(p, pos2(x, y), color);
         }
     };
     let mut x = x0;

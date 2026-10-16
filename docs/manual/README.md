@@ -78,7 +78,7 @@ The tree on the left has two sections:
 - **Favorites**: Desktop, Downloads, Documents, Pictures, Music, Movies, your home folder, Applications and the Trash.
 - **Locations**: your Mac's disk, plus any USB sticks, external drives or network disks you have connected.
 
-Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds.
+Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds, + and − do the same without moving, Home and End jump to the first and last folder, and Page Up and Page Down move a pageful at a time. Typing the first letters of a folder's name jumps to it, among the folders you can see.
 
 As you move around, the tree follows you: it unfolds to and highlights the folder you're in. To turn that off, uncheck **View › Expand to open folder**.
 
@@ -94,7 +94,7 @@ The small **›** after each folder opens a list of the folders inside it, so yo
 
 <img src="images/chevron-menu.png" alt="The list of subfolders under the › in the address bar" width="500">
 
-To type a path instead, click the empty space in the address bar or press ⌘L, type the location and press Enter (or click **Go**). A **~** at the start stands for your home folder, so `~/Documents` takes you to your Documents folder. Press Esc to stop typing and go back to the clickable path.
+To type a path instead, click the empty space in the address bar or press ⌘L (F4 and ⌥D work too), type the location and press Enter (or click **Go**). A **~** at the start stands for your home folder, so `~/Documents` takes you to your Documents folder. Press Esc to stop typing and go back to the clickable path.
 
 ### Back, Forward and Up
 
@@ -173,7 +173,8 @@ With **View › Special files in color** turned on (it is at first), some names 
 - **⇧-click** to select everything between the item you selected first and this one.
 - **Drag** from an empty spot to draw a dotted rectangle: everything it touches gets selected. In Details you can start beside a name. Hold ⌘ while dragging to switch items on and off, or ⇧ to add to what's already selected. If you drag past the edge, the list scrolls along.
 - **Edit › Select All** (⌘A) selects everything in the folder, and **Edit › Invert Selection** swaps what's selected and what isn't.
-- **Arrow keys** move the selection. In Large Icons they move to the nearest icon in that direction.
+- **Arrow keys** move the selection. In Large Icons they move to the nearest icon in that direction. Hold ⇧ to select everything from the first item to where you move.
+- **Space** adds the item with the dotted focus rectangle to the selection, or takes it out again. ⇧-Space selects everything from the first item to it.
 - **Type the first letters** of a name to jump to it. Typing `re` quickly selects the first item starting with "re". Pause for a second to start over.
 
 The status bar shows how many items you have selected and how much space they take up together.
@@ -294,6 +295,8 @@ Type in the **Search this folder** box at the top right. The list shows only the
 
 <img src="images/search.png" alt="The search box showing only the items that contain 're'" width="900">
 
+⌘F or F3 takes you to the search box from anywhere in the window.
+
 To jump to an item without hiding the others, just type the first letters of its name in the list (see [Selecting files](#5-selecting-files)).
 
 ## 12. Making it your own
@@ -340,6 +343,8 @@ Macsplorer remembers your text size, dark mode, columns, view, sort order and wi
 
 ## 13. Keyboard shortcuts
 
+You can use Macsplorer without the mouse. **Tab** moves from the file list to the address bar, then to the search box, then to the Folders pane and back to the list; **⇧Tab** goes the other way. F6 does the same as Tab. The part of the window you're in shows a dotted rectangle around the item that the keys work on, and the selection in the other parts turns gray.
+
 **Moving around**
 
 | Keys | Action |
@@ -347,9 +352,15 @@ Macsplorer remembers your text size, dark mode, columns, view, sort order and wi
 | ⌘[ or ⌥← or ⌫ | Back |
 | ⌘] or ⌥→ | Forward |
 | ⌘↑ or ⌥↑ | Up to the containing folder |
-| ⌘L | Type a location in the address bar |
+| Tab or F6 | Go to the next part of the window (⇧ goes back) |
+| ⌘L or F4 or ⌥D | Type a location in the address bar |
+| ⌘F or F3 | Search this folder |
 | ⌘R or F5 | Refresh |
 | Arrow keys | Move the selection (in the tree: → unfolds, ← folds) |
+| Home, End, Page Up, Page Down | First item, last item, a pageful up or down |
+| Space | Select the item with the focus rectangle, or take it out of the selection |
+| ⇧ with arrow keys or Space | Select a range |
+| + and − | In the Folders pane: unfold and fold |
 | Letters | Jump to the first item whose name starts with them |
 
 **Working with files**

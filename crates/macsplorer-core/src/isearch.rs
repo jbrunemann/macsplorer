@@ -19,6 +19,9 @@ pub enum Outcome {
     NotFound,
     /// The character isn't part of a search.
     Ignored,
+    /// A space with no search going: toggle the focused item's selection
+    /// (`OnChar`, a buffer of exactly one space).
+    Space,
 }
 
 /// The characters typed so far and when the last one arrived.
@@ -47,8 +50,9 @@ impl IncrementalSearch {
     /// - Any other text searches from the focused item itself, so extending
     ///   the text keeps the current item while it still matches.
     /// - The search wraps around the end of the list.
-    /// - A space can't start a search (Explorer uses it to toggle the focused
-    ///   item's selection instead); inside the text it is a normal character.
+    /// - A space can't start a search: it toggles the focused item's
+    ///   selection instead ([`Outcome::Space`]). Inside the text it is a
+    ///   normal character.
     pub fn type_char(&mut self, c: char, now_ms: u64, names: &[&str], focus: Option<usize>) -> Outcome {
         if c.is_control() {
             self.reset();
@@ -59,7 +63,7 @@ impl IncrementalSearch {
         }
         self.last_ms = now_ms;
         if self.text.is_empty() && c == ' ' {
-            return Outcome::Ignored;
+            return Outcome::Space;
         }
         self.text.push(c);
 
@@ -165,7 +169,7 @@ mod tests {
     fn space_only_counts_inside_the_text() {
         let names = ["My File", "my notes", "Mz"];
         let mut s = IncrementalSearch::default();
-        assert_eq!(s.type_char(' ', 0, &names, None), Outcome::Ignored);
+        assert_eq!(s.type_char(' ', 0, &names, None), Outcome::Space);
         assert_eq!(s.type_char('m', 100, &names, None), Outcome::Found(0));
         assert_eq!(s.type_char('y', 200, &names, Some(0)), Outcome::Found(0));
         assert_eq!(s.type_char(' ', 300, &names, Some(0)), Outcome::Found(0));
