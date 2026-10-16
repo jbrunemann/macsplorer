@@ -9,11 +9,14 @@ set -eu
 cd "$(dirname "$0")/.."
 
 mkdir -p target/linux-docker
+# Separate caches per architecture: an arm64 rustup in a shared volume can't
+# run in an amd64 container (and the build output would clash).
+suffix=$(echo "${1:-}" | sed "s|^linux/|-|")
 docker run --rm ${1:+--platform "$1"} \
     -v "$PWD":/src:ro \
-    -v macsplorer-linux-target:/target \
-    -v macsplorer-linux-cargo:/root/.cargo \
-    -v macsplorer-linux-rustup:/root/.rustup \
+    -v macsplorer-linux${suffix}-target:/target \
+    -v macsplorer-linux${suffix}-cargo:/root/.cargo \
+    -v macsplorer-linux${suffix}-rustup:/root/.rustup \
     -v "$PWD/target/linux-docker":/out \
     -e CARGO_TARGET_DIR=/target \
     -e DEBIAN_FRONTEND=noninteractive \

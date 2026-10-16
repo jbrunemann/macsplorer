@@ -195,7 +195,10 @@ pub fn install(ctx: &egui::Context) {
             })
             .or_else(|| {
                 let origin = UiFont { label: "DejaVu Sans Condensed, built into Macsplorer".to_string(), path: None };
-                Some((FontData::from_static(platform::bundled_ui_font(family != FontFamily::Proportional)), origin))
+                // Autohinted and on whole pixels: sharp at 12 px on a 1x screen (see `fonts::prefer_autohinter`).
+                let bytes = macsplorer_core::fonts::prefer_autohinter(platform::bundled_ui_font(family != FontFamily::Proportional));
+                let tweak = egui::FontTweak { subpixel_binning: Some(false), ..Default::default() };
+                Some((FontData::from_owned(bytes).tweak(tweak), origin))
             });
         if let Some((data, origin)) = data {
             fonts.font_data.insert(key.into(), Arc::new(data));

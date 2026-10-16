@@ -39,6 +39,37 @@ pub fn cjk_families(lang: &str) -> Vec<&'static str> {
     first.into_iter().chain(["Noto Sans CJK JP", "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Droid Sans Fallback"]).collect()
 }
 
+/// The font with its TrueType hinting program hidden, so egui's rasterizer
+/// (skrifa) grid-fits it with its autohinter instead. DejaVu's own instructions
+/// leave its outlines untouched at UI sizes under skrifa's interpreter (checked
+/// at 12 px: hinted and unhinted outlines are identical), which renders soft,
+/// gray text on a 1x screen; the autohinter snaps the x-height and stems to
+/// whole pixels. skrifa takes the interpreter whenever `fpgm` or `prep` exist
+/// or `maxp` allows glyph instructions (FreeType's rule), so this renames the
+/// two tables (keeping the directory sorted) and zeroes
+/// `maxp.maxSizeOfInstructions`. Bytes that aren't a TrueType font come back
+/// unchanged.
+pub fn prefer_autohinter(font: &[u8]) -> Vec<u8> {
+    let mut out = font.to_vec();
+    let Some(count) = font.get(4..6).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize) else { return out };
+    for i in 0..count {
+        let record = 12 + 16 * i;
+        let Some(entry) = font.get(record..record + 16) else { return out };
+        let offset = u32::from_be_bytes([entry[8], entry[9], entry[10], entry[11]]) as usize;
+        match &entry[..4] {
+            // '_' sorts below every lowercase letter, so "fpg_" stays between "cvt " and
+            // "gasp" and "pre_" after "post".
+            b"fpgm" | b"prep" => out[record + 3] = b'_',
+            // maxSizeOfInstructions, in the version 1.0 table only.
+            b"maxp" if font.get(offset..offset + 4) == Some(&[0, 1, 0, 0]) && out.len() >= offset + 28 => {
+                out[offset + 26..offset + 28].fill(0);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,5 +86,33 @@ mod tests {
         assert_eq!(cjk_families("zh_TW.UTF-8")[0], "Noto Sans CJK TC");
         assert_eq!(cjk_families("zh_CN.UTF-8")[0], "Noto Sans CJK SC");
         assert_eq!(cjk_families("")[0], "Noto Sans CJK SC");
+    }
+
+    fn tables(font: &[u8]) -> Vec<(String, usize)> {
+        let count = u16::from_be_bytes([font[4], font[5]]) as usize;
+        (0..count)
+            .map(|i| {
+                let r = &font[12 + 16 * i..28 + 16 * i];
+                (String::from_utf8_lossy(&r[..4]).into_owned(), u32::from_be_bytes([r[8], r[9], r[10], r[11]]) as usize)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn autohinter_font_has_no_hinting_program() {
+        let font = prefer_autohinter(include_bytes!("../../../assets/fonts/DejaVuSansCondensed.ttf"));
+        let tables = tables(&font);
+        let tags: Vec<&str> = tables.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(!tags.contains(&"fpgm") && !tags.contains(&"prep"));
+        assert!(tags.contains(&"fpg_") && tags.contains(&"pre_"));
+        assert!(tags.windows(2).all(|w| w[0] < w[1]), "directory stays sorted: {tags:?}");
+        let maxp = tables.iter().find(|(t, _)| t == "maxp").unwrap().1;
+        assert_eq!(&font[maxp + 26..maxp + 28], [0, 0]);
+    }
+
+    #[test]
+    fn other_bytes_come_back_unchanged() {
+        assert_eq!(prefer_autohinter(b"abc"), b"abc");
+        assert!(prefer_autohinter(&[]).is_empty());
     }
 }
