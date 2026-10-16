@@ -200,3 +200,14 @@ them with `scripts/update-seti.py`. The branch glyph is drawn after Ionicons'
 `git-branch-outline` (MIT), and the Git status summary follows the format and
 counting rules of [posh-git](https://github.com/dahlbyk/posh-git) (MIT); no
 code from either is included.
+
+## License and trademarks
+
+Macsplorer is released under the [MIT License](LICENSE).
+
+Macsplorer is an independent project. It is not affiliated with, endorsed by or
+sponsored by Microsoft. Windows, Windows Explorer and Tahoma are trademarks or
+registered trademarks of Microsoft Corporation. The Windows 2000 look is
+re-created from scratch and the behavior was documented from observation, with
+no Microsoft code or artwork included. Tahoma is not bundled; it is loaded from
+the system when present.
