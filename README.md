@@ -114,6 +114,7 @@ package have it) or egui's default font is used.
 - Right-click an item for **Open**, **Open With**, **Show in Finder**, **Open in Terminal** (folders), **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete**, **Rename** and **Properties**. Right-click empty space for **Paste**, **Refresh**, **Open in Terminal** and **Properties** of the open folder.
 - **Open in Terminal** starts Terminal on macOS; on Linux `$TERMINAL`, else the first common terminal found. Set `"terminal"` in `settings.json` (an app name such as `iTerm` or `Ghostty` on macOS, a command on Linux) to use another one.
 - **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does; a name that's taken elsewhere asks with Windows 2000's Confirm File Replace (replaced items go to the Trash). Cut items are drawn faded until pasted. A paste that takes more than a second shows the **Copying...** window with the time left and **Cancel**, which leaves no half-copied item behind. *Explorer-derived* (Windows.Storage `CCopyWorkItem`, shell32 `CProgressDialog` timing).
+- **Drag and drop** inside the window, into the Folders pane and to and from Finder and other apps (macOS): the same disk moves, another copies, ⌥ copies, ⌘ moves, ⌥⌘ makes a shortcut (a symbolic link "Name - Shortcut"). Inside the window the dragged items follow the pointer half transparent and the target folder is highlighted; a closed folder in the Folders pane opens when you rest on it. *Explorer-derived* (shell32 `CFSDropTarget`, comctl32 `CheckForDragBeginEx`). On Linux only inside the window, with Windows' keys (Shift, Ctrl, Ctrl+Shift).
 - **Live updates**: the list and the Folders pane follow changes other programs make (FSEvents on macOS, inotify on Linux), within a second, keeping the selection.
 - **Delete** (⌦ forward delete, or ⌘⌫) moves the selection to the Trash.
 - **Undo** (toolbar button, Edit menu or ⌘Z) reverses the last rename, move, copy or delete, up to 10 steps back. Undoing a delete restores the items from the Trash.
@@ -149,7 +150,8 @@ package have it) or egui's default font is used.
 
 ## Not yet
 
-Drag and drop, window persistence, pinning favorites and tabs.
+Window persistence, pinning favorites and tabs. Dragging with the right
+button (Explorer's Copy Here / Move Here menu) and dropping onto an app.
 For file operations: no redo and no Shift+Delete. Small Icons and Thumbnails
 views are still to come.
 

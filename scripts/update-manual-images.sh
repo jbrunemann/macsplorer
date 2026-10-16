@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 shots="window large-icons list details-columns header-menu column-settings views-menu
 view-menu view-menu-text-size item-menu open-with-menu rename search marquee-details
 chevron-menu properties-folder properties-file properties-selection hidden-items text-size-larger
-git-status git-branch-column confirm-file-replace copy-progress"
+git-status git-branch-column confirm-file-replace copy-progress drag-items"
 
 out=docs/manual/images
 mkdir -p "$out"

@@ -24,7 +24,7 @@ pub struct Files {
 }
 
 #[cfg(target_os = "macos")]
-pub use mac::Pasteboard;
+pub use mac::{Pasteboard, files_on};
 
 #[cfg(not(target_os = "macos"))]
 pub use other::Pasteboard;
@@ -51,6 +51,19 @@ mod mac {
     fn string_type() -> &'static NSString {
         // SAFETY: as above.
         unsafe { NSPasteboardTypeString }
+    }
+
+    /// The files on any pasteboard (the general one, or a drag's), in order.
+    pub fn files_on(pb: &NSPasteboard) -> Vec<PathBuf> {
+        let Some(items) = pb.pasteboardItems() else { return Vec::new() };
+        let mut paths = Vec::new();
+        for item in items.iter() {
+            let Some(url) = item.stringForType(file_url_type()) else { continue };
+            // filePathURL turns a file reference URL into the path it stands for.
+            let path = NSURL::URLWithString(&url).and_then(|u| u.filePathURL()).and_then(|u| u.path());
+            paths.extend(path.map(|p| PathBuf::from(p.to_string())));
+        }
+        paths
     }
 
     /// A handle on a pasteboard: the system's general one, or a private one in tests.
@@ -106,15 +119,8 @@ mod mac {
         pub fn read(&self) -> Option<Files> {
             let items = self.0.pasteboardItems()?;
             let cut_type = NSString::from_str(CUT_TYPE);
-            let mut paths = Vec::new();
-            let mut cut = false;
-            for item in items.iter() {
-                cut |= item.types().iter().any(|t| *t == *cut_type);
-                let Some(url) = item.stringForType(file_url_type()) else { continue };
-                // filePathURL turns a file reference URL into the path it stands for.
-                let path = NSURL::URLWithString(&url).and_then(|u| u.filePathURL()).and_then(|u| u.path());
-                paths.extend(path.map(|p| PathBuf::from(p.to_string())));
-            }
+            let cut = items.iter().any(|item| item.types().iter().any(|t| *t == *cut_type));
+            let paths = files_on(&self.0);
             (!paths.is_empty()).then_some(Files { paths, cut })
         }
 

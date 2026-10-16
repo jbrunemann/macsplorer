@@ -153,13 +153,13 @@ fn weight(path: &Path, progress: &Progress) -> Option<u64> {
 
 /// Whether `src` can be renamed into `dir` rather than copied.
 #[cfg(unix)]
-fn same_volume(src: &Path, dir: &Path) -> bool {
+pub fn same_volume(src: &Path, dir: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     matches!((src.symlink_metadata(), dir.metadata()), (Ok(a), Ok(b)) if a.dev() == b.dev())
 }
 
 #[cfg(not(unix))]
-fn same_volume(_: &Path, _: &Path) -> bool {
+pub fn same_volume(_: &Path, _: &Path) -> bool {
     false
 }
 
@@ -393,6 +393,51 @@ pub fn copy_name(dir: &Path, name: &OsStr, is_dir: bool) -> PathBuf {
         .expect("an unbounded range always yields a free name")
 }
 
+/// The first free "Name - Shortcut.ext", "Name - Shortcut (2).ext", ... in
+/// `dir`. Windows 10 names a shortcut "Name.ext - Shortcut.lnk"; a symbolic
+/// link has no `.lnk`, so the extension stays last and the link keeps its
+/// file's type.
+pub fn shortcut_name(dir: &Path, name: &OsStr, is_dir: bool) -> PathBuf {
+    let path = Path::new(name);
+    let (stem, ext) = match path.extension() {
+        Some(ext) if !is_dir => (path.file_stem().unwrap_or(name), Some(ext)),
+        _ => (name, None),
+    };
+    (1..)
+        .map(|n| {
+            let mut candidate = OsString::from(stem);
+            candidate.push(if n == 1 { " - Shortcut".to_string() } else { format!(" - Shortcut ({n})") });
+            if let Some(ext) = ext {
+                candidate.push(".");
+                candidate.push(ext);
+            }
+            dir.join(candidate)
+        })
+        .find(|p| p.symlink_metadata().is_err())
+        .expect("an unbounded range always yields a free name")
+}
+
+/// Makes a symbolic link to each of `sources` in the folder `dest`, named by
+/// [`shortcut_name`] (a drop with the shortcut effect). Stops at the first
+/// error; the undo step removes the links made.
+#[cfg(unix)]
+pub fn link_into(sources: &[PathBuf], dest: &Path) -> Transferred {
+    let mut out = Transferred::default();
+    for src in sources {
+        let name = src.file_name().map_or_else(|| OsString::from("Root"), OsStr::to_os_string);
+        let link = shortcut_name(dest, &name, src.is_dir());
+        match std::os::unix::fs::symlink(src, &link) {
+            Ok(()) => out.placed.push(link),
+            Err(e) => {
+                out.error = Some((src.clone(), e));
+                break;
+            }
+        }
+    }
+    out.undo = Some(UndoOp::Copy(out.placed.clone()));
+    out
+}
+
 /// Moves `src` to the path `dest`, across volumes too, never replacing.
 pub fn move_to(src: &Path, dest: &Path) -> io::Result<()> {
     move_with(src, dest, &Progress::default()).map(drop)
@@ -546,6 +591,23 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn shortcuts_link_to_their_items() {
+        let dir = scratch("links");
+        fs::create_dir_all(dir.join("folder")).unwrap();
+        fs::write(dir.join("a.txt"), "a").unwrap();
+        let out = dir.join("out");
+        fs::create_dir(&out).unwrap();
+        let sources = [dir.join("a.txt"), dir.join("folder")];
+        let first = link_into(&sources, &out);
+        assert!(first.error.is_none());
+        assert_eq!(first.placed, [out.join("a - Shortcut.txt"), out.join("folder - Shortcut")]);
+        assert_eq!(fs::read_link(&first.placed[0]).unwrap(), sources[0]);
+        assert_eq!(link_into(&sources[..1], &out).placed, [out.join("a - Shortcut (2).txt")]);
+        assert_eq!(first.undo, Some(UndoOp::Copy(first.placed.clone())));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

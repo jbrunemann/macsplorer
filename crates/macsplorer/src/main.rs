@@ -5,7 +5,9 @@ mod app;
 mod column_dialog;
 mod conflict_dialog;
 mod icons;
+mod item_drag;
 mod locale;
+mod native_drag;
 mod native_icon;
 mod open_with;
 mod pasteboard;
@@ -58,6 +60,8 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_zoom_factor(prefs.zoom);
             // Before anything looks for git, so the lookup can start from where it was.
             macsplorer_core::git::remember(prefs.git.clone());
+            #[cfg(target_os = "macos")]
+            native_drag::install(cc);
             let mut app = app::Explorer::new(cc.egui_ctx.clone(), start);
             app.restore_preferences(&prefs);
             Ok(Box::new(app))

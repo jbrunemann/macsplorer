@@ -254,6 +254,23 @@ When copying or moving takes more than a second, a window shows how it's going: 
 
 Use **Edit › Cut** (⌘X) instead of Copy to move the items. They are shown faded until you paste them somewhere. If the destination already has an item with the same name, Macsplorer asks first, as described above.
 
+### Dragging
+
+You can also move items by dragging them with the mouse. Press on an item (or on one of several selected items), hold the button and move: the items follow the pointer, faded. A folder you move over is highlighted, and letting go puts the items into it. Letting go over empty space in the list puts them into the folder you're looking at. Folders in the Folders pane take items too, and a closed one opens if you hold the pointer over it for a moment.
+
+<img src="images/drag-items.png" alt="Two files dragged onto the Pictures folder" width="560">
+
+What happens depends on where the items go, as in Finder:
+
+- On the same disk they are **moved**.
+- To another disk (a USB stick, a network drive) they are **copied**.
+- Hold **⌥ Option** while letting go to copy instead, or **⌘ Command** to move.
+- Hold **⌥ Option** and **⌘ Command** together to make a **shortcut** instead: a small file that opens the original. It's called "Name - Shortcut".
+
+The pointer shows what will happen: a plus sign for a copy, a little arrow for a shortcut, and a "no" sign where the items can't go, such as onto a file or into the folder they came from. Press **Esc** while dragging to call it off. A drag into a Macsplorer window can be undone with ⌘Z like any other move or copy.
+
+Drag items out of the window to put them in a Finder window, on the desktop, into another Macsplorer window or another app, or onto the Trash in the Dock. Items dragged from Finder can be dropped on Macsplorer in the same way.
+
 ### Between windows and Finder
 
 Copy and Cut use the Mac's own clipboard, so you can copy in one Macsplorer window and paste in another, or copy in Finder and paste in Macsplorer, and the other way round.
@@ -403,7 +420,7 @@ On Linux, use Ctrl wherever this manual says ⌘.
 No. Macsplorer notices changes in the folder you're looking at and in the folders open in the Folders pane, and updates within a second. **Refresh** (⌘R) is still there for everything else.
 
 **Can I drag files to move them?**
-Not yet. Use Cut and Paste, or Copy and Paste.
+Yes, see [Dragging](#dragging). On the same disk dragging moves; hold ⌥ Option to copy instead.
 
 **What happens if I paste a file where one with the same name already exists?**
 Macsplorer asks whether to replace it. If you say yes, the old one goes to the Trash, so ⌘Z can bring it back. See [When the name is already taken](#when-the-name-is-already-taken).

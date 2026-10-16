@@ -17,12 +17,13 @@ use egui_extras::{Column as TableColumn, TableBuilder};
 use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
-use macsplorer_core::fileops::{Choice, Progress, transfer_with};
+use macsplorer_core::fileops::{self, Choice, Progress, transfer_with};
 use macsplorer_core::focus::{self, Stop};
 use macsplorer_core::git;
 use macsplorer_core::history::History;
 use macsplorer_core::isearch::{self, IncrementalSearch};
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
+use macsplorer_core::dragdrop::{self, Allowed, Effect};
 use macsplorer_core::marquee::{self, Marquee};
 use macsplorer_core::listing::{Entry, SortSpec, entry_at, format_byte_size, format_size, list_dir, list_dir_with, sort_entries};
 #[cfg(unix)]
@@ -45,6 +46,8 @@ use crate::column_dialog::{self, ColumnDialog};
 use crate::conflict_dialog::{self, ConflictDialog};
 use crate::pasteboard::{self, Pasteboard};
 use crate::icons::{self, FileIcons, IconState};
+use crate::item_drag::{self, DragFrame, ItemDrag, Mark, Pointer, Step};
+use crate::native_drag;
 use crate::locale;
 use crate::open_with;
 use crate::platform;
@@ -146,6 +149,13 @@ enum Action {
     /// Start a marquee at this content point; `extend` (Cmd or Shift) keeps
     /// the selection.
     MarqueeBegin { origin: (f32, f32), extend: bool },
+    /// A press on this item became a drag: drag it, with the rest of the
+    /// selection if it is selected.
+    DragItems(usize),
+    /// A drag of a Folders pane row.
+    DragFolder(PathBuf),
+    /// The drag was dropped on this folder.
+    Drop { dir: PathBuf, effect: Effect },
     BeginRename,
     CommitRename,
     CancelRename,
@@ -297,6 +307,10 @@ pub struct Explorer {
     widest_name: Option<((u64, bool, String), f32)>,
     /// The rubber band while it's being dragged in the item view.
     marquee: Option<Marquee>,
+    /// Items being dragged inside the window (`item_drag`).
+    drag: Option<ItemDrag>,
+    /// The drop zones drawn this frame, and how the items were drawn.
+    drag_frame: DragFrame,
     /// Details view columns and their widths, shared by every folder and
     /// remembered between runs. (Explorer kept them per folder.)
     columns: ColumnSet,
@@ -421,6 +435,8 @@ impl Explorer {
             nav_layout: None,
             widest_name: None,
             marquee: None,
+            drag: None,
+            drag_frame: DragFrame::default(),
             columns: ColumnSet::default(),
             saved_columns: None,
             column_dialog: None,
@@ -466,6 +482,8 @@ impl Explorer {
         // Windows' double-click time is also the slow-click rename delay, so a
         // second click before the rename starts always opens the item.
         app.ctx.options_mut(|o| o.input_options.max_double_click_delay = slow_click::DELAY_MS as f64 / 1000.0);
+        // A press that moves this far is a drag, not a click (`SM_CXDRAG`).
+        app.ctx.options_mut(|o| o.input_options.max_click_dist = dragdrop::DRAG_DISTANCE);
         app.reload();
         app.sync_tree();
         app
@@ -605,6 +623,12 @@ impl Explorer {
                 (self.pb_seen, self.pb_files) = (self.pb.change_count().unwrap_or_default(), false);
             }
         }
+        self.transfer(paths, dest, cut);
+    }
+
+    /// Copies or (with `cut`) moves `paths` into `dest` on a worker thread,
+    /// with the progress dialog and the Replace question: a paste or a drop.
+    fn transfer(&mut self, paths: Vec<PathBuf>, dest: PathBuf, cut: bool) {
         self.status = Some(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len()));
         self.transfer_count += 1;
         let (id, progress) = (self.transfer_count, std::sync::Arc::new(Progress::default()));
@@ -661,6 +685,78 @@ impl Explorer {
         let paused = self.conflict.is_some();
         let ctx = self.ctx.clone();
         self.transfers.retain_mut(|dialog| dialog.show(&ctx, now, paused));
+    }
+
+    /// Makes shortcuts (symbolic links) to `paths` in `dest` on a worker thread.
+    #[cfg_attr(not(unix), allow(unused_variables))]
+    fn link(&mut self, paths: Vec<PathBuf>, dest: PathBuf) {
+        let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            #[cfg(unix)]
+            let result = fileops::link_into(&paths, &dest);
+            #[cfg(not(unix))]
+            let result = fileops::Transferred::default();
+            let error = result.error.map(|(path, e)| {
+                let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                format!("Couldn't make a shortcut to \"{name}\": {e}")
+            });
+            let done = OpDone { dirs: vec![dest], select: result.placed, error, undo: result.undo, transfer: None };
+            if tx.send(done).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// One frame of an item drag, after the views drew their drop zones:
+    /// the target under the pointer, the drop, the drag image. A drag from
+    /// another app comes through `native_drag`, and one of ours that leaves
+    /// the window goes to AppKit there.
+    fn drag_step(&mut self, ui: &Ui, actions: &mut Vec<Action>) {
+        let incoming = native_drag::incoming();
+        match (&incoming, &self.drag) {
+            (Some(i), None) => self.drag = Some(ItemDrag::external(i.paths.clone())),
+            (None, Some(d)) if d.native => self.drag = None,
+            _ => {}
+        }
+        let Some(drag) = &mut self.drag else { return };
+        let (pointer, forced, allowed) = match incoming.filter(|_| drag.native) {
+            // AppKit has already narrowed what the source allows to what the keys ask for.
+            Some(i) => (Pointer { pos: Some(i.pos), down: !i.dropped, escape: false }, None, i.allowed),
+            None => {
+                let mods = ui.input(|i| i.modifiers);
+                // The keys of the platform's own drags.
+                #[cfg(target_os = "macos")]
+                let forced = dragdrop::mac_keys(mods.alt, mods.mac_cmd);
+                #[cfg(not(target_os = "macos"))]
+                let forced = dragdrop::windows_keys(mods.shift, mods.ctrl, mods.alt);
+                (Pointer::of(ui), forced, Allowed::ALL)
+            }
+        };
+        let outside = pointer.pos.is_none_or(|p| !ui.ctx().content_rect().contains(p));
+        if !drag.native && pointer.down && outside && native_drag::begin(ui.ctx(), &drag.paths) {
+            self.drag = None;
+            return;
+        }
+        let native = drag.native;
+        let step = drag.step(ui, &self.drag_frame, pointer, |paths, dir| dragdrop::drop_effect(paths, dir, forced, allowed));
+        if native {
+            native_drag::set_answer(drag.over.as_ref().map(|o| o.effect));
+        }
+        match step {
+            Step::Dragging => drag.paint(ui.ctx(), &mut self.icons, &self.entries),
+            Step::Expand(key) => {
+                drag.paint(ui.ctx(), &mut self.icons, &self.entries);
+                actions.push(Action::TreeExpand(key));
+            }
+            Step::Drop { dir, effect } => {
+                actions.push(Action::Drop { dir, effect });
+                native_drag::set_answer(None);
+            }
+            Step::Cancel => {
+                self.drag = None;
+                native_drag::set_answer(None);
+            }
+        }
     }
 
     /// Moves the selection to the Trash on a worker thread.
@@ -884,6 +980,11 @@ impl Explorer {
         let picked: Vec<PathBuf> = std::mem::take(&mut self.pending_select).into_iter().filter(|p| present.contains(p)).collect();
         if !picked.is_empty() {
             self.selection = picked.into_iter().collect();
+            // Pasted or dropped items: the first one gets the focus and is
+            // scrolled into view, as Explorer selects them
+            // (`SVSI_FOCUSED | SVSI_ENSUREVISIBLE`, from memory).
+            let first = self.entries.iter().position(|e| self.selection.contains(&e.path));
+            (self.focus_item, self.anchor, self.reveal) = (first, first, first);
         }
     }
 
@@ -1371,6 +1472,26 @@ impl Explorer {
                         self.selection.clear();
                     }
                     self.marquee = Some(Marquee::new(origin));
+                }
+                Action::DragItems(index) => {
+                    self.slow_click.cancel();
+                    self.focus = Pane::List;
+                    // A press on an item outside the selection drags that item alone.
+                    if !self.selection.contains(&self.entries[index].path) {
+                        self.click(index, false, false, visible);
+                    }
+                    let paths = visible.iter().map(|&i| &self.entries[i].path).filter(|p| self.selection.contains(*p)).cloned().collect();
+                    self.drag = Some(ItemDrag::new(&self.ctx, paths, &self.drag_frame));
+                }
+                Action::DragFolder(path) => self.drag = Some(ItemDrag::new(&self.ctx, vec![path], &self.drag_frame)),
+                Action::Drop { dir, effect } => {
+                    if let Some(drag) = self.drag.take() {
+                        match effect {
+                            Effect::Copy => self.transfer(drag.paths, dir, false),
+                            Effect::Move => self.transfer(drag.paths, dir, true),
+                            Effect::Link => self.link(drag.paths, dir),
+                        }
+                    }
                 }
                 Action::BeginRename => self.begin_rename(),
                 Action::CommitRename => self.commit_rename(),
@@ -2034,6 +2155,7 @@ impl Explorer {
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
         let hidden = scrollbar::hidden(&mut ui);
         // Selections scroll into view in one jump, as in the tree view.
+        let (drag, frame) = (self.drag.as_ref(), &mut self.drag_frame);
         let out = egui::ScrollArea::both().auto_shrink(false).animated(false).scroll_bar_visibility(hidden).show(&mut ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut section = None;
@@ -2047,7 +2169,11 @@ impl Explorer {
                     });
                     ui.add_space(1.0);
                 }
-                tree_row(ui, &mut self.icons, row, guide, scroll, focused, cue, actions);
+                tree_row(ui, &mut self.icons, row, guide, scroll, focused, cue, (drag, &mut *frame), actions);
+            }
+            if drag.is_some() {
+                let content = ui.min_rect().union(ui.max_rect().with_max_y(ui.max_rect().top()));
+                item_drag::edge_scroll(ui, ui.clip_rect(), content, TREE_ROW_HEIGHT, 1);
             }
         });
         bars.end(&mut ui, &out);
@@ -2056,6 +2182,9 @@ impl Explorer {
     // ---- item view -----------------------------------------------------
 
     fn item_view(&mut self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
+        // Empty space in the view drops into the open folder.
+        let rect = ui.available_rect_before_wrap();
+        self.drag_frame.zone(ui.clip_rect(), rect, Some(self.current().to_path_buf()), None, None);
         match self.settings.view {
             ViewMode::LargeIcons => self.icons_view(ui, visible, actions),
             ViewMode::List => self.list_view(ui, visible, actions),
@@ -2091,7 +2220,7 @@ impl Explorer {
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("details-menu");
         let shown = self.columns.visible();
-        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, columns, header_left, focus_item, .. } = self;
+        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, columns, header_left, focus_item, drag, drag_frame, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::window();
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -2193,19 +2322,25 @@ impl Explorer {
             }
 
             table.body(|mut body| {
+                let clip = body.ui_mut().clip_rect();
                 if marquee.is_some() {
-                    let shown = body.ui_mut().clip_rect();
-                    edge_scroll(body.ui_mut(), shown, LIST_ROW_HEIGHT, 1);
+                    edge_scroll(body.ui_mut(), clip, LIST_ROW_HEIGHT, 1);
                 }
+                // Once, from the first row's Name cell, which knows where the rows start.
+                let mut scroll_once = drag.is_some();
                 body.rows(LIST_ROW_HEIGHT, visible.len(), |mut row| {
                     let pos = row.index();
                     let index = visible[pos];
                     let entry = &entries[index];
-                    let selected = selection.contains(&entry.path);
+                    // The drop target is drawn selected.
+                    let marked = drag.as_ref().is_some_and(|d| d.marks(&Mark::Item(entry.path.clone())));
+                    let selected = selection.contains(&entry.path) || marked;
+                    let focused = focused || marked;
                     // The icon and label, the only part of the row that hits the
                     // item: elsewhere is empty space (`CListView::HandleMouse`).
                     let mut item_rect = egui::Rect::NOTHING;
                     let mut label_rect = egui::Rect::NOTHING;
+                    let mut image_rect = egui::Rect::NOTHING;
                     let mut name_column = (0.0, 0.0);
 
                     for &column in &shown {
@@ -2231,6 +2366,11 @@ impl Explorer {
                                 }
                                 return;
                             }
+                            if std::mem::take(&mut scroll_once) {
+                                let top = ui.max_rect().top() - pos as f32 * pitch;
+                                let content = egui::Rect::from_x_y_ranges(clip.x_range(), top..=top + visible.len() as f32 * pitch);
+                                item_drag::edge_scroll(ui, clip, content, LIST_ROW_HEIGHT, 1);
+                            }
                             ui.add_space(4.0);
                             let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
                             icons.paint(ui, icon_rect, entry, IconState::of(selected, focused, entry.hidden || cut.contains(&entry.path)));
@@ -2251,6 +2391,7 @@ impl Explorer {
                             };
                             item_rect = egui::Rect::from_x_y_ranges(icon_rect.left()..=label.right(), ui.max_rect().y_range());
                             label_rect = label;
+                            image_rect = icon_rect;
                             name_column = (icon_rect.left(), ui.max_rect().right());
                         });
                     }
@@ -2259,6 +2400,12 @@ impl Explorer {
                     let resp = row.response();
                     let top = resp.rect.top() - pos as f32 * pitch;
                     geometry.get_or_insert((top, name_column.0, name_column.1));
+                    drag_frame.item(clip, item_rect, entry);
+                    let name = entry.display_name(settings.show_extensions);
+                    drag_frame.drawn(clip, &entry.path, image_rect, label_rect, || resp.ctx.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), font.clone(), theme::color::selection_text())), false);
+                    if resp.drag_started() && press.is_some_and(|p| item_rect.contains(p)) {
+                        actions.push(Action::DragItems(index));
+                    }
                     let on_item = resp.interact_pointer_pos().is_some_and(|p| item_rect.contains(p));
                     if on_item {
                         if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
@@ -2422,7 +2569,7 @@ impl Explorer {
         let font = egui::TextStyle::Body.resolve(ui.style());
         let line_height = ui.fonts_mut(|f| f.row_height(&font));
         let menu_id = ui.id().with("icons-menu");
-        let Self { entries, selection, rename, settings, search, icons, open_with, listing, focus_item, marquee, anchor, .. } = self;
+        let Self { entries, selection, rename, settings, search, icons, open_with, listing, focus_item, marquee, anchor, drag, drag_frame, .. } = self;
 
         let out = egui::ScrollArea::vertical()
             .id_salt("icons")
@@ -2447,6 +2594,10 @@ impl Explorer {
                 if marquee.is_some() {
                     edge_scroll(ui, shown, LIST_ROW_HEIGHT, 1);
                 }
+                if drag.is_some() {
+                    let content = egui::Rect::from_min_size(origin, egui::vec2(viewport.width(), grid.content_height()));
+                    item_drag::edge_scroll(ui, shown, content, LIST_ROW_HEIGHT, 1);
+                }
                 let resp = ui.interact(shown, ui.id().with("icons-hit"), Sense::click_and_drag());
                 let content = |p: egui::Pos2| (p.x - origin.x, p.y - origin.y);
                 let pointer = resp.interact_pointer_pos().or(resp.hover_pos()).map(content);
@@ -2454,13 +2605,15 @@ impl Explorer {
 
                 let mut hit = None;
                 let mut on_label = false;
-                let mut press_hit = false;
+                let mut press_hit = None;
                 // The focused item's whole label is drawn last, over its neighbors.
                 let mut on_top = None;
                 for pos in grid.items_in(view.min.y, view.max.y) {
                     let index = visible[pos];
                     let entry = &entries[index];
-                    let selected = selection.contains(&entry.path);
+                    let marked = drag.as_ref().is_some_and(|d| d.marks(&Mark::Item(entry.path.clone())));
+                    let selected = selection.contains(&entry.path) || marked;
+                    let focused = focused || marked;
                     let unfolded = focused && *focus_item == Some(index);
                     let color = name_color(entry, settings, selected && focused);
                     let galley = icon_label(ui, entry.display_name(settings.show_extensions), &font, color, unfolded);
@@ -2471,7 +2624,13 @@ impl Explorer {
                         hit = Some(pos);
                         on_label = pointer.is_some_and(|p| cell.label.contains(p));
                     }
-                    press_hit |= press.is_some_and(|p| cell.hit(p));
+                    if press.is_some_and(|p| cell.hit(p)) {
+                        press_hit = Some(index);
+                    }
+                    // Both parts take drops; the gap between them doesn't.
+                    drag_frame.item(shown, screen(cell.image), entry);
+                    drag_frame.item(shown, screen(cell.label), entry);
+                    drag_frame.drawn(shown, &entry.path, screen(cell.image), screen(cell.label), || icon_label(ui, entry.display_name(settings.show_extensions), &font, theme::color::selection_text(), unfolded), false);
                     let renaming = rename.as_ref().is_some_and(|r| r.path == entry.path);
                     if unfolded {
                         on_top = Some((screen(cell.label), galley, selected, renaming));
@@ -2496,11 +2655,13 @@ impl Explorer {
                         rename_editor(ui, r, true, actions)
                     });
                 }
-                if let Some(origin) = press
-                    && !press_hit
-                {
-                    let m = ui.input(|i| i.modifiers);
-                    actions.push(Action::MarqueeBegin { origin, extend: m.command || m.shift });
+                match (press, press_hit) {
+                    (_, Some(index)) => actions.push(Action::DragItems(index)),
+                    (Some(origin), None) => {
+                        let m = ui.input(|i| i.modifiers);
+                        actions.push(Action::MarqueeBegin { origin, extend: m.command || m.shift });
+                    }
+                    (None, None) => {}
                 }
                 if let Some(m) = marquee.as_mut() {
                     // Select bounds: the image and the label (`LVIR_SELECTBOUNDS`),
@@ -2572,7 +2733,7 @@ impl Explorer {
         let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("list-menu");
-        let Self { entries, selection, rename, settings, search, icons, open_with, listing, marquee, anchor, focus_item, .. } = self;
+        let Self { entries, selection, rename, settings, search, icons, open_with, listing, marquee, anchor, focus_item, drag, drag_frame, .. } = self;
         // An item's icon rect and label box (text plus `SM_CXEDGE` each side,
         // within the column), in content coordinates. Unverified: that the
         // label box hugs the text as in Large Icons (`CLVListView::v_ItemHitTest`
@@ -2610,6 +2771,10 @@ impl Explorer {
                 if marquee.is_some() {
                     edge_scroll(ui, shown, columns.column_width, 0);
                 }
+                if drag.is_some() {
+                    let content = egui::Rect::from_min_size(origin, egui::vec2(columns.content_width(), viewport.height()));
+                    item_drag::edge_scroll(ui, shown, content, layout::SMALL_ICON, 0);
+                }
                 let resp = ui.interact(shown, ui.id().with("list-hit"), Sense::click_and_drag());
                 let content = |p: egui::Pos2| (p.x - origin.x, p.y - origin.y);
                 let pointer = resp.interact_pointer_pos().or(resp.hover_pos()).map(content);
@@ -2617,11 +2782,13 @@ impl Explorer {
 
                 let mut hit = None;
                 let mut on_label = false;
-                let mut press_hit = false;
+                let mut press_hit = None;
                 for pos in columns.items_in(view.min.x, view.max.x) {
                     let index = visible[pos];
                     let entry = &entries[index];
-                    let selected = selection.contains(&entry.path);
+                    let marked = drag.as_ref().is_some_and(|d| d.marks(&Mark::Item(entry.path.clone())));
+                    let selected = selection.contains(&entry.path) || marked;
+                    let focused = focused || marked;
                     let (icon, label) = item_rects(ui, pos);
                     icons.paint(ui, screen(icon), entry, IconState::of(selected, focused, entry.hidden || cut.contains(&entry.path)));
                     let hits = |p: (f32, f32)| icon.contains(p) || label.contains(p);
@@ -2629,7 +2796,13 @@ impl Explorer {
                         hit = Some(pos);
                         on_label = pointer.is_some_and(|p| label.contains(p));
                     }
-                    press_hit |= press.is_some_and(hits);
+                    if press.is_some_and(hits) {
+                        press_hit = Some(index);
+                    }
+                    drag_frame.item(shown, screen(icon), entry);
+                    drag_frame.item(shown, screen(label), entry);
+                    let name = entry.display_name(settings.show_extensions);
+                    drag_frame.drawn(shown, &entry.path, screen(icon), screen(label), || ui.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), font.clone(), theme::color::selection_text())), false);
                     if let Some(r) = rename.as_mut().filter(|r| r.path == entry.path) {
                         let (x, y) = columns.cell(pos);
                         let area = layout::Rect::from_min_size((x + layout::SMALL_ICON, y), (columns.column_width - layout::SMALL_ICON, row_height));
@@ -2646,11 +2819,13 @@ impl Explorer {
                         paint_focus(ui, screen(label), selected);
                     }
                 }
-                if let Some(origin) = press
-                    && !press_hit
-                {
-                    let m = ui.input(|i| i.modifiers);
-                    actions.push(Action::MarqueeBegin { origin, extend: m.command || m.shift });
+                match (press, press_hit) {
+                    (_, Some(index)) => actions.push(Action::DragItems(index)),
+                    (Some(origin), None) => {
+                        let m = ui.input(|i| i.modifiers);
+                        actions.push(Action::MarqueeBegin { origin, extend: m.command || m.shift });
+                    }
+                    (None, None) => {}
                 }
                 if let Some(m) = marquee.as_mut() {
                     // Select bounds: the icon and the label box.
@@ -2764,6 +2939,7 @@ impl eframe::App for Explorer {
         self.slow_click_rename(ui);
         let mut actions = Vec::new();
         self.keyboard(ui, &visible, &mut actions);
+        self.drag_frame.begin(ui, self.drag.is_some());
 
         // The window frame: a raised 3D border around everything.
         let outer = ui.max_rect();
@@ -2801,6 +2977,7 @@ impl eframe::App for Explorer {
             .frame(plain.inner_margin(egui::Margin { left: if self.settings.show_folders { 3 } else { 0 }, ..Default::default() }))
             .show(ui, |ui| self.item_view(ui, &visible, &mut actions));
 
+        self.drag_step(ui, &mut actions);
         self.apply(actions, &visible);
         if let Some(ms) = self.slow_click.wait_ms(now_ms(ui.ctx())) {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(ms));
@@ -3279,15 +3456,26 @@ fn tree_guides(rows: &[Row]) -> Vec<Guide> {
 
 /// One Folders pane row in the Windows 2000 tree view style: dotted
 /// connector lines, a +/− box, a folder icon and a label that highlights
-/// only its text.
+/// only its text. `drag`: the item drag going on, if any, and the frame's
+/// drop zones.
 #[allow(clippy::too_many_arguments)]
-fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll: Option<Scroll>, focused: bool, cue: bool, actions: &mut Vec<Action>) {
+fn tree_row(
+    ui: &mut Ui,
+    icons: &mut FileIcons,
+    row: &Row,
+    guide: &Guide,
+    scroll: Option<Scroll>,
+    focused: bool,
+    cue: bool,
+    (drag, frame): (Option<&ItemDrag>, &mut DragFrame),
+    actions: &mut Vec<Action>,
+) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let text_w = ui.painter().layout_no_wrap(row.label.clone(), font.clone(), theme::color::text()).size().x;
     let x0 = ui.max_rect().left() + 2.0;
     let label_x = x0 + (row.depth + 1) as f32 * TREE_INDENT + 16.0 + 4.0;
     let width = (label_x - ui.max_rect().left() + text_w + 6.0).max(ui.available_width());
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TREE_ROW_HEIGHT), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TREE_ROW_HEIGHT), Sense::click_and_drag());
     let p = ui.painter();
     let line = egui::Stroke::new(1.0, theme::color::tree_line());
     // Single-pixel dots on even pixel coordinates, so the pattern lines up
@@ -3335,7 +3523,21 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
         icons.paint_tree_folder(ui, icon_rect, &row.key.path);
     }
     let text_rect = egui::Rect::from_min_size(egui::pos2(label_x - 2.0, rect.center().y - 7.0), egui::vec2(text_w + 4.0, 14.0));
-    let text_color = if row.selected {
+    // The whole row takes drops (`TVHT_ONITEMROW`, unverified for drags);
+    // the drop target is drawn selected and focused.
+    let mark = Mark::Tree(row.key.clone());
+    let marked = drag.is_some_and(|d| d.marks(&mark));
+    let expand = (row.expandable && !row.expanded).then(|| row.key.clone());
+    frame.zone(ui.clip_rect(), rect, Some(row.key.path.clone()), Some(mark), expand);
+    frame.drawn(ui.clip_rect(), &row.key.path, icon_rect, text_rect, || p.layout_no_wrap(row.label.clone(), font.clone(), theme::color::selection_text()), true);
+    if resp.drag_started() && !boxr.expand(3.0).contains(ui.input(|i| i.pointer.press_origin()).unwrap_or_default()) {
+        actions.push(Action::DragFolder(row.key.path.clone()));
+    }
+    let focused = focused || marked;
+    // While a row is the drop target, the selected one isn't highlighted
+    // (as remembered from the tree view; unverified).
+    let highlighted = marked || row.selected && !drag.is_some_and(ItemDrag::over_tree);
+    let text_color = if highlighted {
         let fill = if focused { theme::color::selection() } else { theme::color::face() };
         p.rect_filled(text_rect, 0.0, fill);
         if focused { theme::color::selection_text() } else { theme::color::text() }
@@ -3708,6 +3910,11 @@ mod clipboard {
         wait(&mut app);
         assert_eq!(fs::read_to_string(dir.join("a - Copy.txt")).unwrap(), "hi");
         assert!(app.clipboard.is_some(), "a copy can be pasted again");
+        // The pasted item is selected, focused and scrolled to once the folder reloads.
+        app.finish_listing();
+        let copy = app.entries.iter().position(|e| e.path == dir.join("a - Copy.txt"));
+        assert!(copy.is_some() && app.reveal == copy && app.focus_item == copy);
+        assert_eq!(app.selection, BTreeSet::from([dir.join("a - Copy.txt")]));
         // Over in well under a second: its progress dialog closes unseen.
         assert!(app.transfers.len() == 1 && app.transfers[0].finished);
         app.show_transfers();
@@ -3951,6 +4158,7 @@ mod clipboard {
 mod screenshot {
     use super::*;
     use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
     use std::fs;
 
     /// Built once per run: the tests run in parallel and share it.
@@ -4122,6 +4330,84 @@ mod screenshot {
         }
     }
 
+    /// A window on a fresh folder with "sub" and "a.txt", for driving drags.
+    fn drag_harness(name: &str) -> (Harness<'static, Explorer>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("macsplorer-drag-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("a.txt"), "hi").unwrap();
+        let start = dir.clone();
+        let harness = Harness::builder().with_size(egui::vec2(900.0, 560.0)).build_eframe(move |cc| {
+            theme::install(&cc.egui_ctx);
+            let mut app = Explorer::new(cc.egui_ctx.clone(), start.clone());
+            app.pb = Pasteboard::private();
+            app.finish_listing();
+            app
+        });
+        (harness, dir)
+    }
+
+    /// Runs frames until `done` or a few seconds have passed.
+    fn run_until(harness: &mut Harness<'_, Explorer>, done: impl Fn(&Explorer) -> bool) {
+        for _ in 0..300 {
+            harness.run_steps(2);
+            if done(harness.state()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("timed out");
+    }
+
+    #[test]
+    fn dragging_a_file_onto_a_folder_moves_it() {
+        let (mut harness, dir) = drag_harness("move");
+        harness.run_steps(2);
+        let from = harness.get_by_label("a.txt").rect().center();
+        let to = harness.get_by_label("sub").rect().center();
+        drag_on(&mut harness, true, from, to);
+        assert!(harness.state().drag.as_ref().is_some_and(|d| d.over.as_ref().is_some_and(|o| o.dir == dir.join("sub") && o.effect == Effect::Move)));
+        harness.drop_at(to);
+        run_until(&mut harness, |_| dir.join("sub/a.txt").exists());
+        assert!(!dir.join("a.txt").exists());
+        assert!(harness.state().drag.is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_drag_onto_a_file_or_itself_does_nothing() {
+        let (mut harness, dir) = drag_harness("refuse");
+        harness.run_steps(2);
+        let file = harness.get_by_label("a.txt").rect().center();
+        let sub = harness.get_by_label("sub").rect().center();
+        // The folder onto itself, then onto the file.
+        drag_on(&mut harness, true, sub, sub + egui::vec2(10.0, 0.0));
+        assert!(harness.state().drag.as_ref().is_some_and(|d| d.over.is_none()));
+        drag_on(&mut harness, false, sub + egui::vec2(10.0, 0.0), file);
+        assert!(harness.state().drag.as_ref().is_some_and(|d| d.over.is_none()));
+        harness.drop_at(file);
+        harness.run_steps(2);
+        assert!(harness.state().drag.is_none());
+        assert!(dir.join("sub").is_dir() && dir.join("a.txt").is_file());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Presses at `from` (unless `press` is false: the button is already down) and
+    /// moves the pointer to `to` in steps. Runs a fixed number of frames:
+    /// the tree's background loads keep asking for more.
+    fn drag_on(harness: &mut Harness<'_, Explorer>, press: bool, from: egui::Pos2, to: egui::Pos2) {
+        if press {
+            harness.hover_at(from);
+            harness.run_steps(2);
+            harness.drag_at(from);
+            harness.run_steps(2);
+        }
+        for step in 1..=8 {
+            harness.hover_at(from + (to - from) * (step as f32 / 8.0));
+            harness.run_steps(2);
+        }
+    }
+
     /// After keyboard use the focused item gets a dotted rectangle, here
     /// on an item outside the selection.
     #[test]
@@ -4203,6 +4489,38 @@ mod screenshot {
             app.reload();
             app.finish_listing();
         });
+    }
+
+    /// Two files dragged onto a folder, button still down: the drag image
+    /// and the drop target drawn selected.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn drag_items() {
+        shoot_driven(
+            "drag-items",
+            egui::vec2(900.0, 560.0),
+            |app| select(app, &["notes.txt", "photo.png"]),
+            |h| {
+                let from = h.get_by_label("notes.txt").rect().center();
+                let to = h.get_by_label("Pictures").rect().center() + egui::vec2(6.0, 2.0);
+                drag(h, from, to);
+            },
+        );
+    }
+
+    /// The same over a collapsed folder in the Folders pane.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn drag_to_tree() {
+        shoot_driven(
+            "drag-to-tree",
+            egui::vec2(900.0, 560.0),
+            |app| select(app, &["notes.txt"]),
+            |h| {
+                let from = h.get_by_label("notes.txt").rect().center();
+                drag(h, from, egui::pos2(110.0, 205.0));
+            },
+        );
     }
 
     /// A marquee dragged from empty space in Large Icons, button still down.

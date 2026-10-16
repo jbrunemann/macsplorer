@@ -744,6 +744,40 @@ the MUI file) and how the time left is estimated (`_UpdateTimedStats`). macsplor
 2000's "Copying..." / "Moving..." dialog from memory: animation, item name, "From 'X' to 'Y'",
 the block progress bar, "N Seconds Remaining" / "N Minutes Remaining", Cancel.
 
+### 2.14 Drag and drop (shell32 `CFSDropTarget`, comctl32)
+
+Decompiled with Ghidra from shell32.dll, ExplorerFrame.dll and comctl32.dll build 10240 (names
+from the PDB publics). `CFSDropTarget` is the drop target of a file system folder, in the view
+and in the tree alike.
+
+- **Drag threshold.** comctl32's `CheckForDragBeginEx` (0x171a31750) makes a box of
+  `GetSystemMetrics(SM_CXDRAG)` by `SM_CYDRAG` on each side of the press (raised to 4 if smaller;
+  4 is the default) and waits: a move that leaves the box (`PtInRect`, so the right and bottom
+  edges are outside) starts the drag; a button message first ends it as a click. The tree uses the
+  same function (`TV_CheckForDragBegin` 0x171ad8678).
+- **Keys** (`CFSDropTarget::_GetDefaultEffect` 0x1804268c8). The key state masked to Shift, Ctrl
+  and Alt: Shift alone moves, Ctrl alone copies, Ctrl+Shift or Alt (with anything) makes a shortcut.
+  Without keys, a preferred effect the source put in the data object wins if allowed, then the
+  default below. The result is masked with the allowed effects, so a forced effect the source
+  doesn't offer refuses the drop.
+- **Default** (`_FilesystemAdjustedDefaultEffect` 0x180425d44). An effect stored for the source
+  folder in a per-drop list (a clipboard format, not identified) wins; then the target's
+  `desktop.ini` `[.ShellClassInfo] DefaultDropEffect` (`_EffectFromFolder` 0x180425c30); then: the
+  source is a drive's root (`PathIsRootW`) → shortcut; `PathIsSameRootW(source, target)` → move;
+  another drive → copy, unless a per-item property check (`FUN_180510680`, a property compared
+  with a GUID for every item, not identified) says otherwise, which moves. A second untraced check
+  on the source (`FUN_18021768c`) also gives a shortcut. Last: a move becomes a copy when the
+  source allows only copy (of copy and move), and a copy a move when it allows only move.
+- **Allowed effects** (`_DetermineEffects` 0x180425178): each clipboard format the data object
+  offers has a handler that adds what it supports; when the default isn't among them, the first of
+  copy, move and shortcut that is.
+- **Auto-scroll.** shell32's `DAD_AutoScroll` (ordinal 129) is an empty stub in this build (the
+  export shares a body that returns 0 with a dozen others), though `CDelegateDropTarget::DragOver`
+  (ExplorerFrame 0x180173670) still calls it. Not traced further: the margin and speed.
+- **Not traced:** the tree's hover-to-expand delay while dragging, the drag image's exact
+  look (`CLVDragDropManager::OnCreateDragImage` builds it from the items' icons and labels),
+  right-drag's Copy Here / Move Here / Create Shortcuts Here menu (`_DragDropMenu`).
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
@@ -761,6 +795,7 @@ the block progress bar, "N Seconds Remaining" / "N Minutes Remaining", Cancel.
 | Text size | **Not from Explorer and not traced; from Windows documentation.** Explorer has no text size option of its own: its list view and tree take the system Icon font, and Windows 2000 scaled every program through Display Properties > Settings > Advanced > Font Size (Small Fonts 96 DPI, Large Fonts 120 DPI = 125%, or a custom percentage; a restart applies it) and the Appearance schemes "Windows Standard (large)" and "(extra large)". Build 10240 has DPI scaling at 100 to 200% in Settings > Display, plus "Change only the text size" per element in Control Panel. A DPI change grows text and layout together, so Macsplorer does the same with egui's zoom factor rather than enlarging only the letters (`macsplorer_core::text_size`): View > Text Size, worded after Internet Explorer 5's menu of that name, with Normal 100%, Large 125% (the Win2000 Large Fonts), Larger 150% and Largest 200%. Cmd + / Cmd - step through those choices and Cmd 0 goes back to Normal. Remembered in `settings.json`. |
 | Show Package Contents | **Not from Explorer, from Finder (macOS 27, disassembled).** `-[TBaseBrowserViewController validateShowPackageContents:]` enables it for exactly one selected item that is a package (two further checks on the item weren't traced). `cmdShowPackageContents:` passes that item and the originating window to `+[TGlobalWindowController targetSelectOrCreateWindow:inTarget:selectNodes:]`, which reads the modifier keys like any folder open (`optionsForModifiers:windowController:`): without modifiers the package opens as a folder in the same window, with nothing selected. macsplorer puts it in the item menu under Open for `RenameKind::Package` and navigates in place; the new window with Command isn't done. |
 | Name conflicts (§2.11) | `macsplorer_core::fileops::transfer` asks a callback, which the paste worker turns into a question on a channel and waits on; `conflict_dialog.rs` shows Win2000's dialogs with Yes, Yes to All, No and Cancel (Enter, Y, A, N, Esc). The folder question's second sentence says what macsplorer does: it asks about each file inside. Yes to All covers both kinds of question. **Not from Windows:** a replaced item goes to the Trash instead of being destroyed, and Undo brings it back (`UndoOp::Group`). A move removes the source folders a merge emptied, and Undo recreates them. A file and a folder of one name get the replace question, like build 10240 (only folder onto folder merges). |
+| Drag and drop (§2.14) | `macsplorer_core::dragdrop` has the traced rules for plain files and folders: same volume moves, another copies, a volume's root links, keys force an effect, refused when the source doesn't allow it. The keys are the Mac's (Option copies, Command moves, both make a shortcut) since AppKit applies those to every drag from Finder anyway; Linux uses Windows' (Shift, Ctrl, Ctrl+Shift or Alt). A shortcut is a symbolic link named "Name - Shortcut.ext" (Windows: "Name.ext - Shortcut.lnk"). egui's click distance is set to the 4 px threshold, though egui measures a circle and not a box. Inside the window the drag is the app's own (`item_drag.rs`): the dragged items drawn half transparent and selected under the pointer, the target folder drawn selected, Explorer's cursors; the tree's selection isn't highlighted while one of its rows is the target (from memory). Over a file the drop is refused. **Not from Windows:** moving items into the folder they're in, or a folder into itself, is refused (Explorer repositions icons there, `CDefView::IsDropOnSource`). Guesses: a collapsed tree folder expands after the pointer rests on it for 1 s; auto-scroll within one row of an edge at 20 rows a second. On macOS (`native_drag.rs`) a drag that leaves the window becomes an AppKit drag of file URLs offering every operation, so the target decides (Finder moves on the same volume and copies to another, the Dock's Trash deletes), with the system icons as its image and the arrow cursor (the window's last cursor, often the "no" sign over the items' own folder, would otherwise stay up over Finder, as winit sets cursors only inside the window). After a drop or paste the new items are selected and the first is focused and scrolled into view (`SVSI_FOCUSED | SVSI_ENSUREVISIBLE`, from memory). Drops from Finder and other apps reach the window's view, which gets AppKit's drop methods (winit's own handler reports no position) and answers from the last frame. Not done: right-drag menu, drop on an app to open with it, dragging out on Linux, dropping in on Linux (winit 0.30 gives no position on X11 and nothing on Wayland). |
 | `CTravelLog` | `Vec<Location>` with a cursor. The back/forward dropdown menu lists entries (`_ShowBackForwardMenu`). |
 | Breadcrumb (`CBreadcrumbBar`) | Each crumb is a button with a chevron dropdown listing subfolders (`_OnDropDown`). Click empty space → edit mode with the full path (`_GoToEditMode`). Crumbs are drag sources and drop targets. Collapse overflow into a root dropdown (`_AddRootDropdownItems`). |
 | `CNscTree` change notifications | `macsplorer_core::watch`: `notify` (FSEvents on macOS, inotify on Linux) watches the open folder and every expanded Folders pane folder, each without its subfolders, and reloads them on worker threads as usual. **Not traced:** how Explorer coalesces `SHChangeNotify` events. A folder reloads 0.2 s after its last change, or at the latest 1 s after the first, so a file being written updates about once a second (guesses). Focus, anchor and selection follow their items across a reload. Changes inside `.git` don't reach the repository folder's watch, so the Git summary only refreshes for changes in the open folder itself. |
