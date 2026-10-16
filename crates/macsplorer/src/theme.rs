@@ -607,22 +607,18 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
 
     // On macOS, not Windows' system menu: the red dot closes, like the macOS close button in the
     // top left. The folder icon next to it does nothing, as in Finder's title bar.
-    let icon_left = if cfg!(target_os = "macos") {
-        let dot = pos2(rect.left() + 8.0, rect.center().y);
-        p.circle(dot, 5.0, Color32::from_rgb(0xff, 0x5f, 0x57), Stroke::new(1.0, Color32::from_rgb(0xc0, 0x30, 0x28)));
-        16.0
-    } else {
-        2.0
-    };
+    let icon_left = if cfg!(target_os = "macos") { 16.0 } else { 2.0 };
     let icon = Rect::from_min_size(pos2(rect.left() + icon_left, rect.top() + 1.0), vec2(if dialog { 0.0 } else { 16.0 }, 16.0));
-    if !dialog {
-        paint_icon(p, icon, Icon::FolderOpen, true);
-    }
     if cfg!(target_os = "macos") {
         let close_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(icon.left(), rect.bottom()));
-        if ui.interact(close_area, ui.id().with("caption_icon"), Sense::click()).clicked() {
+        let b = ui.interact(close_area, ui.id().with("caption_icon"), Sense::click());
+        mac_close_dot(p, pos2(rect.left() + 8.0, rect.center().y), active, b.hovered(), b.is_pointer_button_down_on());
+        if b.clicked() {
             ui.ctx().send_viewport_cmd(ViewportCommand::Close);
         }
+    }
+    if !dialog {
+        paint_icon(p, icon, Icon::FolderOpen, true);
     }
 
     // Caption buttons, right to left: close, (gap), maximize, minimize.
@@ -659,6 +655,25 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
     }
     if resp.double_clicked() && !dialog {
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+    }
+}
+
+/// The macOS close button: red, gray while the window is inactive (unless the pointer is on it),
+/// with an x while hovered, darker while pressed. Not from Windows; colors after AppKit's.
+fn mac_close_dot(p: &egui::Painter, c: Pos2, active: bool, hovered: bool, pressed: bool) {
+    let (fill, edge) = if pressed {
+        (Color32::from_rgb(0xbf, 0x48, 0x42), Color32::from_rgb(0x9a, 0x2a, 0x24))
+    } else if active || hovered {
+        (Color32::from_rgb(0xff, 0x5f, 0x57), Color32::from_rgb(0xc0, 0x30, 0x28))
+    } else {
+        (Color32::from_rgb(0xd0, 0xd0, 0xd0), Color32::from_rgb(0xa8, 0xa8, 0xa8))
+    };
+    p.circle(c, 5.0, fill, Stroke::new(1.0, edge));
+    if hovered {
+        let x = Stroke::new(1.2, Color32::from_rgb(0x4d, 0x00, 0x00));
+        let d = 2.2;
+        p.line_segment([c + vec2(-d, -d), c + vec2(d, d)], x);
+        p.line_segment([c + vec2(-d, d), c + vec2(d, -d)], x);
     }
 }
 
