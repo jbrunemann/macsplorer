@@ -94,7 +94,7 @@ The small **›** after each folder opens a list of the folders inside it, so yo
 
 <img src="images/chevron-menu.png" alt="The list of subfolders under the › in the address bar" width="500">
 
-To type a path instead, click the empty space in the address bar or press ⌘L (F4 and ⌥D work too), type the location and press Enter (or click **Go**). A **~** at the start stands for your home folder, so `~/Documents` takes you to your Documents folder. Press Esc to stop typing and go back to the clickable path.
+To type a path instead, click the empty space in the address bar or press ⌘L (F4 and ⌥D work too), type the location and press Enter (or click **Go**). A **~** at the start stands for your home folder, so `~/Documents` takes you to your Documents folder. If you type the path of a file, Macsplorer opens the folder that holds it and selects the file. Press Esc to stop typing and go back to the clickable path.
 
 ### Back, Forward and Up
 
@@ -456,4 +456,4 @@ Check that the search box is empty, then turn on **View › Hidden files and fol
 Both need Git to be installed on your Mac. Macsplorer looks for it when it starts, so if you install Git while Macsplorer is open, close and reopen it. If you have Git and they still don't show, [Git repositories](#git-repositories) explains when they appear. After changes made by other programs, press ⌘R to bring the summary up to date.
 
 **Which version do I have?**
-Choose **Help › About Macsplorer**. A small window shows the app icon and the version. Press OK, Return or Escape to close it.
+Choose **Help › About Macsplorer**. A small window shows the app icon, the version and the font the text is set in. When the font comes from a file, its location is a link: click it and the window closes and the font's folder opens with the file selected. Press OK, Return or Escape to close the window.

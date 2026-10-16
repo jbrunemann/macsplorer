@@ -2,12 +2,14 @@
 //! 2000's "About Windows": the app icon, the name and version, a few lines
 //! of text, an etched line and OK. The layout is from memory, not traced.
 
+use std::path::PathBuf;
+
 use eframe::egui;
 use egui::{Align, Align2, Key, Layout, Rect, Sense, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
 use crate::theme::{self, Bevel};
 
-pub const SIZE: egui::Vec2 = vec2(380.0, 236.0);
+pub const SIZE: egui::Vec2 = vec2(380.0, 272.0);
 const FRAME: f32 = 4.0;
 const BUTTON: egui::Vec2 = vec2(75.0, 23.0);
 const TITLE: &str = "About Macsplorer";
@@ -15,6 +17,14 @@ const TITLE: &str = "About Macsplorer";
 const ICON: f32 = 48.0;
 /// The icon is shrunk by this much on load; the GPU's own scaling of the 1024 px original alone looks jagged.
 const SHRINK: usize = 8;
+
+/// What the dialog wants after a frame.
+pub enum Outcome {
+    Open,
+    Close,
+    /// The font file's link was clicked: close and show the file in the explorer.
+    Reveal(PathBuf),
+}
 
 pub struct AboutDialog {
     viewport: egui::ViewportId,
@@ -26,8 +36,8 @@ impl AboutDialog {
         Self { viewport: egui::ViewportId::from_hash_of("about"), icon: None }
     }
 
-    /// Shows the dialog in its own window for this frame; true once it should close.
-    pub fn show(&mut self, ctx: &egui::Context) -> bool {
+    /// Shows the dialog in its own window for this frame.
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
         let builder = egui::ViewportBuilder::default()
             .with_title(TITLE)
             .with_inner_size(SIZE)
@@ -35,11 +45,11 @@ impl AboutDialog {
             .with_minimize_button(false)
             .with_maximize_button(false)
             .with_decorations(false);
-        ctx.show_viewport_immediate(self.viewport, builder, |ui, _| ui.input(|i| i.viewport().close_requested()) || self.ui(ui))
+        ctx.show_viewport_immediate(self.viewport, builder, |ui, _| if ui.input(|i| i.viewport().close_requested()) { Outcome::Close } else { self.ui(ui) })
     }
 
-    /// Draws the whole window: frame, caption, the text, OK. True when OK was pressed.
-    pub fn ui(&mut self, ui: &mut Ui) -> bool {
+    /// Draws the whole window: frame, caption, the text, OK.
+    pub fn ui(&mut self, ui: &mut Ui) -> Outcome {
         let icon = self.icon.get_or_insert_with(|| load_icon(ui.ctx())).clone();
         let (outer, _) = ui.allocate_exact_size(SIZE, Sense::hover());
         let p = ui.painter();
@@ -66,14 +76,39 @@ impl AboutDialog {
         let blurb_height = galley.size().y;
         let blurb_y = image.bottom() + 12.0;
         ui.painter().galley(pos2(left, blurb_y), galley, color);
-        let galley = ui.fonts_mut(|f| f.layout("Licensed under the MIT License.".to_owned(), font, color, right - left));
+        let galley = ui.fonts_mut(|f| f.layout("Licensed under the MIT License.".to_owned(), font.clone(), color, right - left));
         ui.painter().galley(pos2(left, blurb_y + blurb_height + 6.0), galley, color);
+        let font_y = blurb_y + blurb_height + 6.0 + 20.0;
+        let font_info = theme::ui_font();
+        let galley = ui.fonts_mut(|f| f.layout(format!("Font: {}", font_info.label), font.clone(), color, right - left));
+        let label_height = galley.size().y;
+        ui.painter().galley(pos2(left, font_y), galley, color);
+        let mut reveal = None;
+        if let Some(path) = &font_info.path {
+            // The font file as a link: it closes the box and opens the file's folder.
+            let link = ui.visuals().hyperlink_color;
+            let format = egui::TextFormat { font_id: font, color: link, underline: egui::Stroke::new(1.0, link), ..Default::default() };
+            let mut job = egui::text::LayoutJob::single_section(path.display().to_string(), format);
+            job.wrap.max_width = right - left;
+            let galley = ui.fonts_mut(|f| f.layout_job(job));
+            let at = Rect::from_min_size(pos2(left, font_y + label_height), galley.size());
+            let response = ui.interact(at, ui.id().with("font-link"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            ui.painter().galley(at.min, galley, link);
+            if response.clicked() {
+                reveal = Some(path.clone());
+            }
+        }
 
         let ok_top = inner.bottom() - 11.0 - BUTTON.y;
         etched_line(ui, left - 5.0, right + 5.0, ok_top - 12.0);
         let ok = Rect::from_min_size(pos2(inner.center().x - BUTTON.x / 2.0, ok_top), BUTTON);
         let escape_or_enter = ui.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::Enter));
-        theme::push_button(ui, ok, "OK", true, true).clicked() || escape_or_enter
+        let ok = theme::push_button(ui, ok, "OK", true, true).clicked() || escape_or_enter;
+        match reveal {
+            Some(path) => Outcome::Reveal(path),
+            None if ok => Outcome::Close,
+            None => Outcome::Open,
+        }
     }
 }
 

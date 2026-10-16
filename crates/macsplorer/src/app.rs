@@ -44,7 +44,7 @@ use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 use macsplorer_core::watch::FolderWatcher;
 
 use crate::column_dialog::{self, ColumnDialog};
-use crate::about_dialog::AboutDialog;
+use crate::about_dialog::{AboutDialog, Outcome as AboutOutcome};
 use crate::conflict_dialog::{self, ConflictDialog};
 use crate::pasteboard::{self, Pasteboard};
 use crate::icons::{self, FileIcons, IconState};
@@ -128,6 +128,8 @@ struct RenameState {
 /// needs shared borrows of the listing.
 enum Action {
     Navigate(PathBuf),
+    /// A path typed in the address bar: a folder is opened, a file is shown selected in its folder.
+    GoTo(PathBuf),
     Open(PathBuf),
     /// Open a file with an app; `None` asks the user to pick one.
     OpenWith(PathBuf, Option<PathBuf>),
@@ -1087,6 +1089,24 @@ impl Explorer {
         self.after_navigation();
     }
 
+    /// Address bar entry: a folder is opened, an existing file is revealed
+    /// (its folder opens with the file selected), anything else reports the error.
+    fn go_to(&mut self, path: PathBuf) {
+        if !path.is_dir() && path.symlink_metadata().is_ok() {
+            self.reveal_in_view(path);
+        } else {
+            self.navigate(path);
+        }
+    }
+
+    /// Goes to the folder holding `path` and selects it there, as the pasted
+    /// items are (`pending_select`, taken when the listing arrives).
+    fn reveal_in_view(&mut self, path: PathBuf) {
+        let Some(folder) = path.parent().map(Path::to_path_buf) else { return };
+        self.pending_select = BTreeSet::from([path]);
+        self.navigate(folder);
+    }
+
     fn open(&mut self, path: PathBuf) {
         let is_folder = self.entries.iter().find(|e| e.path == path).map_or(path.is_dir(), Entry::is_folder);
         if is_folder {
@@ -1424,6 +1444,7 @@ impl Explorer {
         for action in actions {
             match action {
                 Action::Navigate(p) => self.navigate(p),
+                Action::GoTo(p) => self.go_to(p),
                 Action::Open(p) => {
                     // The second click of a double-click.
                     self.slow_click.cancel();
@@ -2066,7 +2087,7 @@ impl Explorer {
             let go = theme::tool_button(ui, Icon::Go, Some("Go"), true);
             if go.clicked() {
                 match &self.address_edit {
-                    Some(text) => actions.push(Action::Navigate(expand_tilde(text.trim(), self.home.as_deref()))),
+                    Some(text) => actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_deref()))),
                     None => actions.push(Action::Refresh),
                 }
             }
@@ -2102,7 +2123,7 @@ impl Explorer {
             }
             if resp.lost_focus() {
                 if ui.input(|i| i.key_pressed(Key::Enter)) {
-                    actions.push(Action::Navigate(expand_tilde(text.trim(), self.home.as_deref())));
+                    actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_deref())));
                 } else {
                     self.address_edit = None;
                 }
@@ -3020,8 +3041,13 @@ impl eframe::App for Explorer {
             }
         }
         self.show_open_with();
-        if self.about_dialog.as_mut().is_some_and(|d| d.show(&ctx)) {
-            self.about_dialog = None;
+        match self.about_dialog.as_mut().map(|d| d.show(&ctx)) {
+            Some(AboutOutcome::Close) => self.about_dialog = None,
+            Some(AboutOutcome::Reveal(path)) => {
+                self.about_dialog = None;
+                self.reveal_in_view(path);
+            }
+            Some(AboutOutcome::Open) | None => {}
         }
         self.show_conflict();
         self.show_transfers();
@@ -3964,6 +3990,33 @@ mod clipboard {
         app.pb = Pasteboard::private();
         app.finish_listing();
         (app, dir)
+    }
+
+    #[test]
+    fn reveal_in_view_goes_to_the_folder_and_selects_the_file() {
+        let (mut app, dir) = explorer("reveal");
+        fs::write(dir.join("sub").join("font.ttf"), "x").unwrap();
+        fs::write(dir.join("sub").join("other.ttf"), "x").unwrap();
+        app.reveal_in_view(dir.join("sub").join("font.ttf"));
+        app.finish_listing();
+        assert_eq!(app.current(), dir.join("sub"));
+        assert_eq!(app.selection, BTreeSet::from([dir.join("sub").join("font.ttf")]));
+        assert_eq!(app.focus_item.map(|i| app.entries[i].name.as_str()), Some("font.ttf"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn go_to_a_file_reveals_it_and_a_missing_path_reports_an_error() {
+        let (mut app, dir) = explorer("goto");
+        fs::write(dir.join("sub").join("font.ttf"), "x").unwrap();
+        app.go_to(dir.join("sub").join("font.ttf"));
+        app.finish_listing();
+        assert_eq!(app.current(), dir.join("sub"));
+        assert_eq!(app.selection, BTreeSet::from([dir.join("sub").join("font.ttf")]));
+        app.go_to(dir.join("nope"));
+        assert_eq!(app.current(), dir.join("sub"));
+        assert!(app.status.as_deref().is_some_and(|s| s.contains("is not a folder")));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn wait(app: &mut Explorer) {

@@ -158,34 +158,56 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, bold_family())
 }
 
+static UI_FONT: std::sync::OnceLock<UiFont> = std::sync::OnceLock::new();
+
+/// The font the UI text is set in, as the About box shows it.
+pub struct UiFont {
+    /// `Tahoma`, `DejaVu Sans Condensed, built into Macsplorer`.
+    pub label: String,
+    /// The font file, when it was loaded from one.
+    pub path: Option<std::path::PathBuf>,
+}
+
+pub fn ui_font() -> &'static UiFont {
+    static NONE: UiFont = UiFont { label: String::new(), path: None };
+    UI_FONT.get().unwrap_or(&NONE)
+}
+
 /// Installs fonts and visuals. Tahoma is read from the system fonts at
 /// runtime (not bundled, see `platform::TAHOMA`); egui's default font is the
 /// fallback.
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let mut bold_fonts = Vec::new();
+    let mut ui_font = UiFont { label: "egui's built-in font".to_string(), path: None };
     #[cfg(target_os = "linux")]
     let system = crate::system_fonts::SystemFonts::scan();
     #[cfg(unix)]
     for (key, paths, family) in [("tahoma", platform::TAHOMA, FontFamily::Proportional), ("tahoma-bold", platform::TAHOMA_BOLD, bold_family())] {
-        let data = paths.iter().find_map(|path| std::fs::read(path).ok()).map(FontData::from_owned);
+        let data = paths.iter().find_map(|path| Some((FontData::from_owned(std::fs::read(path).ok()?), UiFont { label: "Tahoma".to_string(), path: Some(path.into()) })));
         // No Tahoma at the known paths: one elsewhere on the system, else the bundled DejaVu.
         #[cfg(target_os = "linux")]
         let data = data
             .or_else(|| {
                 let found = system.ui_font(family != FontFamily::Proportional)?;
-                Some(FontData { index: found.index, ..FontData::from_owned(found.data) })
+                let origin = UiFont { label: found.family.clone(), path: found.path.map(Into::into) };
+                Some((FontData { index: found.index, ..FontData::from_owned(found.data) }, origin))
             })
-            .or_else(|| Some(FontData::from_static(platform::bundled_ui_font(family != FontFamily::Proportional))));
-        if let Some(data) = data {
+            .or_else(|| {
+                let origin = UiFont { label: "DejaVu Sans Condensed, built into Macsplorer".to_string(), path: None };
+                Some((FontData::from_static(platform::bundled_ui_font(family != FontFamily::Proportional)), origin))
+            });
+        if let Some((data, origin)) = data {
             fonts.font_data.insert(key.into(), Arc::new(data));
             if family == FontFamily::Proportional {
                 fonts.families.entry(family).or_default().insert(0, key.into());
+                ui_font = origin;
             } else {
                 bold_fonts.push(key.to_string());
             }
         }
     }
+    let _ = UI_FONT.set(ui_font);
     // Scripts and symbols the UI font lacks (file names hold anything), after egui's own fonts.
     #[cfg(target_os = "linux")]
     for (n, found) in system.fallbacks(&std::env::var("LANG").unwrap_or_default()).into_iter().enumerate() {

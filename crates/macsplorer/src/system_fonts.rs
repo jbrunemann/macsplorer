@@ -3,12 +3,14 @@
 //! listed in `fonts.conf`), so Fedora, Ubuntu and Arch need no path lists.
 //! Which families to look for is `macsplorer_core::fonts`.
 
-use fontdb::{Database, Family, Query, Stretch, Style, Weight};
+use fontdb::{Database, Family, Query, Source, Stretch, Style, Weight};
 use macsplorer_core::fonts;
 
 /// A font file's bytes and the face inside it (collections such as Noto's CJK `.ttc`).
 pub struct Found {
     pub family: String,
+    /// The font file, when the face comes from one.
+    pub path: Option<String>,
     pub data: Vec<u8>,
     pub index: u32,
 }
@@ -47,7 +49,11 @@ impl SystemFonts {
             style: Style::Normal,
         };
         let id = self.db.query(&query)?;
+        let path = match self.db.face_source(id)?.0 {
+            Source::File(path) | Source::SharedFile(path, _) => Some(path.display().to_string()),
+            Source::Binary(_) => None,
+        };
         let (index, data) = self.db.with_face_data(id, |data, index| (index, data.to_vec()))?;
-        Some(Found { family: name.to_string(), data, index })
+        Some(Found { family: name.to_string(), path, data, index })
     }
 }
