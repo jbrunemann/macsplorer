@@ -92,13 +92,32 @@ pub struct Row {
     pub error: Option<String>,
 }
 
+/// How the view should bring the selected row into sight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scroll {
+    /// Centered, for a folder revealed from elsewhere.
+    Center,
+    /// Only as far as needed, as `TVM_ENSUREVISIBLE` does for keyboard moves.
+    Nearest,
+}
+
+/// How long a selection made with the keyboard waits before the folder
+/// opens in the view. `CNscTree::_OnNotify` restarts a timer of
+/// `GetDoubleClickTime()` (500 ms by default) on every keyboard
+/// `TVN_SELCHANGED` and opens the folder when it fires; a mouse selection
+/// opens at once. Walking the tree with the arrows or type-ahead stays fast
+/// because the folders passed over are never listed.
+pub const OPEN_DELAY_MS: u64 = 500;
+
 #[derive(Debug, Default)]
 pub struct FolderTree {
     roots: Vec<Root>,
     expanded: HashSet<NodeKey>,
     children: HashMap<PathBuf, ChildState>,
     selected: Option<NodeKey>,
-    scroll_to_selected: bool,
+    scroll_to_selected: Option<Scroll>,
+    /// A keyboard selection waiting to open, and when it is due.
+    pending_open: Option<(PathBuf, u64)>,
 }
 
 impl FolderTree {
@@ -133,6 +152,35 @@ impl FolderTree {
 
     pub fn select(&mut self, key: NodeKey) {
         self.selected = Some(key);
+    }
+
+    /// Selects a row from the keyboard: it scrolls into view now and its
+    /// folder opens [`OPEN_DELAY_MS`] after the last such move (see
+    /// [`FolderTree::due_open`]).
+    pub fn select_from_keyboard(&mut self, key: NodeKey, now_ms: u64) {
+        self.pending_open = Some((key.path.clone(), now_ms + OPEN_DELAY_MS));
+        self.selected = Some(key);
+        self.scroll_to_selected = Some(Scroll::Nearest);
+    }
+
+    /// The folder whose delayed open is due at `now_ms`, taken once.
+    pub fn due_open(&mut self, now_ms: u64) -> Option<PathBuf> {
+        let (_, due) = self.pending_open.as_ref()?;
+        if now_ms < *due {
+            return None;
+        }
+        self.pending_open.take().map(|(path, _)| path)
+    }
+
+    /// How long until the pending open is due, to schedule a repaint.
+    pub fn open_wait_ms(&self, now_ms: u64) -> Option<u64> {
+        self.pending_open.as_ref().map(|(_, due)| due.saturating_sub(now_ms))
+    }
+
+    /// Takes the pending open before it is due, e.g. to drop it when the
+    /// window goes somewhere else first.
+    pub fn take_open(&mut self) -> Option<PathBuf> {
+        self.pending_open.take().map(|(path, _)| path)
     }
 
     pub fn is_expanded(&self, key: &NodeKey) -> bool {
@@ -215,7 +263,7 @@ impl FolderTree {
             cur.push(comp);
         }
         self.selected = Some(NodeKey { root, path: target.to_path_buf() });
-        self.scroll_to_selected = true;
+        self.scroll_to_selected = Some(Scroll::Center);
         loads
     }
 
@@ -238,9 +286,10 @@ impl FolderTree {
             .map(|(i, _)| i)
     }
 
-    /// Returns (once) whether the view should scroll the selection into view.
-    pub fn take_scroll_request(&mut self) -> bool {
-        std::mem::take(&mut self.scroll_to_selected)
+    /// Returns (once) whether and how the view should scroll the selection
+    /// into view.
+    pub fn take_scroll_request(&mut self) -> Option<Scroll> {
+        self.scroll_to_selected.take()
     }
 
     /// Reloads every loaded folder that is currently expanded. Old children
@@ -413,8 +462,30 @@ mod tests {
         let loads = t.reveal(Path::new("/u/Docs/a/b"));
         assert_eq!(loads, [PathBuf::from("/u/Docs"), PathBuf::from("/u/Docs/a")]);
         assert_eq!(t.selected(), Some(&key(1, "/u/Docs/a/b")));
-        assert!(t.take_scroll_request());
-        assert!(!t.take_scroll_request());
+        assert_eq!(t.take_scroll_request(), Some(Scroll::Center));
+        assert_eq!(t.take_scroll_request(), None);
+    }
+
+    #[test]
+    fn keyboard_selection_opens_after_the_last_move() {
+        let mut t = tree();
+        t.select_from_keyboard(key(0, "/u"), 1000);
+        assert_eq!(t.take_scroll_request(), Some(Scroll::Nearest));
+        // A second move restarts the wait, and only its folder opens.
+        t.select_from_keyboard(key(1, "/u/Docs"), 1200);
+        assert_eq!(t.due_open(1000 + OPEN_DELAY_MS), None);
+        assert_eq!(t.open_wait_ms(1500), Some(200));
+        assert_eq!(t.due_open(1200 + OPEN_DELAY_MS), Some(PathBuf::from("/u/Docs")));
+        assert_eq!(t.due_open(5000), None);
+        assert_eq!(t.open_wait_ms(5000), None);
+    }
+
+    #[test]
+    fn pending_open_can_be_taken_early() {
+        let mut t = tree();
+        t.select_from_keyboard(key(0, "/u"), 0);
+        assert_eq!(t.take_open(), Some(PathBuf::from("/u")));
+        assert_eq!(t.due_open(OPEN_DELAY_MS), None);
     }
 
     #[test]

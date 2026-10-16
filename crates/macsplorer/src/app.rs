@@ -32,7 +32,7 @@ use macsplorer_core::properties::set_permissions;
 use macsplorer_core::rename::{RenameKind, initial_selection, is_invalid_char, rename_no_replace, validate_name};
 use macsplorer_core::slow_click::{self, SlowClick};
 use macsplorer_core::text_size;
-use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Section, load_children};
+use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Scroll, Section, load_children};
 use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 
 use crate::column_dialog::{self, ColumnDialog};
@@ -170,6 +170,8 @@ enum Action {
     MoveHere(Option<PathBuf>),
     Delete,
     TreeSelect(NodeKey),
+    /// A tree selection made with the keyboard, which opens after a pause.
+    TreeKeySelect(NodeKey),
     TreeToggle(NodeKey),
     TreeExpand(NodeKey),
     TreeCollapse(NodeKey),
@@ -865,6 +867,8 @@ impl Explorer {
         self.reload_list();
         self.reload_git(true);
         if !std::mem::take(&mut self.navigating_from_tree) {
+            // Going somewhere else drops a tree selection still waiting to open.
+            self.tree.take_open();
             self.sync_tree();
         }
     }
@@ -909,7 +913,30 @@ impl Explorer {
     fn tree_select(&mut self, key: NodeKey) {
         self.focus = Pane::Tree;
         let path = key.path.clone();
+        self.tree.take_open();
         self.tree.select(key);
+        self.open_from_tree(path);
+    }
+
+    /// Selects a tree row from the keyboard. The highlight moves now, the
+    /// folder opens once the keys pause (`tree::OPEN_DELAY_MS`).
+    fn tree_key_select(&mut self, key: NodeKey) {
+        self.focus = Pane::Tree;
+        self.tree.select_from_keyboard(key, now_ms(&self.ctx));
+        self.ctx.request_repaint();
+    }
+
+    /// Opens a keyboard selection in the tree once its delay is over.
+    fn open_due_tree_selection(&mut self) {
+        let now = now_ms(&self.ctx);
+        if let Some(path) = self.tree.due_open(now) {
+            self.open_from_tree(path);
+        } else if let Some(ms) = self.tree.open_wait_ms(now) {
+            self.ctx.request_repaint_after(std::time::Duration::from_millis(ms));
+        }
+    }
+
+    fn open_from_tree(&mut self, path: PathBuf) {
         if path != self.current() {
             self.navigating_from_tree = true;
             self.navigate(path);
@@ -1244,7 +1271,7 @@ impl Explorer {
                         let focus = real.iter().position(|r| r.selected);
                         let names: Vec<&str> = real.iter().map(|r| r.label.as_str()).collect();
                         if let isearch::Outcome::Found(pos) = self.tree_type_ahead.type_char(c, time_ms, &names, focus) {
-                            self.tree_select(real[pos].key.clone());
+                            self.tree_key_select(real[pos].key.clone());
                             break;
                         }
                     }
@@ -1347,6 +1374,7 @@ impl Explorer {
                 }
                 Action::Delete => self.delete_selection(),
                 Action::TreeSelect(key) => self.tree_select(key),
+                Action::TreeKeySelect(key) => self.tree_key_select(key),
                 Action::TreeToggle(key) => {
                     let loads = self.tree.toggle(key);
                     self.load(loads);
@@ -1922,7 +1950,8 @@ impl Explorer {
         self.tree_page = ((viewport.height() / TREE_ROW_HEIGHT).floor() as usize).max(1);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
         let hidden = scrollbar::hidden(&mut ui);
-        let out = egui::ScrollArea::both().auto_shrink(false).scroll_bar_visibility(hidden).show(&mut ui, |ui| {
+        // Selections scroll into view in one jump, as in the tree view.
+        let out = egui::ScrollArea::both().auto_shrink(false).animated(false).scroll_bar_visibility(hidden).show(&mut ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut section = None;
             for (row, guide) in rows.iter().zip(&guides) {
@@ -2038,7 +2067,8 @@ impl Explorer {
         // the Name column's right edge. Taken from a drawn row, for the marquee.
         let mut geometry: Option<(f32, f32, f32)> = None;
         let h_out = egui::ScrollArea::horizontal().id_salt("details-h").auto_shrink(false).scroll_bar_visibility(hidden).show(ui, |ui| {
-            let mut table = TableBuilder::new(ui);
+            // Keyboard moves jump, as the list view does, instead of easing there.
+            let mut table = TableBuilder::new(ui).animate_scrolling(false);
             if let Some(row) = reveal {
                 table = table.scroll_to_row(row, None);
             }
@@ -2314,6 +2344,7 @@ impl Explorer {
         let out = egui::ScrollArea::vertical()
             .id_salt("icons")
             .auto_shrink(false)
+            .animated(false)
             .scroll_bar_visibility(hidden)
             .show_viewport(ui, |ui, view| {
                 let origin = ui.max_rect().min;
@@ -2475,6 +2506,7 @@ impl Explorer {
         let out = egui::ScrollArea::horizontal()
             .id_salt("list")
             .auto_shrink(false)
+            .animated(false)
             .scroll_bar_visibility(hidden)
             .show_viewport(ui, |ui, view| {
                 let origin = ui.max_rect().min;
@@ -2633,6 +2665,7 @@ impl eframe::App for Explorer {
         self.list_branches_if_missing();
         self.poll_ejects();
         self.poll_ops();
+        self.open_due_tree_selection();
         self.refresh_clipboard();
         self.icons.begin_frame();
         let visible = self.visible();
@@ -3151,7 +3184,7 @@ fn tree_guides(rows: &[Row]) -> Vec<Guide> {
 /// connector lines, a +/− box, a folder icon and a label that highlights
 /// only its text.
 #[allow(clippy::too_many_arguments)]
-fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll: bool, focused: bool, cue: bool, actions: &mut Vec<Action>) {
+fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll: Option<Scroll>, focused: bool, cue: bool, actions: &mut Vec<Action>) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let text_w = ui.painter().layout_no_wrap(row.label.clone(), font.clone(), theme::color::text()).size().x;
     let x0 = ui.max_rect().left() + 2.0;
@@ -3217,8 +3250,11 @@ fn tree_row(ui: &mut Ui, icons: &mut FileIcons, row: &Row, guide: &Guide, scroll
     if row.selected && cue {
         theme::focus_rect_over(p, text_rect, theme::color::selection());
     }
-    if row.selected && scroll {
-        ui.scroll_to_rect(rect, Some(Align::Center));
+    // Keyboard moves scroll only as far as needed (`TVM_ENSUREVISIBLE`).
+    match scroll {
+        Some(Scroll::Center) if row.selected => ui.scroll_to_rect(rect, Some(Align::Center)),
+        Some(Scroll::Nearest) if row.selected => ui.scroll_to_rect(rect, None),
+        _ => {}
     }
 
     let resp = match &row.error {
@@ -3276,7 +3312,7 @@ const TREE_KEYS: [Key; 10] =
 fn tree_key_action(rows: &[Row], key: Key, page: usize) -> Option<Action> {
     let real: Vec<usize> = (0..rows.len()).filter(|&i| !rows[i].placeholder).collect();
     let cur = real.iter().position(|&i| rows[i].selected);
-    let select = |pos: usize| real.get(pos).map(|&i| Action::TreeSelect(rows[i].key.clone()));
+    let select = |pos: usize| real.get(pos).map(|&i| Action::TreeKeySelect(rows[i].key.clone()));
     let Some(pos) = cur else {
         let moves = matches!(key, Key::ArrowDown | Key::ArrowUp | Key::Home | Key::End | Key::PageUp | Key::PageDown);
         return moves.then(|| select(0)).flatten();
@@ -3296,13 +3332,13 @@ fn tree_key_action(rows: &[Row], key: Key, page: usize) -> Option<Action> {
         Key::ArrowRight => real
             .get(pos + 1)
             .filter(|&&i| rows[i].depth > row.depth)
-            .map(|&i| Action::TreeSelect(rows[i].key.clone())),
+            .map(|&i| Action::TreeKeySelect(rows[i].key.clone())),
         Key::ArrowLeft if row.expanded => Some(Action::TreeCollapse(row.key.clone())),
         Key::ArrowLeft => real[..pos]
             .iter()
             .rev()
             .find(|&&i| rows[i].depth + 1 == row.depth)
-            .map(|&i| Action::TreeSelect(rows[i].key.clone())),
+            .map(|&i| Action::TreeKeySelect(rows[i].key.clone())),
         _ => None,
     }
 }
@@ -3414,7 +3450,7 @@ mod tests {
 
     fn target(a: Option<Action>) -> Option<(&'static str, PathBuf)> {
         match a? {
-            Action::TreeSelect(k) => Some(("select", k.path)),
+            Action::TreeKeySelect(k) => Some(("select", k.path)),
             Action::TreeExpand(k) => Some(("expand", k.path)),
             Action::TreeCollapse(k) => Some(("collapse", k.path)),
             _ => None,
@@ -3994,6 +4030,32 @@ mod screenshot {
             app.focus = Pane::Tree;
             app.show_focus = true;
         });
+    }
+
+    /// End in the Folders pane jumps to the last row, scrolled into sight,
+    /// while the view still shows the old folder until the open delay ends.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn keyboard_tree_end() {
+        shoot_driven(
+            "keyboard-tree-end",
+            egui::vec2(900.0, 300.0),
+            |app| {
+                let key = app.tree.rows()[1].key.clone();
+                app.tree.select(key);
+                app.focus = Pane::Tree;
+            },
+            |h| {
+                // The harness advances the clock a quarter second per
+                // frame; hold it still so the delay doesn't run out.
+                let now = h.ctx.input(|i| i.time);
+                h.key_press(Key::End);
+                for _ in 0..4 {
+                    h.input_mut().time = Some(now);
+                    h.step();
+                }
+            },
+        );
     }
 
     #[test]

@@ -687,6 +687,14 @@ the text began and goes through the shown rows, wrapping once, comparing the fir
 without case. Repeating one letter ("aaa") also tries the last letter alone, so the letter steps
 through the rows. A match is selected as if by keyboard (`TVC_BYKEYBOARD`).
 
+**Keyboard selection opens later (`CNscTree::_OnNotify`, ExplorerFrame 0x18003d1e0), observed:**
+on `TVN_SELCHANGED` the tree opens the folder in the view at once only when a flag set around a
+mouse click is on. Otherwise it kills and restarts a timer (id 0x87) of `GetDoubleClickTime()`,
+500 ms by default, and opens the folder when the timer fires. Arrow keys and type-ahead therefore
+move only the highlight while keys keep coming, and the view lists just the folder where they stop.
+The selected row is scrolled into view by the tree control itself, only as far as needed
+(`TVM_ENSUREVISIBLE`), without animation.
+
 Macsplorer (`core::focus`, `Explorer::keyboard`, `tree_key_action`):
 
 - Tab and F6 cycle through the item view, the address bar (switched to its text field with the
@@ -707,6 +715,11 @@ Macsplorer (`core::focus`, `Explorer::keyboard`, `tree_key_action`):
 - Tree: Home, End, Page Up/Down, + and − as observed (egui doesn't tell keypad keys apart, so the
   main + and − keys do it). Typing selects with `core::isearch`, which gives the same results as
   `TV_OnChar` except right after a wrap. Backspace stays Back (the frame's accelerator).
+  Keyboard selections open after `tree::OPEN_DELAY_MS` (500 ms, the default double-click time;
+  macOS's own setting isn't read) from the last move; clicks open at once, and navigating
+  elsewhere first drops the pending open.
+- Scrolling an item or row into view jumps there in all three views and the tree, as the Windows
+  controls do; egui's scroll areas would otherwise ease to it.
 - **Not done:** Shift+F10 and the menu key (egui's popup menus can't be driven by the keyboard),
   Alt and F10 to the menu bar, Ctrl+scroll in the tree and Details, Ctrl+keypad +, keypad *, and
   Tab inside the view.
