@@ -20,6 +20,7 @@ pub mod isearch;
 pub mod layout;
 pub mod listing;
 pub mod marquee;
+pub mod menu_delay;
 pub mod natural;
 pub mod places;
 pub mod preferences;

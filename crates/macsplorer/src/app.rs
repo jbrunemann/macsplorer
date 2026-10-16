@@ -22,6 +22,7 @@ use macsplorer_core::focus::{self, Stop};
 use macsplorer_core::git;
 use macsplorer_core::history::History;
 use macsplorer_core::isearch::{self, IncrementalSearch};
+use macsplorer_core::menu_delay;
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
 use macsplorer_core::dragdrop::{self, Allowed, Effect};
 use macsplorer_core::marquee::{self, Marquee};
@@ -3032,10 +3033,45 @@ impl eframe::App for Explorer {
 #[cfg(unix)]
 const TERMINAL_LABEL: &str = "Open in Terminal";
 
+/// A submenu item that opens when the pointer has rested on it for
+/// [`menu_delay::SHOW_DELAY_MS`], as Windows' menus do (`MenuShowDelay`); a
+/// click opens it at once. egui's own `menu_button` opens on first contact.
+/// Otherwise this is egui's `SubMenuButton`.
+fn delayed_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui) -> R) {
+    use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
+    let id = ui.next_auto_id();
+    let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(SubMenu::id_from_widget_id(id)));
+    let inactive = ui.style().visuals.widgets.inactive;
+    if open {
+        ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
+    }
+    let response = ui.add(egui::Button::new(text).right_text(SubMenuButton::RIGHT_ARROW));
+    ui.style_mut().visuals.widgets.inactive = inactive;
+
+    // Remember when the rest began and in which pass it was last seen: a gap
+    // means the menu was closed in between, so the wait starts over.
+    let key = response.id.with("hover_since");
+    let (now, pass) = (ui.input(|i| i.time), ui.ctx().cumulative_pass_nr());
+    let mut due = false;
+    if response.hovered() {
+        let (since, _) = ui.data(|d| d.get_temp::<(f64, u64)>(key)).filter(|(_, seen)| seen + 1 >= pass).unwrap_or((now, pass));
+        ui.data_mut(|d| d.insert_temp(key, (since, pass)));
+        match menu_delay::wait_left(now - since) {
+            Some(left) => ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(left)),
+            None => due = true,
+        }
+    } else {
+        ui.data_mut(|d| d.remove_temp::<(f64, u64)>(key));
+    }
+    if open || due || response.clicked() {
+        SubMenu::new().show(ui, &response, content);
+    }
+}
+
 /// The "Open With" submenu: the file's apps, then "Choose Program...".
 /// The app list is looked up once per file and kept while the menu is open.
 fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
-    ui.menu_button("Open With", |ui| {
+    delayed_menu_button(ui, "Open With", |ui| {
         if cache.as_ref().is_none_or(|(p, _)| p != path) {
             *cache = Some((path.to_path_buf(), open_with::apps_for(path)));
         }

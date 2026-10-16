@@ -811,6 +811,7 @@ Each one can be answered from this setup:
 - Per-folder view defaults per folder type (`CViewSettings::_GetPropertyBagFromTemplate`).
 - Navigation pane default roots and expand-to-current-folder behavior.
 - Search box: query syntax and filters.
+- Submenu show delay: user32 waits `MenuShowDelay` (`SPI_GETMENUSHOWDELAY`, 400 ms by default) of rest on a submenu item before it opens; a click opens it at once. `menu_delay::SHOW_DELAY_MS`, applied to Open With by `delayed_menu_button` (from memory, user32 not traced). Not done: the same delay before an open submenu closes when the pointer moves to another item (egui closes it at once, though it keeps it open while the pointer heads for it), and the other submenus (View > Explorer Bar, Text Size) still open on contact.
 - "Open With" submenu contents and order (`COpenWithMenu::QueryContextMenu`, `COpenWithMenu::InitMenuPopup` in shell32). macsplorer currently guesses: default app first, the rest alphabetical, then "Choose Program...".
   The Choose Program dialog (list, "Always use this program to open these files", Other...) is Windows 2000's from memory, untraced. Where Windows keeps the choice per extension in the registry, macsplorer keeps it per type (UTI) in `settings.json`, and the chosen app is listed first.
 
