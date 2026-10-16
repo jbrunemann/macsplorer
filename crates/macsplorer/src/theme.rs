@@ -339,18 +339,7 @@ fn edge(p: &Painter, r: Rect, tl: Color32, br: Color32) {
     p.line_segment([pos2(l - 0.5, b), pos2(rr + 0.5, b)], Stroke::new(1.0, br));
 }
 
-/// A 1 pt square at `pos` in a solid color. egui turns small filled rects into
-/// anti-aliased line segments, which fade away at 1x scale (the Linux port), so
-/// this adds an unfeathered mesh quad snapped to the pixel grid instead.
-pub fn dot(p: &Painter, pos: Pos2, color: Color32) {
-    let ppp = p.ctx().pixels_per_point();
-    let snap = |v: f32| (v * ppp).round() / ppp;
-    let min = pos2(snap(pos.x), snap(pos.y));
-    let max = pos2(snap(pos.x + 1.0).max(min.x + 1.0 / ppp), snap(pos.y + 1.0).max(min.y + 1.0 / ppp));
-    let mut mesh = egui::Mesh::default();
-    mesh.add_colored_rect(Rect::from_min_max(min, max), color);
-    p.add(egui::Shape::mesh(mesh));
-}
+pub use egui_classic_menu::dot;
 
 /// A dotted outline just inside `r`, like `DrawFocusRect`: 1 pt dots on
 /// alternate points of a checkerboard, so the pattern holds still while the
@@ -394,88 +383,8 @@ fn focus_rect_colored(p: &Painter, r: Rect, color: Color32) {
     }
 }
 
-/// egui's menu style with roomier items: its own horizontal padding is 2 px,
-/// which leaves the last letter of a label touching the edge of the menu.
-pub fn menu_style(style: &mut egui::Style) {
-    egui::containers::menu::menu_style(style);
-    style.spacing.button_padding.x = 5.0;
-}
-
-/// A checkbox row for a menu: the whole row highlights like any other menu
-/// item, and the check mark turns white with it. egui's own checkbox only
-/// tints its small box and leaves the label dark on the menu's gray.
-pub fn menu_checkbox(ui: &mut Ui, checked: &mut bool, text: &str) -> Response {
-    let mut response = menu_mark_row(ui, text, *checked, false);
-    if response.clicked() {
-        *checked = !*checked;
-        response.mark_changed();
-    }
-    response
-}
-
-/// A radio row for a menu, highlighted like [`menu_checkbox`].
-pub fn menu_radio(ui: &mut Ui, selected: bool, text: &str) -> Response {
-    menu_mark_row(ui, text, selected, true)
-}
-
-/// A menu label between two 7 pt gutters. The left one holds the check mark or
-/// radio bullet, the right one the submenu arrow; a keyboard shortcut sits left
-/// of the right gutter. Windows reserves both in every item of a menu that has
-/// marks, so the labels of plain items line up with the marked ones.
-pub fn gutter_atoms(label: &str, keys: &str) -> egui::Atoms<'static> {
-    let mut atoms = egui::Atoms::new(label.to_owned());
-    atoms.push_left(egui::Atom::custom(egui::Id::new("menu_mark_gutter"), vec2(7.0, 13.0)));
-    atoms.push_right(egui::Atom::grow());
-    if !keys.is_empty() {
-        atoms.push_right(egui::RichText::new(keys.to_owned()).family(shortcut_family()).weak());
-    }
-    atoms.push_right(egui::Atom::custom(egui::Id::new("menu_arrow_gutter"), vec2(7.0, 13.0)));
-    atoms
-}
-
-/// Paints the submenu arrow, a 4 x 7 pixel triangle, into the right gutter of
-/// a button made from [`gutter_atoms`]; `hot` when the row is highlighted.
-pub fn menu_arrow(ui: &Ui, out: &egui::AtomLayoutResponse, hot: bool) {
-    let Some(rect) = out.rect(egui::Id::new("menu_arrow_gutter")) else { return };
-    let color = if hot { selection_text() } else { text() };
-    let origin = pos2(rect.center().x.round() - 2.0, rect.center().y.round() - 3.0);
-    for (x, height) in [7.0, 5.0, 3.0, 1.0].into_iter().enumerate() {
-        for y in 0..height as usize {
-            dot(ui.painter(), origin + vec2(x as f32, (7.0 - height) / 2.0 + y as f32), color);
-        }
-    }
-}
-
-/// The gap between the gutter and the label: as wide as the space from the
-/// menu's edge to the mark, so the mark sits centered between the two. That is
-/// the button padding plus the 2 pt of the menu's frame, measured in the render.
-pub fn gutter_gap(ui: &Ui) -> f32 {
-    ui.spacing().button_padding.x + 2.0
-}
-
-/// A menu button with a 7 pt gutter on the left that holds the check mark or
-/// the radio bullet, painted in the row's own text color.
-fn menu_mark_row(ui: &mut Ui, label: &str, marked: bool, radio: bool) -> Response {
-    let gutter = egui::Id::new("menu_mark_gutter");
-    let out = egui::Button::new(gutter_atoms(label, "")).gap(gutter_gap(ui)).atom_ui(ui);
-    if let (true, Some(rect)) = (marked, out.rect(gutter)) {
-        let hot = out.response.hovered() || out.response.is_pointer_button_down_on();
-        let color = if hot { selection_text() } else { text() };
-        let p = ui.painter();
-        if radio {
-            p.circle_filled(rect.center(), 3.0, color);
-        } else {
-            // The same 7 x 3 pixel columns as `check_box`, centered in the gutter.
-            const TOPS: [f32; 7] = [2.0, 3.0, 4.0, 3.0, 2.0, 1.0, 0.0];
-            for (x, top) in TOPS.iter().enumerate() {
-                for y in 0..3 {
-                    dot(p, rect.min + vec2(x as f32, 3.0 + top + y as f32), color);
-                }
-            }
-        }
-    }
-    out.response
-}
+/// egui's menu style with roomier items, from the classic menu crate.
+pub use egui_classic_menu::style as menu_style;
 
 /// The etched groove between rebar bands and menu sections.
 pub fn etched_hline(ui: &mut Ui) {

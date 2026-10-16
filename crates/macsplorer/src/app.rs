@@ -1935,7 +1935,7 @@ impl Explorer {
             });
             bar_menu_button(ui, "View", |ui| {
                 delayed_menu_button(ui, "Explorer Bar", true, |ui| {
-                    if theme::menu_checkbox(ui, &mut self.settings.show_folders, "Folders").changed() {
+                    if egui_classic_menu::checkbox(ui, &mut self.settings.show_folders, "Folders").changed() {
                         ui.close();
                     }
                 });
@@ -1945,7 +1945,7 @@ impl Explorer {
                 delayed_menu_button(ui, "Text Size", true, |ui| {
                     let current = text_size::snap(ui.ctx().zoom_factor());
                     for (zoom, label) in text_size::SIZES {
-                        if theme::menu_radio(ui, current == zoom, label).clicked() {
+                        if egui_classic_menu::radio(ui, current == zoom, label).clicked() {
                             actions.push(Action::SetZoom(zoom));
                             ui.close();
                         }
@@ -1953,22 +1953,22 @@ impl Explorer {
                 });
                 ui.separator();
                 let mut changed = false;
-                changed |= theme::menu_checkbox(ui, &mut self.settings.show_extensions, "File name extensions").changed();
-                changed |= theme::menu_checkbox(ui, &mut self.settings.show_hidden, "Hidden files and folders").changed();
-                theme::menu_checkbox(ui, &mut self.settings.color_names, "Special files in color");
+                changed |= egui_classic_menu::checkbox(ui, &mut self.settings.show_extensions, "File name extensions").changed();
+                changed |= egui_classic_menu::checkbox(ui, &mut self.settings.show_hidden, "Hidden files and folders").changed();
+                egui_classic_menu::checkbox(ui, &mut self.settings.color_names, "Special files in color");
                 let mut dark = theme::is_dark();
-                if theme::menu_checkbox(ui, &mut dark, "Dark mode").changed() {
+                if egui_classic_menu::checkbox(ui, &mut dark, "Dark mode").changed() {
                     actions.push(Action::SetDark(dark));
                     ui.close();
                 }
-                if theme::menu_checkbox(ui, &mut self.settings.expand_to_open, "Expand to open folder").changed() && self.settings.expand_to_open {
+                if egui_classic_menu::checkbox(ui, &mut self.settings.expand_to_open, "Expand to open folder").changed() && self.settings.expand_to_open {
                     self.sync_tree();
                 }
-                if theme::menu_checkbox(ui, &mut self.settings.natural_sort, "Natural number sorting").changed() {
+                if egui_classic_menu::checkbox(ui, &mut self.settings.natural_sort, "Natural number sorting").changed() {
                     self.sort.natural = self.settings.natural_sort;
                     self.resort();
                 }
-                if theme::menu_checkbox(ui, &mut self.settings.mix_folders, "Mix folders and files").changed() {
+                if egui_classic_menu::checkbox(ui, &mut self.settings.mix_folders, "Mix folders and files").changed() {
                     self.sort.folders_first = !self.settings.mix_folders;
                     self.resort();
                 }
@@ -3068,9 +3068,7 @@ fn delayed_menu_button<R>(ui: &mut Ui, text: &str, gutter: bool, content: impl F
         ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
     }
     let response = if gutter {
-        let out = egui::Button::new(theme::gutter_atoms(text, "")).gap(theme::gutter_gap(ui)).atom_ui(ui);
-        theme::menu_arrow(ui, &out, open || out.response.hovered() || out.response.is_pointer_button_down_on());
-        out.response
+        egui_classic_menu::submenu_row(ui, text, open)
     } else {
         ui.add(egui::Button::new(text).right_text(SubMenuButton::RIGHT_ARROW))
     };
@@ -3811,12 +3809,13 @@ fn menu_item(label: &str, keys: String) -> egui::Button<'_> {
 /// shortcuts of a menu bar dropdown line up the way Windows' do. No shortcut
 /// when `keys` is empty.
 fn gutter_item(ui: &Ui, label: &str, keys: String) -> egui::Button<'static> {
-    egui::Button::new(theme::gutter_atoms(label, &keys)).gap(theme::gutter_gap(ui))
+    let shortcut = (!keys.is_empty()).then(|| RichText::new(keys).family(theme::shortcut_family()));
+    egui_classic_menu::item(ui, label, shortcut)
 }
 
 fn view_choices(ui: &mut Ui, current: ViewMode, actions: &mut Vec<Action>) {
     for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::List, "List"), (ViewMode::Details, "Details")] {
-        if theme::menu_radio(ui, current == mode, label).clicked() {
+        if egui_classic_menu::radio(ui, current == mode, label).clicked() {
             actions.push(Action::SetView(mode));
             ui.close();
         }

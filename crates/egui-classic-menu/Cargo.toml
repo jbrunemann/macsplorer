@@ -1,0 +1,9 @@
+[package]
+name = "egui-classic-menu"
+description = "Windows Classic style menu rows for egui: check mark and arrow gutters, whole-row highlight"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui = "0.36"
