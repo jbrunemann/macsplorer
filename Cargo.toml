@@ -4,5 +4,5 @@ members = ["crates/macsplorer-core", "crates/macsplorer", "tools/make-icon"]
 
 [workspace.package]
 edition = "2024"
-version = "0.8.0"
+version = "0.9.0"
 license = "MIT"
