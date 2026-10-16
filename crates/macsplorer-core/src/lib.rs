@@ -6,6 +6,7 @@
 pub mod breadcrumb;
 pub mod columns;
 pub mod copy_path;
+pub mod copy_progress;
 pub mod dirscan;
 pub mod fileops;
 pub mod focus;
@@ -26,3 +27,4 @@ pub mod slow_click;
 pub mod text_size;
 pub mod tree;
 pub mod undo;
+pub mod watch;

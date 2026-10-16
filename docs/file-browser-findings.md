@@ -724,6 +724,26 @@ Macsplorer (`core::focus`, `Explorer::keyboard`, `tree_key_action`):
   Alt and F10 to the menu bar, Ctrl+scroll in the tree and Details, Ctrl+keypad +, keypad *, and
   Tab inside the view.
 
+### 2.13 The copy progress dialog (shell32 `CProgressDialog`)
+
+Disassembled from shell32.dll build 10240 (`tools/re/dis.py`, names from the PDB publics). The copy
+engine reports to `CProgressDialog`, whose window is the DirectUI `CProgressDialogUI`.
+
+- `CProgressDialog::GetDialogDisplayDelayTime` (0x18016b4f0) returns 1000 ms.
+- `CProgressDialogUI::_HandleTimerMessage` (0x18000cd08), timer 1: once
+  `CProgressTimer::GetMillisecondsProgress` reaches 1000 (0x3e8) it kills the timer and calls
+  `_DisplayDialog`. An operation that ends sooner never shows the dialog. That clock is the
+  progress time, which `CProgressDialog::PauseTimer` / `ResumeTimer` stop and restart, so time
+  spent on a question doesn't count (Inferred from the names: the pause callers weren't traced).
+- Same function, timer 2 (ending): when the dialog was displayed (flag at 0x178) it ends only
+  once `GetMillisecondsActualElapsed` minus the time stored at 0x220 reaches 1000 ms, so a shown
+  dialog stays up at least a second. Not displayed: `EndDialog` at once.
+
+Not traced: the layout and wording (Windows 10 has its own DirectUI layout; the strings are in
+the MUI file) and how the time left is estimated (`_UpdateTimedStats`). macsplorer draws Windows
+2000's "Copying..." / "Moving..." dialog from memory: animation, item name, "From 'X' to 'Y'",
+the block progress bar, "N Seconds Remaining" / "N Minutes Remaining", Cancel.
+
 ## 3. Mapping to macsplorer (design choices)
 
 | Windows | Rust/macOS |
@@ -743,7 +763,8 @@ Macsplorer (`core::focus`, `Explorer::keyboard`, `tree_key_action`):
 | Name conflicts (§2.11) | `macsplorer_core::fileops::transfer` asks a callback, which the paste worker turns into a question on a channel and waits on; `conflict_dialog.rs` shows Win2000's dialogs with Yes, Yes to All, No and Cancel (Enter, Y, A, N, Esc). The folder question's second sentence says what macsplorer does: it asks about each file inside. Yes to All covers both kinds of question. **Not from Windows:** a replaced item goes to the Trash instead of being destroyed, and Undo brings it back (`UndoOp::Group`). A move removes the source folders a merge emptied, and Undo recreates them. A file and a folder of one name get the replace question, like build 10240 (only folder onto folder merges). |
 | `CTravelLog` | `Vec<Location>` with a cursor. The back/forward dropdown menu lists entries (`_ShowBackForwardMenu`). |
 | Breadcrumb (`CBreadcrumbBar`) | Each crumb is a button with a chevron dropdown listing subfolders (`_OnDropDown`). Click empty space → edit mode with the full path (`_GoToEditMode`). Crumbs are drag sources and drop targets. Collapse overflow into a root dropdown (`_AddRootDropdownItems`). |
-| `CNscTree` change notifications | FSEvents per expanded node; enumerate in the background (`_StartBackgroundEnum`). |
+| `CNscTree` change notifications | `macsplorer_core::watch`: `notify` (FSEvents on macOS, inotify on Linux) watches the open folder and every expanded Folders pane folder, each without its subfolders, and reloads them on worker threads as usual. **Not traced:** how Explorer coalesces `SHChangeNotify` events. A folder reloads 0.2 s after its last change, or at the latest 1 s after the first, so a file being written updates about once a second (guesses). Focus, anchor and selection follow their items across a reload. Changes inside `.git` don't reach the repository folder's watch, so the Git summary only refreshes for changes in the open folder itself. |
+| Copy progress (§2.13) | `macsplorer_core::copy_progress` has the traced timing (shows after 1 s of progress, paused while a name-conflict question is up; once shown, stays at least 1 s); `progress_dialog.rs` draws it in its own window. `fileops::transfer_with` counts the sources first, then reports units of bytes plus 4 KiB per item (a move within a volume counts one item per source), not traced. Files are copied one by one: `copyfile` per file with a status callback on macOS (bytes as they go, cloned on APFS), 1 MiB pieces on Linux, so Cancel stops within a big file. Cancel keeps what was done, removes the incomplete copy of the current item, and puts back what that item had replaced; a cancelled move to another volume leaves the original. The time left is the average rate so far, refreshed once a second (guess). |
 
 ## 4. Next candidates
 

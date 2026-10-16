@@ -10,6 +10,7 @@ mod native_icon;
 mod open_with;
 mod pasteboard;
 mod platform;
+mod progress_dialog;
 mod properties;
 mod scrollbar;
 mod theme;

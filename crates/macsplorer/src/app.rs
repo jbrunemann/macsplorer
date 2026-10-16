@@ -17,7 +17,7 @@ use egui_extras::{Column as TableColumn, TableBuilder};
 use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
-use macsplorer_core::fileops::{Choice, transfer};
+use macsplorer_core::fileops::{Choice, Progress, transfer_with};
 use macsplorer_core::focus::{self, Stop};
 use macsplorer_core::git;
 use macsplorer_core::history::History;
@@ -39,6 +39,7 @@ use macsplorer_core::slow_click::{self, SlowClick};
 use macsplorer_core::text_size;
 use macsplorer_core::tree::{FolderTree, Node, NodeKey, Root, Row, Scroll, Section, load_children};
 use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
+use macsplorer_core::watch::FolderWatcher;
 
 use crate::column_dialog::{self, ColumnDialog};
 use crate::conflict_dialog::{self, ConflictDialog};
@@ -47,6 +48,7 @@ use crate::icons::{self, FileIcons, IconState};
 use crate::locale;
 use crate::open_with;
 use crate::platform;
+use crate::progress_dialog::ProgressDialog;
 use crate::properties::{Outcome, Properties};
 use crate::scrollbar::{self, Bars};
 use crate::theme::{self, Bevel, Icon};
@@ -226,6 +228,8 @@ struct OpDone {
     error: Option<String>,
     /// What Undo reverses, for the part that got done.
     undo: Option<UndoOp>,
+    /// The paste's progress dialog (`ProgressDialog::id`).
+    transfer: Option<u64>,
 }
 
 /// Which pane receives arrow keys.
@@ -344,6 +348,13 @@ pub struct Explorer {
     conflict_rx: Receiver<conflict_dialog::Ask>,
     /// The question on screen; the others wait in the channel.
     conflict: Option<ConflictDialog>,
+    /// A progress dialog for each paste that is running, or has just ended
+    /// and is still on screen.
+    transfers: Vec<ProgressDialog>,
+    transfer_count: u64,
+    /// Reports changes on disk to the open folder and the Folders pane's
+    /// expanded folders, which then reload.
+    watcher: FolderWatcher,
     /// Set by `restore_preferences`: changes to the view, the sort and the
     /// window size are written to the settings file. Off in tests.
     persist: bool,
@@ -375,6 +386,7 @@ impl Explorer {
         let (eject_tx, eject_rx) = channel();
         let (op_tx, op_rx) = channel();
         let (conflict_tx, conflict_rx) = channel();
+        let wake = ctx.clone();
         let mut app = Self {
             history: History::new(start),
             entries: Vec::new(),
@@ -435,6 +447,9 @@ impl Explorer {
             conflict_tx,
             conflict_rx,
             conflict: None,
+            transfers: Vec::new(),
+            transfer_count: 0,
+            watcher: FolderWatcher::new(move || wake.request_repaint()),
             persist: false,
             saved_window: None,
             window_pending: None,
@@ -591,6 +606,9 @@ impl Explorer {
             }
         }
         self.status = Some(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len()));
+        self.transfer_count += 1;
+        let (id, progress) = (self.transfer_count, std::sync::Arc::new(Progress::default()));
+        self.transfers.push(ProgressDialog::new(id, progress.clone(), cut));
         let (tx, ctx, ask_tx) = (self.op_tx.clone(), self.ctx.clone(), self.conflict_tx.clone());
         thread::spawn(move || {
             let ask_ctx = ctx.clone();
@@ -605,7 +623,7 @@ impl Explorer {
                 // The window closing drops the dialog, and with it the sender.
                 answer.recv().unwrap_or(Choice::Cancel)
             };
-            let result = transfer(&paths, &dest, cut, &SystemTrash, ask);
+            let result = transfer_with(&paths, &dest, cut, &SystemTrash, ask, &progress);
             let mut dirs = vec![dest.clone()];
             if cut {
                 dirs.extend(paths.iter().filter_map(|p| p.parent()).map(Path::to_path_buf));
@@ -614,7 +632,7 @@ impl Explorer {
                 let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                 format!("Couldn't {} \"{name}\": {e}", if cut { "move" } else { "copy" })
             });
-            let done = OpDone { dirs, select: result.placed, error, undo: result.undo };
+            let done = OpDone { dirs, select: result.placed, error, undo: result.undo, transfer: Some(id) };
             if tx.send(done).is_ok() {
                 ctx.request_repaint();
             }
@@ -636,6 +654,15 @@ impl Explorer {
         }
     }
 
+    /// The progress dialogs that are due. Their clocks stop while a paste
+    /// waits for an answer to a question.
+    fn show_transfers(&mut self) {
+        let now = self.ctx.input(|i| i.time);
+        let paused = self.conflict.is_some();
+        let ctx = self.ctx.clone();
+        self.transfers.retain_mut(|dialog| dialog.show(&ctx, now, paused));
+    }
+
     /// Moves the selection to the Trash on a worker thread.
     fn delete_selection(&mut self) {
         let paths: Vec<PathBuf> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect();
@@ -646,7 +673,7 @@ impl Explorer {
         let dir = self.current().to_path_buf();
         let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let mut done = OpDone { dirs: vec![dir], select: Vec::new(), error: None, undo: None };
+            let mut done = OpDone { dirs: vec![dir], select: Vec::new(), error: None, undo: None, transfer: None };
             let mut trashed = Vec::new();
             for path in &paths {
                 match SystemTrash.trash(path) {
@@ -672,7 +699,7 @@ impl Explorer {
         self.status = Some(format!("Undoing {}...", op.label().to_lowercase()));
         let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let mut done = OpDone { dirs: op.dirs(), select: Vec::new(), error: None, undo: None };
+            let mut done = OpDone { dirs: op.dirs(), select: Vec::new(), error: None, undo: None, transfer: None };
             match op.undo(&SystemTrash) {
                 Ok(back) => done.select = back,
                 Err((path, e)) => {
@@ -692,6 +719,9 @@ impl Explorer {
     fn poll_ops(&mut self) {
         while let Ok(done) = self.op_rx.try_recv() {
             self.status = done.error;
+            for dialog in &mut self.transfers {
+                dialog.finished |= done.transfer == Some(dialog.id);
+            }
             if let Some(op) = done.undo {
                 self.undo.push(op);
             }
@@ -705,6 +735,31 @@ impl Explorer {
                     self.load([path]);
                 }
             }
+        }
+    }
+
+    /// Reloads the folders that changed on disk, and watches the ones on
+    /// screen now.
+    fn poll_watcher(&mut self) {
+        let now = self.ctx.input(|i| i.time);
+        self.poll_watcher_at(now);
+    }
+
+    fn poll_watcher_at(&mut self, now: f64) {
+        let current = self.current().to_path_buf();
+        let mut dirs: BTreeSet<PathBuf> = self.tree.expanded_folders().map(Path::to_path_buf).collect();
+        dirs.insert(current.clone());
+        self.watcher.watch_only(&dirs);
+        for dir in self.watcher.poll(now) {
+            if dir == current {
+                self.reload();
+            }
+            if let Some(path) = self.tree.refresh_path(&dir) {
+                self.load([path]);
+            }
+        }
+        if let Some(due) = self.watcher.next_due() {
+            self.ctx.request_repaint_after(std::time::Duration::from_secs_f64((due - now).max(0.0)));
         }
     }
 
@@ -806,6 +861,10 @@ impl Explorer {
         }
         self.listing = false;
         self.free_space = free;
+        // A reload (after a change on disk, say) can move items around:
+        // focus and anchor stay on the same items.
+        let path_at = |i: Option<usize>| i.and_then(|i| self.entries.get(i)).map(|e| e.path.clone());
+        let (focus, anchor) = (path_at(self.focus_item), path_at(self.anchor));
         match result {
             Ok(mut entries) => {
                 sort_entries(&mut entries, self.sort);
@@ -818,6 +877,8 @@ impl Explorer {
             }
         }
         self.entries_version += 1;
+        let index_of = |p: Option<PathBuf>| p.and_then(|p| self.entries.iter().position(|e| e.path == p));
+        (self.focus_item, self.anchor) = (index_of(focus), index_of(anchor));
         let present: BTreeSet<_> = self.entries.iter().map(|e| &e.path).collect();
         self.selection.retain(|p| present.contains(p));
         let picked: Vec<PathBuf> = std::mem::take(&mut self.pending_select).into_iter().filter(|p| present.contains(p)).collect();
@@ -2695,6 +2756,7 @@ impl eframe::App for Explorer {
         self.list_branches_if_missing();
         self.poll_ejects();
         self.poll_ops();
+        self.poll_watcher();
         self.open_due_tree_selection();
         self.refresh_clipboard();
         self.icons.begin_frame();
@@ -2756,6 +2818,7 @@ impl eframe::App for Explorer {
             }
         }
         self.show_conflict();
+        self.show_transfers();
         self.save_columns();
         self.save_window_size();
     }
@@ -3614,6 +3677,30 @@ mod clipboard {
     }
 
     #[test]
+    fn changes_on_disk_show_up() {
+        let (mut app, dir) = explorer("watch");
+        app.poll_watcher_at(0.0);
+        // FSEvents may still report the fixture being made.
+        thread::sleep(std::time::Duration::from_millis(300));
+        app.poll_watcher_at(10.0);
+        app.finish_listing();
+        app.focus_item = app.entries.iter().position(|e| e.name == "a.txt");
+        app.selection = BTreeSet::from([dir.join("a.txt")]);
+        fs::write(dir.join("0 first.txt"), "new").unwrap();
+        let start = std::time::Instant::now();
+        while !app.entries.iter().any(|e| e.name == "0 first.txt") && start.elapsed().as_secs() < 10 {
+            thread::sleep(std::time::Duration::from_millis(20));
+            app.poll_watcher_at(20.0 + start.elapsed().as_secs_f64());
+            app.poll_lists();
+        }
+        assert!(app.entries.iter().any(|e| e.name == "0 first.txt"));
+        // Focus and selection stay on a.txt, which moved down a row.
+        assert_eq!(app.focus_item.map(|i| app.entries[i].name.as_str()), Some("a.txt"));
+        assert_eq!(app.selection, BTreeSet::from([dir.join("a.txt")]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn copy_paste_and_cut_paste() {
         let (mut app, dir) = explorer("ops");
         app.selection = BTreeSet::from([dir.join("a.txt")]);
@@ -3621,6 +3708,10 @@ mod clipboard {
         wait(&mut app);
         assert_eq!(fs::read_to_string(dir.join("a - Copy.txt")).unwrap(), "hi");
         assert!(app.clipboard.is_some(), "a copy can be pasted again");
+        // Over in well under a second: its progress dialog closes unseen.
+        assert!(app.transfers.len() == 1 && app.transfers[0].finished);
+        app.show_transfers();
+        assert!(app.transfers.is_empty());
 
         app.selection = BTreeSet::from([dir.join("a.txt")]);
         app.apply(vec![Action::Cut, Action::Paste(Some(dir.join("sub")))], &[]);
@@ -4288,6 +4379,38 @@ mod screenshot {
             image.save(out.join(format!("{name}.png"))).unwrap();
         }
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The Copying... dialog part way through a paste.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn copy_progress() {
+        use macsplorer_core::fileops::ProgressView;
+        let view = ProgressView {
+            done: 41,
+            total: 100,
+            item: Some((PathBuf::from("/Users/jan/Documents/Quarterly report final version 3.pdf"), PathBuf::from("/Volumes/Backup/Reports"))),
+        };
+        let mut harness = Harness::builder().with_size(crate::progress_dialog::ProgressDialog::size()).with_pixels_per_point(2.0).wgpu().build_ui_state(
+            |ui, ready: &mut bool| {
+                if !*ready {
+                    theme::install(ui.ctx());
+                    theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                    *ready = true;
+                    return;
+                }
+                let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                crate::progress_dialog::draw(&mut window, "Copying...", &view, "12 Seconds Remaining", 0.55, true);
+            },
+            false,
+        );
+        for _ in 0..3 {
+            harness.run();
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("copy-progress.png")).unwrap();
     }
 
     /// Undo enabled after a rename, and the Views menu open.

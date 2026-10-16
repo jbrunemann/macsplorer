@@ -113,7 +113,8 @@ package have it) or egui's default font is used.
 - **Marquee selection**: drag a dotted rectangle from empty space (in Details, anywhere beside a name) to select what it touches; ⌘ toggles items, ⇧ adds to the selection, Esc clears it, and the view scrolls when you drag past its edge. *Explorer-derived* (comctl32 `CLVSelectionManager::DragSelect`).
 - Right-click an item for **Open**, **Open With**, **Show in Finder**, **Open in Terminal** (folders), **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete**, **Rename** and **Properties**. Right-click empty space for **Paste**, **Refresh**, **Open in Terminal** and **Properties** of the open folder.
 - **Open in Terminal** starts Terminal on macOS; on Linux `$TERMINAL`, else the first common terminal found. Set `"terminal"` in `settings.json` (an app name such as `iTerm` or `Ghostty` on macOS, a command on Linux) to use another one.
-- **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does; a move never overwrites. Cut items are drawn faded until pasted.
+- **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does; a name that's taken elsewhere asks with Windows 2000's Confirm File Replace (replaced items go to the Trash). Cut items are drawn faded until pasted. A paste that takes more than a second shows the **Copying...** window with the time left and **Cancel**, which leaves no half-copied item behind. *Explorer-derived* (Windows.Storage `CCopyWorkItem`, shell32 `CProgressDialog` timing).
+- **Live updates**: the list and the Folders pane follow changes other programs make (FSEvents on macOS, inotify on Linux), within a second, keeping the selection.
 - **Delete** (⌦ forward delete, or ⌘⌫) moves the selection to the Trash.
 - **Undo** (toolbar button, Edit menu or ⌘Z) reverses the last rename, move, copy or delete, up to 10 steps back. Undoing a delete restores the items from the Trash.
 - **Properties** (⌘I, File menu or right-click): the Windows 2000 General page in its own window, with name (editable, renames on OK or Apply), type (Finder's Kind, e.g. "Microsoft Excel Workbook"), location, size, and for folders the number of files and folders inside, counted in the background. Files also show created, modified and accessed dates, folders their created date. *Explorer-derived* (shell32 `CFilePropSheetPage`).
@@ -128,7 +129,7 @@ package have it) or egui's default font is used.
 - Menus: File › Properties, Close; Edit › Undo, Cut, Copy, Copy as Path, Paste, Delete, Select All (⌘A), Invert Selection; View › Explorer Bar › Folders, Large Icons / List / Details, file name extensions, hidden files, expand to open folder, natural sorting, Refresh; Help › Open config file, About.
 - Toolbar **Folders** button (or the × on the pane) shows and hides the Folders pane; **Views** picks Large Icons, List or Details.
 - Status bar: object count and free disk space (or the selection count), size of the selection (or of the folder), and the machine name.
-- **Git**: inside a Git working tree the status bar gets a pane with the branch glyph (vector shapes after Ionicons' `git-branch-outline`, MIT, so Linux gets it too) and a posh-git style summary (`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, same symbols and colors; `macsplorer-core::git`, from posh-git's `GitPrompt.ps1`/`GitUtils.ps1`). `git status` runs on a worker thread when a working tree is entered or the folder is reloaded (Refresh, file operations) and the answer is kept while moving around inside it; there is no file watching yet. The **Branch** column (header menu) shows the branch of folders that are working trees. Finding git happens on a background thread at start (the location is remembered in `settings.json` as `git`, checked on every start and searched for again if it moved), and the `.git` look-up in each listed folder only runs while the Branch column is shown, so nobody pays for what they don't use. Both are left out when no git is found (`git::executable`: `PATH`, Homebrew and `/usr/bin`; macOS's `/usr/bin/git` stub only counts once the developer tools are installed, so it never pops up an install prompt).
+- **Git**: inside a Git working tree the status bar gets a pane with the branch glyph (vector shapes after Ionicons' `git-branch-outline`, MIT, so Linux gets it too) and a posh-git style summary (`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, same symbols and colors; `macsplorer-core::git`, from posh-git's `GitPrompt.ps1`/`GitUtils.ps1`). `git status` runs on a worker thread when a working tree is entered or the folder is reloaded (Refresh, file operations) and the answer is kept while moving around inside it; a change in the open folder also asks again. The **Branch** column (header menu) shows the branch of folders that are working trees. Finding git happens on a background thread at start (the location is remembered in `settings.json` as `git`, checked on every start and searched for again if it moved), and the `.git` look-up in each listed folder only runs while the Branch column is shown, so nobody pays for what they don't use. Both are left out when no git is found (`git::executable`: `PATH`, Homebrew and `/usr/bin`; macOS's `/usr/bin/git` stub only counts once the developer tools are installed, so it never pops up an install prompt).
 
 | Shortcut | Action |
 |---|---|
@@ -148,10 +149,9 @@ package have it) or egui's default font is used.
 
 ## Not yet
 
-File watching (FSEvents, so the list updates live), drag and drop, window persistence, pinning favorites, multiple windows and tabs.
-For file operations: no replace/skip dialog on name conflicts (copies get a
-"- Copy" name, moves stop with an error), no progress window, no redo and no
-Shift+Delete. Small Icons and Thumbnails views are still to come.
+Drag and drop, window persistence, pinning favorites and tabs.
+For file operations: no redo and no Shift+Delete. Small Icons and Thumbnails
+views are still to come.
 
 ## How it's built
 

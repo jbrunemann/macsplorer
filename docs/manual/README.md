@@ -67,7 +67,7 @@ To see which folders are Git repositories, turn on the **Branch** column (right-
 
 <img src="images/git-branch-column.png" alt="The Branch column" width="900">
 
-The summary and the **Branch** column need Git to be installed. Without it they are simply left out. The summary is worked out when you enter a repository and kept while you move around inside it, so big repositories stay quick. It is worked out again with **View › Refresh** or after you change something in Macsplorer. Changes made by other programs show up at the next refresh.
+The summary and the **Branch** column need Git to be installed. Without it they are simply left out. The summary is worked out when you enter a repository and kept while you move around inside it, so big repositories stay quick. It is worked out again with **View › Refresh**, after you change something in Macsplorer, and when another program changes the folder you're looking at. Changes deeper inside the repository show up at the next refresh.
 
 ## 3. Getting around
 
@@ -100,7 +100,7 @@ To type a path instead, click the empty space in the address bar or press ⌘L (
 
 - **Back** returns to the folder you were in before, and **Forward** goes ahead again after going back. The small arrow beside each one shows a list of the places you've been, so you can jump several steps at once.
 - **Up** goes to the folder that contains the current one.
-- **Refresh** reloads the list, for example after another program has added files.
+- **Refresh** reloads the list and the Folders pane. You rarely need it: when another program adds, removes, renames or changes files in the folder you're looking at, or in a folder that is open in the Folders pane, Macsplorer updates by itself within a second.
 
 ## 4. Choosing how files are shown
 
@@ -241,6 +241,14 @@ If the folder you paste into already has an item with the same name, Macsplorer 
 - **Cancel** stops. What was already copied or moved stays where it is.
 
 When a folder goes into a folder of the same name, the two are merged: the contents end up together in one folder. If none of the names inside clash, this happens without a question. If some do, Macsplorer first asks whether to merge the folders, then asks about each file whose name is taken.
+
+### Watching it work
+
+When copying or moving takes more than a second, a window shows how it's going: the item it's working on, where it goes, a bar, and about how long is left.
+
+<img src="images/copy-progress.png" alt="The Copying window" width="380">
+
+**Cancel** (or Esc) stops it. What was already copied or moved stays where it is, and the item that was halfway is left out completely: no half-copied files. If that item was replacing one with the same name, the old one is put back.
 
 ### Cut and Paste (moving)
 
@@ -391,8 +399,8 @@ On Linux, use Ctrl wherever this manual says ⌘.
 
 ## 14. Questions and answers
 
-**I added a file in another app, but Macsplorer doesn't show it.**
-Macsplorer doesn't notice changes made elsewhere on its own yet. Click **Refresh** or press ⌘R.
+**I added a file in another app. Do I need to refresh?**
+No. Macsplorer notices changes in the folder you're looking at and in the folders open in the Folders pane, and updates within a second. **Refresh** (⌘R) is still there for everything else.
 
 **Can I drag files to move them?**
 Not yet. Use Cut and Paste, or Copy and Paste.

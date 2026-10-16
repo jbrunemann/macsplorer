@@ -307,6 +307,12 @@ impl FolderTree {
         loads
     }
 
+    /// The expanded folders whose children are loaded: the ones a change on
+    /// disk makes stale.
+    pub fn expanded_folders(&self) -> impl Iterator<Item = &Path> {
+        self.expanded.iter().map(|k| k.path.as_path()).filter(|p| self.children.get(*p).is_some_and(|c| c.loaded))
+    }
+
     /// Reloads one folder if the tree has it loaded (e.g. after a rename).
     pub fn refresh_path(&mut self, path: &Path) -> Option<PathBuf> {
         let state = self.children.get_mut(path)?;
