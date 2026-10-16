@@ -1887,54 +1887,54 @@ impl Explorer {
     fn menu_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(theme::menu_style)).ui(ui, |ui| {
             bar_menu_button(ui, "File", |ui| {
-                if ui.add(menu_item("New Window", platform::NEW_WINDOW_KEYS.to_owned())).clicked() {
+                if ui.add(gutter_item(ui, "New Window", platform::NEW_WINDOW_KEYS.to_owned())).clicked() {
                     actions.push(Action::NewWindow);
                 }
                 ui.separator();
-                if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
+                if ui.add(gutter_item(ui, "Properties", platform::shortcut(false, "I"))).clicked() {
                     actions.push(Action::ItemProperties(self.properties_target(self.focus == Pane::List)));
                 }
                 ui.separator();
-                if ui.button("Close").clicked() {
+                if ui.add(gutter_item(ui, "Close", String::new())).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
             bar_menu_button(ui, "Edit", |ui| {
                 let undo = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
-                if ui.add_enabled(self.undo.peek().is_some(), menu_item(&undo, platform::shortcut(false, "Z"))).clicked() {
+                if ui.add_enabled(self.undo.peek().is_some(), gutter_item(ui, &undo, platform::shortcut(false, "Z"))).clicked() {
                     actions.push(Action::Undo);
                 }
                 ui.separator();
                 let has_selection = !self.selection.is_empty();
-                if ui.add_enabled(has_selection, menu_item("Cut", platform::shortcut(false, "X"))).clicked() {
+                if ui.add_enabled(has_selection, gutter_item(ui, "Cut", platform::shortcut(false, "X"))).clicked() {
                     actions.push(Action::Cut);
                 }
-                if ui.add_enabled(has_selection, menu_item("Copy", platform::shortcut(false, "C"))).clicked() {
+                if ui.add_enabled(has_selection, gutter_item(ui, "Copy", platform::shortcut(false, "C"))).clicked() {
                     actions.push(Action::Copy);
                 }
-                if ui.add_enabled(has_selection, menu_item("Copy as Path", platform::shortcut(true, "C"))).clicked() {
+                if ui.add_enabled(has_selection, gutter_item(ui, "Copy as Path", platform::shortcut(true, "C"))).clicked() {
                     actions.push(Action::CopyAsPath);
                 }
-                if ui.add_enabled(self.can_paste(), menu_item("Paste", platform::shortcut(false, "V"))).clicked() {
+                if ui.add_enabled(self.can_paste(), gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
                     actions.push(Action::Paste(None));
                 }
-                if ui.add_enabled(self.can_paste(), menu_item("Move Here", platform::shortcut(true, "V"))).clicked() {
+                if ui.add_enabled(self.can_paste(), gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
                     actions.push(Action::MoveHere(None));
                 }
                 ui.separator();
-                if ui.add_enabled(has_selection, menu_item("Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
+                if ui.add_enabled(has_selection, gutter_item(ui, "Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
                     actions.push(Action::Delete);
                 }
                 ui.separator();
-                if ui.add(menu_item("Select All", platform::shortcut(false, "A"))).clicked() {
+                if ui.add(gutter_item(ui, "Select All", platform::shortcut(false, "A"))).clicked() {
                     actions.push(Action::SelectAll);
                 }
-                if ui.button("Invert Selection").clicked() {
+                if ui.add(gutter_item(ui, "Invert Selection", String::new())).clicked() {
                     actions.push(Action::InvertSelection);
                 }
             });
             bar_menu_button(ui, "View", |ui| {
-                ui.menu_button("Explorer Bar", |ui| {
+                delayed_menu_button(ui, "Explorer Bar", true, |ui| {
                     if theme::menu_checkbox(ui, &mut self.settings.show_folders, "Folders").changed() {
                         ui.close();
                     }
@@ -1942,10 +1942,10 @@ impl Explorer {
                 ui.separator();
                 view_choices(ui, self.settings.view, actions);
                 ui.separator();
-                ui.menu_button("Text Size", |ui| {
+                delayed_menu_button(ui, "Text Size", true, |ui| {
                     let current = text_size::snap(ui.ctx().zoom_factor());
                     for (zoom, label) in text_size::SIZES {
-                        if ui.radio(current == zoom, label).clicked() {
+                        if theme::menu_radio(ui, current == zoom, label).clicked() {
                             actions.push(Action::SetZoom(zoom));
                             ui.close();
                         }
@@ -1979,16 +1979,16 @@ impl Explorer {
                     self.load(loads);
                 }
                 ui.separator();
-                if ui.add(menu_item("Refresh", platform::shortcut(false, "R"))).clicked() {
+                if ui.add(gutter_item(ui, "Refresh", platform::shortcut(false, "R"))).clicked() {
                     actions.push(Action::Refresh);
                 }
             });
             bar_menu_button(ui, "Help", |ui| {
-                if ui.button("Open config file").clicked() {
+                if ui.add(gutter_item(ui, "Open config file", String::new())).clicked() {
                     actions.push(Action::OpenConfig);
                 }
                 ui.separator();
-                if ui.button("About Macsplorer").clicked() {
+                if ui.add(gutter_item(ui, "About Macsplorer", String::new())).clicked() {
                     self.about_dialog.get_or_insert_with(AboutDialog::new);
                     ui.close();
                 }
@@ -3057,8 +3057,9 @@ fn bar_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui) -> 
 /// A submenu item that opens when the pointer has rested on it for
 /// [`menu_delay::SHOW_DELAY_MS`], as Windows' menus do (`MenuShowDelay`); a
 /// click opens it at once. egui's own `menu_button` opens on first contact.
-/// Otherwise this is egui's `SubMenuButton`.
-fn delayed_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui) -> R) {
+/// `gutter` indents the label like a marked item. Otherwise this is egui's
+/// `SubMenuButton`.
+fn delayed_menu_button<R>(ui: &mut Ui, text: &str, gutter: bool, content: impl FnOnce(&mut Ui) -> R) {
     use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
     let id = ui.next_auto_id();
     let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(SubMenu::id_from_widget_id(id)));
@@ -3066,7 +3067,13 @@ fn delayed_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui)
     if open {
         ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
     }
-    let response = ui.add(egui::Button::new(text).right_text(SubMenuButton::RIGHT_ARROW));
+    let response = if gutter {
+        let out = egui::Button::new(theme::gutter_atoms(text, "")).gap(theme::gutter_gap(ui)).atom_ui(ui);
+        theme::menu_arrow(ui, &out, open || out.response.hovered() || out.response.is_pointer_button_down_on());
+        out.response
+    } else {
+        ui.add(egui::Button::new(text).right_text(SubMenuButton::RIGHT_ARROW))
+    };
     ui.style_mut().visuals.widgets.inactive = inactive;
 
     // Remember when the rest began and in which pass it was last seen: a gap
@@ -3092,7 +3099,7 @@ fn delayed_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui)
 /// The "Open With" submenu: the file's apps, then "Choose Program...".
 /// The app list is looked up once per file and kept while the menu is open.
 fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
-    delayed_menu_button(ui, "Open With", |ui| {
+    delayed_menu_button(ui, "Open With", false, |ui| {
         if cache.as_ref().is_none_or(|(p, _)| p != path) {
             *cache = Some((path.to_path_buf(), open_with::apps_for(path)));
         }
@@ -3800,9 +3807,16 @@ fn menu_item(label: &str, keys: String) -> egui::Button<'_> {
     egui::Button::new(label).shortcut_text(RichText::new(keys).family(theme::shortcut_family()))
 }
 
+/// [`menu_item`] between the check mark and arrow gutters, so the labels and
+/// shortcuts of a menu bar dropdown line up the way Windows' do. No shortcut
+/// when `keys` is empty.
+fn gutter_item(ui: &Ui, label: &str, keys: String) -> egui::Button<'static> {
+    egui::Button::new(theme::gutter_atoms(label, &keys)).gap(theme::gutter_gap(ui))
+}
+
 fn view_choices(ui: &mut Ui, current: ViewMode, actions: &mut Vec<Action>) {
     for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::List, "List"), (ViewMode::Details, "Details")] {
-        if ui.radio(current == mode, label).clicked() {
+        if theme::menu_radio(ui, current == mode, label).clicked() {
             actions.push(Action::SetView(mode));
             ui.close();
         }
@@ -5058,6 +5072,13 @@ mod screenshot {
         let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
         fs::create_dir_all(&out).unwrap();
         image.save(out.join("view-menu.png")).unwrap();
+        // The pointer on a radio item and on a checked one.
+        for (name, y) in [("view-menu-radio-hover", 121.5), ("view-menu-check-hover", 257.5)] {
+            harness.hover_at(egui::pos2(100.0, y));
+            harness.run();
+            harness.run();
+            harness.render().expect("render").save(out.join(format!("{name}.png"))).unwrap();
+        }
         // And its Text Size submenu.
         harness.hover_at(egui::pos2(92.0, 150.0));
         for _ in 0..10 {
