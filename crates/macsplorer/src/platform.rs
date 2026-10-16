@@ -65,6 +65,17 @@ pub const TAHOMA_BOLD: &[&str] = &[
     "/usr/lib/wine/fonts/tahomabd.ttf",
 ];
 
+/// DejaVu Sans Condensed, the UI font when the system has no Tahoma. Built into
+/// the Linux binary only; macOS ships Tahoma (`assets/fonts`, license beside it).
+#[cfg(target_os = "linux")]
+pub fn bundled_ui_font(bold: bool) -> &'static [u8] {
+    if bold {
+        include_bytes!("../../../assets/fonts/DejaVuSansCondensed-Bold.ttf")
+    } else {
+        include_bytes!("../../../assets/fonts/DejaVuSansCondensed.ttf")
+    }
+}
+
 /// `errno` 1, "Operation not permitted".
 const EPERM: i32 = 1;
 

@@ -101,7 +101,10 @@ had much real-world use, so expect rough edges.
 
 Macsplorer uses Tahoma and reads it from the system fonts at runtime, it isn't
 bundled. macOS ships it. On Linux install it (Wine and the `msttcorefonts`
-package have it) or egui's default font is used.
+package have it, also in `~/.local/share/fonts`). Without it the Linux build
+uses DejaVu Sans Condensed, which is built into the Linux binary (not the
+macOS one; see `assets/fonts` for its license), and adds installed system
+fonts for CJK, Arabic, Hebrew and symbols so such file names don't show as boxes.
 
 ## Features
 

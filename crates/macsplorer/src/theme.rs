@@ -164,16 +164,34 @@ pub fn bold(size: f32) -> FontId {
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let mut bold_fonts = Vec::new();
+    #[cfg(target_os = "linux")]
+    let system = crate::system_fonts::SystemFonts::scan();
     #[cfg(unix)]
     for (key, paths, family) in [("tahoma", platform::TAHOMA, FontFamily::Proportional), ("tahoma-bold", platform::TAHOMA_BOLD, bold_family())] {
-        if let Some(bytes) = paths.iter().find_map(|path| std::fs::read(path).ok()) {
-            fonts.font_data.insert(key.into(), Arc::new(FontData::from_owned(bytes)));
+        let data = paths.iter().find_map(|path| std::fs::read(path).ok()).map(FontData::from_owned);
+        // No Tahoma at the known paths: one elsewhere on the system, else the bundled DejaVu.
+        #[cfg(target_os = "linux")]
+        let data = data
+            .or_else(|| {
+                let found = system.ui_font(family != FontFamily::Proportional)?;
+                Some(FontData { index: found.index, ..FontData::from_owned(found.data) })
+            })
+            .or_else(|| Some(FontData::from_static(platform::bundled_ui_font(family != FontFamily::Proportional))));
+        if let Some(data) = data {
+            fonts.font_data.insert(key.into(), Arc::new(data));
             if family == FontFamily::Proportional {
                 fonts.families.entry(family).or_default().insert(0, key.into());
             } else {
                 bold_fonts.push(key.to_string());
             }
         }
+    }
+    // Scripts and symbols the UI font lacks (file names hold anything), after egui's own fonts.
+    #[cfg(target_os = "linux")]
+    for (n, found) in system.fallbacks(&std::env::var("LANG").unwrap_or_default()).into_iter().enumerate() {
+        let key = format!("system-{n}-{}", found.family);
+        fonts.font_data.insert(key.clone(), Arc::new(FontData { index: found.index, ..FontData::from_owned(found.data) }));
+        fonts.families.entry(FontFamily::Proportional).or_default().push(key);
     }
     if let Some(bytes) = platform::SYMBOL_FONT.iter().find_map(|path| std::fs::read(path).ok()) {
         fonts.font_data.insert("symbols".into(), Arc::new(FontData::from_owned(bytes)));

@@ -12,6 +12,7 @@ pub mod dirscan;
 pub mod dragdrop;
 pub mod fileops;
 pub mod focus;
+pub mod fonts;
 pub mod git;
 pub mod highlight;
 pub mod history;

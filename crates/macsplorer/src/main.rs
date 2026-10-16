@@ -17,6 +17,8 @@ mod platform;
 mod progress_dialog;
 mod properties;
 mod scrollbar;
+#[cfg(target_os = "linux")]
+mod system_fonts;
 mod theme;
 mod trash;
 
