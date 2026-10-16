@@ -33,7 +33,7 @@ Macsplorer is a file browser for your Mac. It looks and works like the Windows 2
 
 **More windows.** Choose **File › New Window** (⌘E, or ⌘N) to open a second window, for example to copy files from one folder to another. Each new window opens on the folder you're in and appears slightly offset from the one before.
 
-**Closing.** Click the **×** in the top right corner, choose **File › Close**, or press ⌘Q.
+**Closing.** Click the red dot in the top left corner or the **×** in the top right corner, choose **File › Close**, or press ⌘Q.
 
 ## 2. The window at a glance
 
@@ -41,14 +41,14 @@ From top to bottom:
 
 | Part | What it does |
 |---|---|
-| **Title bar** | Shows the name of the folder you're in. Drag it to move the window. The buttons on the right minimize, maximize and close the window, and double-clicking the bar also maximizes it. |
+| **Title bar** | Shows the name of the folder you're in. Drag it to move the window. The red dot at the far left closes the window, as on other Mac windows. The buttons on the right minimize, maximize and close the window, and double-clicking the bar also maximizes it. |
 | **Menu bar** | File, Edit, View and Help. |
 | **Toolbar** | Back, Forward, Up, Folders, Refresh, Undo and Views. Hold the pointer over a button to see what it does and its shortcut. |
 | **Address bar** | The path to the current folder. You can click any part of it. |
 | **Search box** | To the right of the address bar. Shows only the items whose name contains what you type. |
 | **Folders pane** | On the left: your favorite places, your disks, and all the folders on them as a tree. |
 | **File list** | On the right: the contents of the current folder. |
-| **Status bar** | At the bottom: how many items there are, how big they are, how much free space the disk has, and your computer's name. Inside a Git repository it also shows the branch and the state of the repository (see [Git repositories](#git-repositories)). |
+| **Status bar** | At the bottom: how many items there are, how big they are, how much free space the disk has, and your computer's name. Inside a Git repository it also shows the branch and the state of the repository (see [Git repositories](#git-repositories)). Drag the ridged corner at its right end to make the window bigger or smaller. |
 
 ### Git repositories
 
@@ -94,7 +94,7 @@ The small **›** after each folder opens a list of the folders inside it, so yo
 
 <img src="images/chevron-menu.png" alt="The list of subfolders under the › in the address bar" width="500">
 
-To type a path instead, click the empty space in the address bar or press ⌘L (F4 and ⌥D work too), type the location and press Enter (or click **Go**). A **~** at the start stands for your home folder, so `~/Documents` takes you to your Documents folder. If you type the path of a file, Macsplorer opens the folder that holds it and selects the file. Press Esc to stop typing and go back to the clickable path.
+To type a path instead, click the empty space in the address bar or press ⌘L (F4 and ⌥D work too), type the location and press Enter (or click **Go**). A **~** at the start stands for your home folder, so `~/Documents` takes you to your Documents folder. Quotes around a pasted path, as Terminal or **Copy as Path** add them, are left out. If you type the path of a file, Macsplorer opens the folder that holds it and selects the file. Press Esc to stop typing and go back to the clickable path.
 
 ### Back, Forward and Up
 
