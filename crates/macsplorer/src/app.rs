@@ -43,6 +43,7 @@ use macsplorer_core::undo::{Trash, UndoOp, UndoStack};
 use macsplorer_core::watch::FolderWatcher;
 
 use crate::column_dialog::{self, ColumnDialog};
+use crate::about_dialog::AboutDialog;
 use crate::conflict_dialog::{self, ConflictDialog};
 use crate::pasteboard::{self, Pasteboard};
 use crate::icons::{self, FileIcons, IconState};
@@ -322,6 +323,7 @@ pub struct Explorer {
     column_dialog: Option<ColumnDialog>,
     /// "Choose Program...", while it is open.
     open_with_dialog: Option<OpenWithDialog>,
+    about_dialog: Option<AboutDialog>,
     /// A header divider drag, and whether it started on a divider proper
     /// (where a double-click auto-sizes) rather than a hidden column's.
     column_drag: Option<(ColumnDrag, bool)>,
@@ -444,6 +446,7 @@ impl Explorer {
             saved_columns: None,
             column_dialog: None,
             open_with_dialog: None,
+            about_dialog: None,
             column_drag: None,
             header_left: 0.0,
             rename: None,
@@ -1985,7 +1988,8 @@ impl Explorer {
                 }
                 ui.separator();
                 if ui.button("About Macsplorer").clicked() {
-                    self.status = Some(format!("Macsplorer {}", env!("CARGO_PKG_VERSION")));
+                    self.about_dialog.get_or_insert_with(AboutDialog::new);
+                    ui.close();
                 }
             });
         });
@@ -3015,6 +3019,9 @@ impl eframe::App for Explorer {
             }
         }
         self.show_open_with();
+        if self.about_dialog.as_mut().is_some_and(|d| d.show(&ctx)) {
+            self.about_dialog = None;
+        }
         self.show_conflict();
         self.show_transfers();
         self.save_columns();
@@ -4718,6 +4725,32 @@ mod screenshot {
             image.save(out.join(format!("{name}.png"))).unwrap();
         }
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The About box.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn about_dialog() {
+        let mut harness = Harness::builder().with_size(crate::about_dialog::SIZE).with_pixels_per_point(2.0).wgpu().build_ui_state(
+            |ui, state: &mut (AboutDialog, bool)| {
+                if !state.1 {
+                    theme::install(ui.ctx());
+                    theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                    state.1 = true;
+                    return;
+                }
+                let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                state.0.ui(&mut window);
+            },
+            (AboutDialog::new(), false),
+        );
+        for _ in 0..3 {
+            harness.run();
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("about.png")).unwrap();
     }
 
     /// The Open With dialog with the apps that open a text file.

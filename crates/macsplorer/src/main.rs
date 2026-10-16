@@ -1,6 +1,7 @@
 // No console window next to the app on Windows.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod about_dialog;
 mod app;
 mod column_dialog;
 mod conflict_dialog;
