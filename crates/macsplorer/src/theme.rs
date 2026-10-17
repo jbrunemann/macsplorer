@@ -836,6 +836,8 @@ pub enum Icon {
     FolderOpen,
     App,
     Drive,
+    /// Explorer's My Computer: a monitor on a base.
+    Computer,
 }
 
 /// Draws a 16×16 icon scaled into `r`. Disabled icons are embossed gray,
@@ -933,7 +935,90 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
             p.rect_stroke(body, 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
             p.rect_filled(Rect::from_min_max(at(11.0, 7.0), at(13.0, 8.5)), 0.0, Color32::from_rgb(0x20, 0xC0, 0x20));
         }
+        Icon::Computer => {
+            for (y, row) in COMPUTER.iter().enumerate() {
+                for (x, ch) in row.bytes().enumerate() {
+                    let Some(color) = computer_pixel(ch) else { continue };
+                    p.rect_filled(Rect::from_min_max(at(x as f32, y as f32), at(x as f32 + 1.0, y as f32 + 1.0)), 0.0, color);
+                }
+            }
+        }
     }
+}
+
+/// My Computer's icon, one character per pixel of the 16×16 art: a monitor with
+/// a bright screen over the system unit. A space is clear, `w` is white.
+const COMPUTER: [&str; 16] = [
+    " ABBBBBBBBBBCD  ",
+    "EFwwwFFFFFGGwHI ",
+    "EHJFBKLLLLLLMNO ",
+    "EPHJKQRRRSSTUQI ",
+    "EVHGKRRRQRWWXRI ",
+    "EHVGYQRRQQWWXZI ",
+    "EVVwYSRQQSSaXwI ",
+    "EVHwTWWWWWTaUwI ",
+    " cVFSXXXXXXXXwd ",
+    " cceHfFFFFFFfBg ",
+    "chijjjjjjjjjigd ",
+    "cEklmnEoeengEm  ",
+    "cDpqkHkrHFeseHem",
+    "cDDEHkHsssHBppHt",
+    " cDtkHkHFHFHkHkt",
+    "  ottttttttttttt",
+];
+
+fn computer_pixel(ch: u8) -> Option<Color32> {
+    let (r, g, b) = match ch {
+        b' ' => return None,
+        b'w' => (0xFF, 0xFF, 0xFF),
+        b'A' => (0x84, 0x84, 0x84),
+        b'B' => (0x9C, 0x9C, 0xCE),
+        b'C' => (0x9C, 0x9C, 0x63),
+        b'D' => (0x63, 0x63, 0x9C),
+        b'E' => (0x39, 0x39, 0x39),
+        b'F' => (0xFF, 0xFF, 0xCE),
+        b'G' => (0xFF, 0xFF, 0xF7),
+        b'H' => (0xCE, 0xCE, 0xFF),
+        b'I' => (0x42, 0x42, 0x42),
+        b'J' => (0xF7, 0xF7, 0xF7),
+        b'K' => (0x63, 0x63, 0xCE),
+        b'L' => (0x00, 0x00, 0x31),
+        b'M' => (0x01, 0x31, 0x63),
+        b'N' => (0xCE, 0xEF, 0xFF),
+        b'O' => (0x4A, 0x4A, 0x4A),
+        b'P' => (0x9B, 0xCE, 0xFF),
+        b'Q' => (0x62, 0xFF, 0xFF),
+        b'R' => (0x9C, 0xFF, 0xFF),
+        b'S' => (0x63, 0xCE, 0xFF),
+        b'T' => (0x31, 0x9C, 0xFF),
+        b'U' => (0x01, 0x63, 0xFF),
+        b'V' => (0xB5, 0xB5, 0xB5),
+        b'W' => (0x32, 0xCE, 0xFF),
+        b'X' => (0x32, 0x63, 0xCE),
+        b'Y' => (0x63, 0x9D, 0xCE),
+        b'Z' => (0xCE, 0xFF, 0xFF),
+        b'a' => (0x01, 0x9C, 0xFF),
+        b'c' => (0x31, 0x31, 0x00),
+        b'd' => (0x29, 0x29, 0x29),
+        b'e' => (0xAD, 0xAD, 0x93),
+        b'f' => (0xDE, 0xDE, 0xDE),
+        b'g' => (0x10, 0x10, 0x10),
+        b'h' => (0xCE, 0x9C, 0x9C),
+        b'i' => (0x08, 0x08, 0x08),
+        b'j' => (0x00, 0x00, 0x00),
+        b'k' => (0xEF, 0xD6, 0xC6),
+        b'l' => (0xCE, 0x9C, 0xCE),
+        b'm' => (0x63, 0x63, 0x63),
+        b'n' => (0x62, 0x31, 0x31),
+        b'o' => (0x63, 0x63, 0x31),
+        b'p' => (0x84, 0x84, 0x00),
+        b'q' => (0xC6, 0xC6, 0xC6),
+        b'r' => (0xEF, 0xEF, 0xEF),
+        b's' => (0xE7, 0xE7, 0xD6),
+        b't' => (0x21, 0x21, 0x21),
+        _ => return None,
+    };
+    Some(Color32::from_rgb(r, g, b))
 }
 
 /// The Windows 2000 document page: white sheet, gray outline, folded

@@ -2271,6 +2271,9 @@ impl Explorer {
                         ui.label(RichText::new(row.section.title()).font(theme::bold(theme::FONT_SIZE)));
                     });
                     ui.add_space(1.0);
+                    if row.section == Section::Locations {
+                        computer_row(ui, &self.computer_name);
+                    }
                 }
                 tree_row(ui, &mut self.icons, row, guide, scroll, focused, cue, (drag, &mut *frame), actions);
             }
@@ -3014,7 +3017,7 @@ impl Explorer {
         p.with_clip_rect(left.shrink(2.0)).text(egui::pos2(left.left() + 4.0, left.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), color);
         p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
         let icon = egui::Rect::from_min_size(egui::pos2(right.left() + 4.0, right.center().y - 8.0), egui::vec2(16.0, 16.0));
-        theme::paint_icon(p, icon, Icon::Drive, true);
+        theme::paint_icon(p, icon, Icon::Computer, true);
         let name_clip = if grip { right.shrink(2.0).with_max_x(right.right() - 2.0 - theme::GRIP_WIDTH) } else { right.shrink(2.0) };
         p.with_clip_rect(name_clip).text(
             egui::pos2(icon.right() + 4.0, right.center().y),
@@ -3637,6 +3640,19 @@ fn tree_guides(rows: &[Row]) -> Vec<Guide> {
         }
     }
     out
+}
+
+/// The computer's name above the Locations roots, with Explorer's My Computer
+/// icon. It is only a label, not a tree row: nothing opens from it and the
+/// keyboard skips it.
+fn computer_row(ui: &mut Ui, name: &str) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let x0 = ui.max_rect().left() + 2.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TREE_ROW_HEIGHT), Sense::hover());
+    let p = ui.painter();
+    let icon = egui::Rect::from_min_size(egui::pos2(x0 + 2.0, rect.center().y - 8.0), egui::vec2(16.0, 16.0));
+    theme::paint_icon(p, icon, Icon::Computer, true);
+    p.with_clip_rect(rect).text(egui::pos2(icon.right() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, name, font, theme::color::text());
 }
 
 /// One Folders pane row in the Windows 2000 tree view style: dotted
