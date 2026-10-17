@@ -88,13 +88,13 @@ To hide the pane and give the files more room, click **Folders** on the toolbar 
 
 ### The address bar
 
-The address bar shows each folder on the way to where you are. Click any of them to jump there.
+The address bar shows each folder on the way to where you are. Click any of them to jump there. Your home folder is written as **~**, as in Terminal, so `~ › Documents › Taxes` is the Taxes folder inside your Documents. Rest the pointer on a folder in the bar to see its full path, for example `/Users/yourname/Documents`.
 
 The small **›** after each folder opens a list of the folders inside it, so you can go sideways or deeper in one click. When the path is too long to fit, the first part is folded into a **«** at the start. Click it to see the rest.
 
 <img src="images/chevron-menu.png" alt="The list of subfolders under the › in the address bar" width="500">
 
-To type a path instead, click the empty space in the address bar or press ⌘L (F4 and ⌥D work too), type the location and press Enter (or click **Go**). A **~** at the start stands for your home folder, so `~/Documents` takes you to your Documents folder. Quotes around a pasted path, as Terminal or **Copy as Path** add them, are left out. If you type the path of a file, Macsplorer opens the folder that holds it and selects the file. Press Esc to stop typing and go back to the clickable path.
+To type a path instead, click the empty space in the address bar or press ⌘L (F4 and ⌥D work too), type the location and press Enter (or click **Go**). The path starts out in the form you can type back: inside your home folder it is written with a **~**, so `~/Documents` is your Documents folder and `~` alone is your home folder. Paths outside it are written in full. Only a **~** on its own or followed by `/` means your home folder. `~name`, another user's home folder in a shell, is not looked up and is taken as typed. Quotes around a pasted path, as Terminal or **Copy as Path** add them, are left out. If you type the path of a file, Macsplorer opens the folder that holds it and selects the file. Press Esc to stop typing and go back to the clickable path.
 
 While you type a folder's path, Macsplorer guesses the folder you mean and shows the rest of its name in gray after what you typed, as the Fish shell does. Press → , End or Tab to accept it (Tab only does this while a guess is showing; otherwise it moves on to the search box as always), and the name and a `/` are filled in; keep typing to ignore it. After you press Backspace or Delete there is no guess until you type again, so it doesn't bring back what you just deleted.
 

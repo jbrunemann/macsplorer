@@ -21,6 +21,7 @@ pub mod goto;
 pub mod highlight;
 pub mod hls;
 pub mod history;
+pub mod home;
 pub mod isearch;
 pub mod layout;
 pub mod listing;

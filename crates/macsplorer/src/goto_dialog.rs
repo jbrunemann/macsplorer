@@ -11,6 +11,7 @@ use eframe::egui;
 use egui::{Align, Key, Layout, Rect, Sense, TextEdit, Ui, pos2, vec2};
 
 use macsplorer_core::goto::{self, Candidate};
+use macsplorer_core::home::{self, Home};
 
 use crate::scrollbar::{self, Bars};
 use crate::theme::{self, Bevel};
@@ -33,7 +34,7 @@ pub enum Outcome {
 pub struct GotoDialog {
     viewport: egui::ViewportId,
     candidates: Vec<Candidate>,
-    home: Option<PathBuf>,
+    home: Option<Home>,
     query: String,
     /// Positions in `candidates` that match `query`, best first.
     matches: Vec<usize>,
@@ -43,7 +44,7 @@ pub struct GotoDialog {
 }
 
 impl GotoDialog {
-    pub fn new(candidates: Vec<Candidate>, home: Option<PathBuf>) -> Self {
+    pub fn new(candidates: Vec<Candidate>, home: Option<Home>) -> Self {
         let candidates = goto::dedupe(candidates);
         let matches = goto::rank("", &candidates);
         Self { viewport: egui::ViewportId::from_hash_of("goto"), candidates, home, query: String::new(), matches, selected: 0, reveal: false }
@@ -72,11 +73,7 @@ impl GotoDialog {
 
     /// Where a path is shown: the home folder as `~`.
     fn shown(&self, path: &Path) -> String {
-        match self.home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
-            Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
-            Some(rest) => format!("~/{}", rest.display()),
-            None => path.display().to_string(),
-        }
+        home::abbreviate(path, self.home.as_ref())
     }
 
     /// Shows the dialog in its own window for this frame.
@@ -224,7 +221,7 @@ mod tests {
                 Candidate::named(Path::new("/Users/me/Downloads"), Source::Place),
                 Candidate::named(Path::new("/Users/me/Documents"), Source::Open),
             ],
-            Some(PathBuf::from("/Users/me")),
+            Some(Home::new(PathBuf::from("/Users/me"))),
         )
     }
 

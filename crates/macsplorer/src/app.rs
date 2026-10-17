@@ -15,13 +15,14 @@ use egui::{Align, Key, Layout, RichText, Sense, TextEdit, Ui};
 use egui_extras::{Column as TableColumn, TableBuilder};
 
 use macsplorer_core::autosuggest::{self, Folder};
-use macsplorer_core::breadcrumb::crumbs;
+use macsplorer_core::breadcrumb::{Crumb, crumbs};
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{self, Choice, Progress, transfer_with};
 use macsplorer_core::focus::{self, Stop};
 use macsplorer_core::git;
 use macsplorer_core::history::History;
+use macsplorer_core::home::{self, Home};
 use macsplorer_core::isearch::{self, IncrementalSearch};
 use macsplorer_core::menu_delay;
 use macsplorer_core::layout::{self, IconCell, IconGrid, ListColumns, Nav};
@@ -434,7 +435,7 @@ pub struct Explorer {
     /// Open Properties dialogs, each in its own window.
     properties: Vec<Properties>,
     ctx: egui::Context,
-    home: Option<PathBuf>,
+    home: Option<Home>,
 }
 
 impl Explorer {
@@ -536,7 +537,7 @@ impl Explorer {
             open_with: None,
             properties: Vec::new(),
             ctx,
-            home: dirs::home_dir(),
+            home: dirs::home_dir().map(Home::new),
         };
         // Windows' double-click time is also the slow-click rename delay, so a
         // second click before the rename starts always opens the item.
@@ -591,7 +592,7 @@ impl Explorer {
                 Ok(()) => {
                     self.status = None;
                     if self.current().starts_with(&volume) {
-                        let target = self.home.clone().unwrap_or_else(|| PathBuf::from("/"));
+                        let target = self.home.as_ref().map_or_else(|| PathBuf::from("/"), |h| h.path().to_path_buf());
                         self.navigate(target);
                     }
                     self.tree.set_roots(tree_roots());
@@ -1184,7 +1185,7 @@ impl Explorer {
 
     fn navigate(&mut self, path: PathBuf) {
         if !path.is_dir() {
-            self.status = Some(format!("{} is not a folder.", path.display()));
+            self.status = Some(format!("{} is not a folder.", self.shown(&path)));
             return;
         }
         self.history.push(path);
@@ -1232,7 +1233,7 @@ impl Explorer {
         } else if let Some(app) = open_with::chosen_app(&path) {
             self.open_with(path, Some(app));
         } else if let Err(e) = platform::open_default(&path) {
-            self.status = Some(format!("Couldn't open {}: {e}", path.display()));
+            self.status = Some(format!("Couldn't open {}: {e}", self.shown(&path)));
         }
     }
 
@@ -1246,7 +1247,7 @@ impl Explorer {
             return;
         };
         if let Err(e) = Command::new("open").arg("-a").arg(&app).arg(&path).spawn() {
-            self.status = Some(format!("Couldn't open {} with {}: {e}", path.display(), open_with::app_name(&app)));
+            self.status = Some(format!("Couldn't open {} with {}: {e}", self.shown(&path), open_with::app_name(&app)));
         }
     }
 
@@ -1315,7 +1316,7 @@ impl Explorer {
             }
             Stop::Address => {
                 if self.address_edit.is_none() {
-                    self.address_edit = Some(self.current().display().to_string());
+                    self.address_edit = Some(self.address_text());
                 }
                 self.address_needs_focus = true;
             }
@@ -1751,7 +1752,7 @@ impl Explorer {
                 #[cfg(unix)]
                 Action::OpenTerminal(p) => {
                     if let Err(e) = platform::open_terminal(&p, Preferences::load().terminal.as_deref()) {
-                        self.status = Some(format!("Couldn't open a terminal in {}: {e}", p.display()));
+                        self.status = Some(format!("Couldn't open a terminal in {}: {e}", self.shown(&p)));
                     }
                 }
                 #[cfg(unix)]
@@ -2265,7 +2266,7 @@ impl Explorer {
             let go = theme::tool_button(ui, Icon::Go, Some("Go"), true);
             if go.clicked() {
                 match &self.address_edit {
-                    Some(text) => actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_deref()))),
+                    Some(text) => actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_ref()))),
                     None => actions.push(Action::Refresh),
                 }
             }
@@ -2292,9 +2293,21 @@ impl Explorer {
         });
     }
 
+    /// The folder as the address bar starts editing it: the home folder as
+    /// `~`, as in Go To Folder (not Explorer, which shows the full path).
+    fn address_text(&self) -> String {
+        self.shown(self.current())
+    }
+
+    /// A path for the status bar and the address bar: inside the home folder
+    /// as `~/…`.
+    fn shown(&self, path: &Path) -> String {
+        home::abbreviate(path, self.home.as_ref())
+    }
+
     fn begin_address_edit(&mut self) {
         if self.address_edit.is_none() {
-            self.address_edit = Some(self.current().display().to_string());
+            self.address_edit = Some(self.address_text());
             self.address_needs_focus = true;
         }
     }
@@ -2350,7 +2363,7 @@ impl Explorer {
             return;
         }
         if resp.lost_focus() {
-            actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_deref())));
+            actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_ref())));
         }
         self.address_edit = Some(text);
     }
@@ -2360,10 +2373,10 @@ impl Explorer {
     /// it is in. `None` until the folders it is in have been read.
     fn peek_target(&self, text: &str, shown: Option<&autosuggest::Suggestion>) -> Option<PathBuf> {
         if let Some(next) = shown {
-            return Some(expand_tilde(&next.completed, self.home.as_deref()));
+            return Some(expand_tilde(&next.completed, self.home.as_ref()));
         }
         let (parent, partial) = autosuggest::split(text)?;
-        let dir = expand_tilde(parent, self.home.as_deref());
+        let dir = expand_tilde(parent, self.home.as_ref());
         match &self.address_folders {
             Some((read, Some(folders))) if *read == dir => Some(folders.iter().find(|f| f.name == partial).map_or(dir.clone(), |f| dir.join(&f.name))),
             _ => None,
@@ -2374,7 +2387,7 @@ impl Explorer {
     /// read by a worker, so there is none until they arrive.
     fn address_suggestion(&mut self, text: &str) -> Option<autosuggest::Suggestion> {
         let (parent, _) = autosuggest::split(text)?;
-        let dir = expand_tilde(parent, self.home.as_deref());
+        let dir = expand_tilde(parent, self.home.as_ref());
         while let Ok(read) = self.folders_rx.try_recv() {
             if self.address_looking.as_ref() == Some(&read.0) {
                 self.address_looking = None;
@@ -2419,7 +2432,7 @@ impl Explorer {
         ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
         // When the path is too long, the leading crumbs fold into a "«"
         // button that lists them, and the tail stays visible, as in Explorer.
-        let all = crumbs(self.current(), self.home.as_deref());
+        let all = crumbs(self.current(), self.home.as_ref());
         let widths: Vec<f32> = all.iter().map(|c| crumb_width(ui, &c.label) + crumb_width(ui, "›")).collect();
         let mut room = ui.available_width();
         let mut first = all.len();
@@ -2433,14 +2446,14 @@ impl Explorer {
             let overflow = crumb_button(ui, "«");
             egui::Popup::menu(&overflow).style(theme::menu_style).show(|ui| {
                 for crumb in &all[..first] {
-                    if ui.button(&crumb.label).clicked() {
+                    if ui.button(&crumb.label).on_hover_text(full_path(crumb)).clicked() {
                         actions.push(Action::Navigate(crumb.path.clone()));
                     }
                 }
             });
         }
         for crumb in &all[first..] {
-            if crumb_button(ui, &crumb.label).clicked() {
+            if crumb_button(ui, &crumb.label).on_hover_text(full_path(crumb)).clicked() {
                 actions.push(Action::Navigate(crumb.path.clone()));
             }
             // Explorer's chevron: a menu of the crumb's subfolders.
@@ -3810,6 +3823,11 @@ fn crumb_width(ui: &Ui, text: &str) -> f32 {
     ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::text()).size().x + 6.0
 }
 
+/// The tooltip of a crumb: the full path, which the `~` hides.
+fn full_path(crumb: &Crumb) -> String {
+    crumb.path.display().to_string()
+}
+
 fn crumb_button(ui: &mut Ui, text: &str) -> egui::Response {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::text());
@@ -4192,12 +4210,8 @@ fn unquote(input: &str) -> &str {
     input
 }
 
-fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
-    let input = unquote(input);
-    match (input.strip_prefix('~'), home) {
-        (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
-        _ => PathBuf::from(input),
-    }
+fn expand_tilde(input: &str, home: Option<&Home>) -> PathBuf {
+    home::expand(unquote(input), home)
 }
 
 #[cfg(test)]
@@ -4207,13 +4221,14 @@ mod tests {
 
     #[test]
     fn pasted_paths_lose_their_quotes() {
-        let home = Path::new("/Users/me");
+        let home = Home::new(PathBuf::from("/Users/me"));
+        let home = Some(&home);
         for typed in ["'/Users/me/'", "\"/Users/me/\"", " '/Users/me/' ", "\u{2018}/Users/me/\u{2019}", "\u{201c}/Users/me/\u{201d}"] {
-            assert_eq!(expand_tilde(typed, Some(home)), PathBuf::from("/Users/me/"), "{typed}");
+            assert_eq!(expand_tilde(typed, home), PathBuf::from("/Users/me/"), "{typed}");
         }
-        assert_eq!(expand_tilde("'~/Documents'", Some(home)), PathBuf::from("/Users/me/Documents"));
-        assert_eq!(expand_tilde("/it's", Some(home)), PathBuf::from("/it's"));
-        assert_eq!(expand_tilde("/a'b'", Some(home)), PathBuf::from("/a'b'"));
+        assert_eq!(expand_tilde("'~/Documents'", home), PathBuf::from("/Users/me/Documents"));
+        assert_eq!(expand_tilde("/it's", home), PathBuf::from("/it's"));
+        assert_eq!(expand_tilde("/a'b'", home), PathBuf::from("/a'b'"));
     }
 
     fn tree() -> FolderTree {
@@ -4322,6 +4337,19 @@ mod clipboard {
         app.pb = Pasteboard::private();
         app.finish_listing();
         (app, dir)
+    }
+
+    #[test]
+    fn the_address_bar_starts_editing_with_a_tilde_inside_the_home_folder() {
+        let (mut app, dir) = explorer("tilde");
+        app.home = Some(Home::new(dir.clone()));
+        assert_eq!(app.address_text(), "~");
+        app.navigate(dir.join("sub"));
+        app.finish_listing();
+        assert_eq!(app.address_text(), "~/sub");
+        app.home = Some(Home::new(dir.join("a.txt")));
+        assert_eq!(app.address_text(), dir.join("sub").display().to_string());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -5530,7 +5558,7 @@ mod screenshot {
                 .iter()
                 .map(|n| Candidate::named(&home.join(n), Source::Recent))
                 .collect(),
-            Some(home),
+            Some(Home::new(home)),
         );
         dialog.set_query("do");
         shoot_dialog("goto", crate::goto_dialog::SIZE, dialog, |ui, d| {
