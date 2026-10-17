@@ -16,6 +16,11 @@ pub const CMD: &str = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
 /// uses the Super key (egui has no modifier flag for it: see `Explorer::keyboard`).
 pub const NEW_WINDOW_KEYS: &str = if cfg!(target_os = "macos") { "⌘\u{2009}E" } else { "Super+E" };
 
+/// The Go To Folder shortcut as menus print it: Finder's Shift+Cmd+G.
+pub fn go_to_keys() -> String {
+    if cfg!(target_os = "macos") { "⇧\u{2009}⌘\u{2009}G".to_owned() } else { format!("{CMD}Shift+G") }
+}
+
 /// A keyboard shortcut as menus print it: `⌥⌘C` on macOS, `Ctrl+Alt+C` elsewhere.
 /// `key` is the key's own label (`"C"`, `"⌫"`); `alt` adds Option (Alt).
 pub fn shortcut(alt: bool, key: &str) -> String {

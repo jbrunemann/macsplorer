@@ -45,7 +45,7 @@ From top to bottom:
 | **Menu bar** | File, Edit, View and Help. |
 | **Toolbar** | Back, Forward, Up, Folders, Refresh, Undo and Views. Hold the pointer over a button to see what it does and its shortcut. |
 | **Address bar** | The path to the current folder. You can click any part of it. |
-| **Search box** | To the right of the address bar. Shows only the items whose name contains what you type. |
+| **Search box** | To the right of the address bar. Shows only the items whose name contains what you type. Press **/** to go there. |
 | **Folders pane** | On the left: your favorite places, your disks, and all the folders on them as a tree. |
 | **File list** | On the right: the contents of the current folder. |
 | **Status bar** | At the bottom: how many items there are, how big they are, how much free space the disk has, and your computer's name. Inside a Git repository it also shows the branch and the state of the repository (see [Git repositories](#git-repositories)). Drag the ridged corner at its right end to make the window bigger or smaller. |
@@ -99,6 +99,12 @@ To type a path instead, click the empty space in the address bar or press ⌘L (
 While you type a folder's path, Macsplorer guesses the folder you mean and shows the rest of its name in gray after what you typed, as the Fish shell does. Press → , End or Tab to accept it (Tab only does this while a guess is showing; otherwise it moves on to the search box as always), and the name and a `/` are filled in; keep typing to ignore it. After you press Backspace or Delete there is no guess until you type again, so it doesn't bring back what you just deleted.
 
 To see what is in the folder you are typing without leaving the field, press ↓. The file list below then shows the guessed folder, or the folder you have typed so far, and keeps following what you type. Nothing is opened yet: press Enter to go there, or Esc to get your own folder back. Enter and **Go** always use exactly what you typed. The guess is a folder inside the folder you have typed so far, and it appears once you type the first letter of the name. You don't have to type accents: **A** finds **Äpfel**, as long as no folder starts with a plain **A**. A hidden folder is only guessed when you start its name with a dot.
+
+### Go To Folder
+
+To get to a folder without clicking through the tree or typing its whole path, press **⇧⌘G** (or choose **View > Go To Folder...**). A small window opens with a box and a list. Type a few letters of the folder's name and the list narrows to the folders that contain those letters in that order: **dwn** finds **Downloads**. The best match comes first, with names that start with what you typed ahead of the rest, then the others in this order: folders you have been to in this window (latest first), the places in the Folders pane such as Desktop and your disks, the folders open in the Folders pane, and the folders in the current folder. Each shows where it is in gray. Type a **/** to match on the whole path instead.
+
+**↑** and **↓** (or **Ctrl+P** and **Ctrl+N**) move through the list, Page Up and Page Down move eight at a time, **Enter** or a double-click goes there, and **Esc** closes the window. On Linux, the shortcut is **Ctrl+Shift+G**.
 
 ### Back, Forward and Up
 
@@ -348,7 +354,10 @@ Type in the **Search this folder** box at the top right. The list shows only the
 
 <img src="images/search.png" alt="The search box showing only the items that contain 're'" width="900">
 
-⌘F or F3 takes you to the search box from anywhere in the window.
+⌘F or F3 takes you to the search box from anywhere in the window, and so does a **/** typed in the file list or the Folders pane (a name can't contain a slash, so it never gets in the way of typing the first letters of a name). Then:
+
+- **Enter** or **↓** leaves the box with the search still on, selects the first item shown and moves the keyboard to the list, so a second Enter opens it.
+- **Esc** clears the search and goes back to the list.
 
 To jump to an item without hiding the others, just type the first letters of its name in the list (see [Selecting files](#5-selecting-files)).
 
@@ -428,7 +437,9 @@ You can use Macsplorer without the mouse. **Tab** moves from the file list to th
 | ⌘↑ or ⌥↑ | Up to the containing folder |
 | Tab or F6 | Go to the next part of the window (⇧ goes back) |
 | ⌘L or F4 or ⌥D | Type a location in the address bar |
-| ⌘F or F3 | Search this folder |
+| ⌘F or F3 or / | Search this folder (in the box: Enter or ↓ to the list, Esc clears it) |
+| ⇧⌘G | Go To Folder: jump to a folder by a few letters of its name |
+| ? or F1 | Show this list of shortcuts in a window |
 | ⌘R or F5 | Refresh |
 | Arrow keys | Move the selection (in the tree: → unfolds, ← folds) |
 | Home, End, Page Up, Page Down | First item, last item, a pageful up or down |

@@ -32,6 +32,12 @@ pub struct IncrementalSearch {
 }
 
 impl IncrementalSearch {
+    /// Whether text typed at `now_ms` would extend a search under way, not
+    /// start a new one (some text, and not timed out).
+    pub fn is_active(&self, now_ms: u64) -> bool {
+        !self.text.is_empty() && now_ms.saturating_sub(self.last_ms) <= TIMEOUT_MS
+    }
+
     /// Forgets the typed text. Explorer does this for control characters
     /// (Backspace, Enter, Esc, Tab) and after any arrow/Home/End/Page key
     /// moved the focus.
@@ -99,6 +105,17 @@ mod tests {
     use super::*;
 
     const NAMES: [&str; 6] = ["Applications", "archive.zip", "Bin", "build.rs", "Desktop", "docs"];
+
+    #[test]
+    fn a_search_is_active_until_it_times_out() {
+        let mut s = IncrementalSearch::default();
+        assert!(!s.is_active(0));
+        s.type_char('d', 5_000, &NAMES, None);
+        assert!(s.is_active(5_000 + TIMEOUT_MS));
+        assert!(!s.is_active(5_001 + TIMEOUT_MS));
+        s.reset();
+        assert!(!s.is_active(5_000));
+    }
 
     fn typed(s: &mut IncrementalSearch, text: &str, mut t: u64, focus: Option<usize>) -> Outcome {
         let mut out = Outcome::Ignored;

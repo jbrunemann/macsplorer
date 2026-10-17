@@ -32,6 +32,7 @@ use macsplorer_core::listing::{Entry, SortSpec, entry_at, format_byte_size, form
 use macsplorer_core::listing::free_space;
 use macsplorer_core::natural::{self, natural_cmp};
 use macsplorer_core::preferences::{Preferences, SortOrder, ViewMode};
+use macsplorer_core::goto::{Candidate, Source as GotoSource};
 use macsplorer_core::places::{favorites, volumes};
 #[cfg(unix)]
 use macsplorer_core::places::{computer_name, is_ejectable};
@@ -47,6 +48,8 @@ use macsplorer_core::watch::FolderWatcher;
 use crate::column_dialog::{self, ColumnDialog};
 use crate::about_dialog::{AboutDialog, Outcome as AboutOutcome};
 use crate::conflict_dialog::{self, ConflictDialog};
+use crate::goto_dialog::{self, GotoDialog};
+use crate::shortcuts_dialog::{self, ShortcutsDialog};
 use crate::pasteboard::{self, Pasteboard};
 use crate::icons::{self, FileIcons, IconState};
 use crate::item_drag::{self, DragFrame, ItemDrag, Mark, Pointer, Step};
@@ -152,6 +155,13 @@ enum Action {
     Deselect,
     /// Tab, F6 and the address and search keys: give that pane the keyboard.
     FocusStop(Stop),
+    /// Enter or Down in the search box: the filter stays, the keyboard goes
+    /// to the list with the first match selected.
+    FilterDone,
+    /// Go To Folder: the quick jump window.
+    ShowGoTo,
+    /// `?` or F1: the keyboard shortcut list.
+    ShowShortcuts,
     /// The keyboard was used to move around: draw focus rectangles from now on.
     ShowFocus,
     /// Start a marquee at this content point; `extend` (Cmd or Shift) keeps
@@ -330,6 +340,8 @@ pub struct Explorer {
     /// "Choose Program...", while it is open.
     open_with_dialog: Option<OpenWithDialog>,
     about_dialog: Option<AboutDialog>,
+    goto_dialog: Option<GotoDialog>,
+    shortcuts_dialog: Option<ShortcutsDialog>,
     /// A header divider drag, and whether it started on a divider proper
     /// (where a double-click auto-sizes) rather than a hidden column's.
     column_drag: Option<(ColumnDrag, bool)>,
@@ -476,6 +488,8 @@ impl Explorer {
             column_dialog: None,
             open_with_dialog: None,
             about_dialog: None,
+            goto_dialog: None,
+            shortcuts_dialog: None,
             column_drag: None,
             header_left: 0.0,
             rename: None,
@@ -710,6 +724,23 @@ impl Explorer {
 
     /// The Open With dialog; OK opens the file and, when asked, remembers
     /// the app for the file's type.
+    /// Opens Go To Folder with the folders worth jumping to: where this
+    /// window has been, the sidebar places, the folders open in the Folders
+    /// pane and those inside the open folder.
+    fn show_goto(&mut self) {
+        if self.goto_dialog.is_some() {
+            return;
+        }
+        let mut candidates: Vec<Candidate> = Vec::new();
+        candidates.extend(self.history.back_entries().map(|(_, p)| Candidate::named(p, GotoSource::Recent)));
+        candidates.extend(self.history.forward_entries().map(|(_, p)| Candidate::named(p, GotoSource::Recent)));
+        candidates.extend(favorites().into_iter().chain(volumes()).map(|p| Candidate::new(p.label, p.path, GotoSource::Place)));
+        candidates.extend(self.tree.rows().iter().filter(|r| !r.placeholder).map(|r| Candidate::new(r.label.clone(), r.key.path.clone(), GotoSource::Open)));
+        candidates.extend(self.entries.iter().filter(|e| e.is_folder()).map(|e| Candidate::new(e.name.clone(), e.path.clone(), GotoSource::Inside)));
+        candidates.retain(|c| c.path != self.current());
+        self.goto_dialog = Some(GotoDialog::new(candidates, self.home.clone()));
+    }
+
     fn show_open_with(&mut self) {
         let Some(dialog) = &mut self.open_with_dialog else { return };
         match dialog.show(&self.ctx, &mut self.icons) {
@@ -1608,6 +1639,17 @@ impl Explorer {
                     }
                 }
                 Action::FocusStop(stop) => self.focus_stop(stop, visible),
+                Action::FilterDone => {
+                    self.focus_stop(Stop::View, visible);
+                    // The first match is selected, so Enter opens it.
+                    if let Some(first) = visible.first().copied().filter(|_| !visible.iter().any(|&i| self.selection.contains(&self.entries[i].path))) {
+                        self.click(first, false, false, visible);
+                    }
+                }
+                Action::ShowGoTo => self.show_goto(),
+                Action::ShowShortcuts => {
+                    self.shortcuts_dialog.get_or_insert_with(ShortcutsDialog::new);
+                }
                 Action::ShowFocus => self.show_focus = true,
                 Action::Deselect => {
                     self.slow_click.cancel();
@@ -1826,7 +1868,7 @@ impl Explorer {
         // Tab and F6 move between the panes, not through egui's widgets
         // (which would park the keyboard on an invisible button).
         ui.ctx().memory_mut(|m| m.move_focus(egui::FocusDirection::None));
-        let (cycle, address, find) = ui.input(|i| {
+        let (cycle, address, find, go_to, shortcuts) = ui.input(|i| {
             let m = i.modifiers;
             // Tab completes a shown prediction (`edit_address`) instead of leaving the field.
             let completes = self.address_predicting && i.key_pressed(Key::Tab) && !m.shift;
@@ -1835,7 +1877,9 @@ impl Explorer {
             let address = i.key_pressed(Key::F4) || (m.command && i.key_pressed(Key::L));
             // Explorer's F3 and Ctrl+F, Finder's Cmd+F.
             let find = i.key_pressed(Key::F3) || (m.command && i.key_pressed(Key::F));
-            (cycle, address, find)
+            // Finder's Go to Folder (Shift+Cmd+G) opens Go To Folder; F1 is Explorer's help key.
+            let go_to = m.command && m.shift && !m.alt && i.key_pressed(Key::G);
+            (cycle, address, find, go_to, i.key_pressed(Key::F1))
         });
         if let Some(forward) = cycle
             && self.rename.is_none()
@@ -1849,6 +1893,12 @@ impl Explorer {
         if find {
             actions.push(Action::FocusStop(Stop::Search));
         }
+        if go_to {
+            actions.push(Action::ShowGoTo);
+        }
+        if shortcuts {
+            actions.push(Action::ShowShortcuts);
+        }
         // Text fields own the rest of the keyboard while they are focused.
         if ui.ctx().memory(|m| m.focused().is_some()) {
             return;
@@ -1859,6 +1909,20 @@ impl Explorer {
             if alt && !cmd && i.key_pressed(Key::D) {
                 actions.push(Action::FocusStop(Stop::Address));
                 return;
+            }
+            // A "/" opens the filter as in less, vim and the terminal file managers and a "?"
+            // the shortcut list. Neither can be in a file name, but "?" can, so it only counts
+            // when it doesn't continue a type-ahead.
+            if !cmd && !alt && !i.modifiers.ctrl {
+                let typed = |c: &str| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == c));
+                if typed("/") {
+                    actions.push(Action::FocusStop(Stop::Search));
+                    return;
+                }
+                if typed("?") && ![&self.type_ahead, &self.tree_type_ahead].iter().any(|t| t.is_active((i.time * 1000.0) as u64)) {
+                    actions.push(Action::ShowShortcuts);
+                    return;
+                }
             }
             let in_list = self.focus == Pane::List;
             if cmd && i.key_pressed(Key::A) {
@@ -2106,6 +2170,10 @@ impl Explorer {
                     self.load(loads);
                 }
                 ui.separator();
+                if ui.add(gutter_item(ui, "Go To Folder...", platform::go_to_keys())).clicked() {
+                    actions.push(Action::ShowGoTo);
+                    ui.close();
+                }
                 if ui.add(gutter_item(ui, "Refresh", platform::shortcut(false, "R"))).clicked() {
                     actions.push(Action::Refresh);
                 }
@@ -2113,6 +2181,10 @@ impl Explorer {
             bar_menu_button(ui, "Help", |ui| {
                 if ui.add(gutter_item(ui, "Open config file", String::new())).clicked() {
                     actions.push(Action::OpenConfig);
+                }
+                if ui.add(gutter_item(ui, "Keyboard Shortcuts", "F1".to_owned())).clicked() {
+                    actions.push(Action::ShowShortcuts);
+                    ui.close();
                 }
                 ui.separator();
                 if ui.add(gutter_item(ui, "About Macsplorer", String::new())).clicked() {
@@ -2202,7 +2274,17 @@ impl Explorer {
             let sinner = theme::sunken_field(ui.painter(), srect);
             let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sinner.shrink2(egui::vec2(3.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
             let id = search_id();
+            // Esc drops the filter and goes back to the list (egui has already taken the focus
+            // off the box by now); Enter and Down keep it and go to the list. Not from Explorer:
+            // after the filter bars of the terminal file managers.
+            if ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter) | i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)) {
+                actions.push(Action::FilterDone);
+            }
             let resp = sui.add(TextEdit::singleline(&mut self.search).id(id).hint_text("Search this folder").frame(egui::Frame::NONE).desired_width(f32::INFINITY));
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+                self.search.clear();
+                actions.push(Action::FocusStop(Stop::View));
+            }
             if std::mem::take(&mut self.search_needs_focus) {
                 resp.request_focus();
                 select_all(&sui, id, &self.search);
@@ -3253,6 +3335,17 @@ impl eframe::App for Explorer {
             }
         }
         self.show_open_with();
+        match self.goto_dialog.as_mut().map(|d| d.show(&ctx)) {
+            Some(goto_dialog::Outcome::Go(path)) => {
+                self.goto_dialog = None;
+                self.go_to(path);
+            }
+            Some(goto_dialog::Outcome::Cancel) => self.goto_dialog = None,
+            Some(goto_dialog::Outcome::Keep) | None => {}
+        }
+        if self.shortcuts_dialog.as_mut().is_some_and(|d| matches!(d.show(&ctx), shortcuts_dialog::Outcome::Close)) {
+            self.shortcuts_dialog = None;
+        }
         match self.about_dialog.as_mut().map(|d| d.show(&ctx)) {
             Some(AboutOutcome::Close) => self.about_dialog = None,
             Some(AboutOutcome::Reveal(path)) => {
@@ -4903,6 +4996,65 @@ mod screenshot {
     }
 
     #[test]
+    fn slash_opens_the_filter_and_esc_drops_it() {
+        let (mut harness, dir) = drag_harness("slash");
+        harness.event(egui::Event::Text("/".into()));
+        harness.run_steps(3);
+        assert_eq!(harness.state().current_stop(), Stop::Search);
+        assert!(harness.state().selection.is_empty(), "the slash was not a type-ahead letter");
+        harness.event(egui::Event::Text("a".into()));
+        harness.run_steps(2);
+        assert_eq!(harness.state().search, "a");
+        harness.key_press(Key::Escape);
+        harness.run_steps(3);
+        assert_eq!(harness.state().search, "");
+        assert_eq!(harness.state().current_stop(), Stop::View);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn enter_in_the_filter_keeps_it_and_selects_the_first_match() {
+        let (mut harness, dir) = drag_harness("filter-enter");
+        harness.event(egui::Event::Text("/".into()));
+        harness.run_steps(3);
+        harness.event(egui::Event::Text("a.t".into()));
+        harness.run_steps(2);
+        harness.key_press(Key::Enter);
+        harness.run_steps(3);
+        let app = harness.state();
+        assert_eq!(app.search, "a.t");
+        assert_eq!(app.current_stop(), Stop::View);
+        assert_eq!(app.selection, BTreeSet::from([dir.join("a.txt")]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn question_mark_and_f1_open_the_shortcut_list() {
+        let (mut harness, dir) = drag_harness("help");
+        harness.event(egui::Event::Text("?".into()));
+        harness.run_steps(3);
+        assert!(harness.state().shortcuts_dialog.is_some());
+        harness.state_mut().shortcuts_dialog = None;
+        harness.run_steps(2);
+        harness.key_press(Key::F1);
+        harness.run_steps(3);
+        assert!(harness.state().shortcuts_dialog.is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shift_cmd_g_opens_go_to_with_the_folder_inside_but_not_the_open_one() {
+        let (mut harness, dir) = drag_harness("goto-key");
+        harness.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::G);
+        harness.run_steps(3);
+        let app = harness.state();
+        let dialog = app.goto_dialog.as_ref().expect("the window is open");
+        assert!(dialog.has_folder(&dir.join("sub")));
+        assert!(!dialog.has_folder(&dir));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn down_in_the_address_bar_shows_the_folder_being_typed() {
         let (mut harness, dir) = drag_harness("peek");
         fs::write(dir.join("sub").join("inside.txt"), "x").unwrap();
@@ -5341,6 +5493,58 @@ mod screenshot {
         let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
         fs::create_dir_all(&out).unwrap();
         image.save(out.join("about.png")).unwrap();
+    }
+
+    /// Renders a dialog's `ui` at `size` into target/screenshots/<name>.png.
+    fn shoot_dialog<S>(name: &str, size: egui::Vec2, state: S, draw: impl Fn(&mut Ui, &mut S) + 'static) {
+        let mut harness = Harness::builder().with_size(size).with_pixels_per_point(2.0).wgpu().build_ui_state(
+            move |ui, state: &mut (S, bool)| {
+                if !state.1 {
+                    theme::install(ui.ctx());
+                    theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                    state.1 = true;
+                    return;
+                }
+                let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                draw(&mut window, &mut state.0);
+            },
+            (state, false),
+        );
+        for _ in 0..3 {
+            harness.run();
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join(format!("{name}.png"))).unwrap();
+    }
+
+    /// Go To Folder with a few matches for "do".
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn goto_dialog() {
+        use macsplorer_core::goto::{Candidate, Source};
+        let home = PathBuf::from("/Users/me");
+        let mut dialog = GotoDialog::new(
+            ["Documents", "Downloads", "Dock", "Desktop/old-docs", "Pictures"]
+                .iter()
+                .map(|n| Candidate::named(&home.join(n), Source::Recent))
+                .collect(),
+            Some(home),
+        );
+        dialog.set_query("do");
+        shoot_dialog("goto", crate::goto_dialog::SIZE, dialog, |ui, d| {
+            d.ui(ui);
+        });
+    }
+
+    /// The keyboard shortcut list.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn shortcuts_dialog() {
+        shoot_dialog("shortcuts", crate::shortcuts_dialog::SIZE, ShortcutsDialog::new(), |ui, d| {
+            d.ui(ui);
+        });
     }
 
     /// The Open With dialog with the apps that open a text file.

@@ -17,6 +17,7 @@ pub mod focus;
 pub mod folder_style;
 pub mod fonts;
 pub mod git;
+pub mod goto;
 pub mod highlight;
 pub mod hls;
 pub mod history;

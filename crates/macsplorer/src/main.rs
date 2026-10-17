@@ -6,6 +6,7 @@ mod app;
 mod color_dialog;
 mod column_dialog;
 mod conflict_dialog;
+mod goto_dialog;
 mod icons;
 mod item_drag;
 mod locale;
@@ -18,6 +19,7 @@ mod platform;
 mod progress_dialog;
 mod properties;
 mod scrollbar;
+mod shortcuts_dialog;
 #[cfg(target_os = "linux")]
 mod system_fonts;
 mod theme;
