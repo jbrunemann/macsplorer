@@ -13,6 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::associations::Associations;
 use crate::columns::{Column, ColumnSet};
+use crate::folder_style::{format_hex, parse_hex};
 use crate::text_size;
 
 const FILE: &str = "settings.json";
@@ -78,11 +79,13 @@ pub struct Preferences {
     pub window: Option<[f32; 2]>,
     /// The apps chosen with "Always use this program", by file type.
     pub associations: Associations,
+    /// The Color dialog's 16 custom color boxes, empty ones `None`.
+    pub custom_colors: [Option<[u8; 3]>; 16],
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default() }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16] }
     }
 }
 
@@ -159,6 +162,12 @@ impl Preferences {
         } else {
             map.insert("associations".into(), self.associations.to_json());
         }
+        if self.custom_colors.iter().all(Option::is_none) {
+            map.remove("custom_colors");
+        } else {
+            let boxes = self.custom_colors.iter().map(|c| c.map_or(Value::Null, |rgb| Value::from(format_hex(rgb)))).collect();
+            map.insert("custom_colors".into(), Value::Array(boxes));
+        }
         let text = serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
         // Replace the file in one step, so another window reading it never
         // sees half of it.
@@ -180,8 +189,18 @@ impl Preferences {
             sort: map.get("sort").and_then(read_sort),
             window: map.get("window").and_then(read_window),
             associations: map.get("associations").map(Associations::from_json).unwrap_or_default(),
+            custom_colors: read_custom_colors(map.get("custom_colors")),
         }
     }
+}
+
+/// Up to 16 `"#rrggbb"` strings or nulls; anything else is an empty box.
+fn read_custom_colors(value: Option<&Value>) -> [Option<[u8; 3]>; 16] {
+    let mut boxes = [None; 16];
+    for (slot, v) in boxes.iter_mut().zip(value.and_then(Value::as_array).into_iter().flatten()) {
+        *slot = v.as_str().and_then(parse_hex);
+    }
+    boxes
 }
 
 fn read_sort(value: &Value) -> Option<SortOrder> {
@@ -229,6 +248,20 @@ mod tests {
         assert!(Preferences::load_from(&dir).dark);
         Preferences { dark: false, ..Default::default() }.save_to(&dir).unwrap();
         assert!(!Preferences::load_from(&dir).dark);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn custom_colors_come_back() {
+        let dir = temp("custom-colors");
+        let mut custom_colors = [None; 16];
+        custom_colors[0] = Some([0, 200, 160]);
+        custom_colors[3] = Some([255, 255, 255]);
+        Preferences { custom_colors, ..Default::default() }.save_to(&dir).unwrap();
+        assert!(fs::read_to_string(dir.join(FILE)).unwrap().contains("#00c8a0"));
+        assert_eq!(Preferences::load_from(&dir).custom_colors, custom_colors);
+        fs::write(dir.join(FILE), r##"{"custom_colors": ["#ff0000", 7, "nope"]}"##).unwrap();
+        assert_eq!(Preferences::load_from(&dir).custom_colors[..3], [Some([255, 0, 0]), None, None]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

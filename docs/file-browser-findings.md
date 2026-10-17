@@ -511,6 +511,59 @@ and "Today" and "Yesterday" stay English. Byte units and the words
 the dialog shows just one of them (Windows has a separate multi-item page,
 `_InitMultiplePrsht`).
 
+**Customize tab (macOS, not from Explorer).** Folders that can be renamed
+get a second tab for Finder's folder customization (macOS 26 and later):
+the folder color and an emblem, an emoji or an SF Symbol. The tab's name and
+its Restore Default button follow XP's Customize tab from memory (Win2000
+has none). Finder's storage, found by reading folders Finder customized and
+checking `NSWorkspace`'s drawing of folders written by hand
+(`macsplorer_core::folder_style`): the emblem is JSON in
+`com.apple.icon.folder#S` (`{"emoji":"…"}` or `{"sym":"star.fill"}`), drawn
+only while `kHasCustomIcon` is set; the color is the *last* tag with a color
+in `_kMDItemUserTags` (a binary plist array of `"Name\nN"`). The label bits
+in the Finder flags are kept in step but don't change the drawing. A new
+color replaces Finder's standard color tags (Red, Orange, ...) and goes
+last; the user's own tags stay. "In Finder" is `NSWorkspace`'s icon for an
+empty folder in the temporary directory given the chosen style. Typed text
+made of ASCII letters, digits and dots is a symbol name, anything else an
+emoji. Ctrl+Tab and Ctrl+Shift+Tab switch tabs, like a property sheet.
+Not checked: what Finder does with "no color" when a tag of the user's own
+has a color (that tag keeps coloring the folder here).
+
+Finder only draws the color on a folder that has an emblem: a tag alone,
+or the flag with `{}`, leaves the default folder. A blank emoji
+(`{"emoji":" "}`) gives the colored folder with nothing on it; Macsplorer
+uses that on temporary folders to draw a colored folder without its emblem
+and never writes it to a real one. Finder reads no color from the JSON
+(`color`, `tint`, `hex`, `rgb` and a few value shapes were tried). Colors
+of Macsplorer's own ("Other...", the Color dialog) go in
+`dev.macsplorer.folder-color` as `#rrggbb`; Finder gets the nearest tag
+color: Gray when the Oklab chroma is under 0.03, else the tag with the
+nearest Oklab hue (a plain distance calls dark colors gray). The own color
+is only used while the tag still is its nearest one, so a color changed in
+Finder wins. It's drawn by recoloring Finder's Gray folder: pixels that
+differ between a Gray and a Blue drawing belong to the folder and get the
+color with the Gray's shading (`folder_style::tint`); the rest, an emoji,
+stays. Where it shows: Large Icons and the dialogs' 32 px icons draw color
+and emblem, List and Details only the color (an emblem-only folder is the
+yellow folder there), the Folders pane never either (the user's choice).
+The Color dialog is `ChooseColor` from memory (comdlg32 isn't analyzed):
+48 basic colors, 16 custom boxes kept in `settings.json`
+(`custom_colors`), "Define Custom Colors >>" with the hue/sat spectrum, the
+lum bar, Color|Solid and the six number boxes; HLS uses Microsoft's
+published KB 29240 conversions (`macsplorer_core::hls`). A double click on
+a box is OK. Picking from the spectrum while lum is 0 or 240 starts at 120
+(macsplorer's choice). Help is left out.
+
+Linux has colors only (`folder_style::EMBLEMS`): `user.macsplorer.folder-color`
+holds `#rrggbb`, which no other program reads; Finder's seven colors are
+just presets there. Every folder in a listing gets one `getxattr` (there
+are no Finder flags to check first). A colored folder is the Win2000
+folder art in the color (`theme::paint_colored_folder`: edge and highlight
+derived like the yellow folder's), which macOS also shows while Finder's
+drawing is still being made. File systems without user attributes refuse
+the write and the error goes to the status bar.
+
 ### 2.9 Type-ahead search (comctl32 v6.10 `CLVKeyboardManager`)
 
 Typing in the item view is the list view's incremental search, not something Explorer

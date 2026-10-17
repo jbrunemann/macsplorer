@@ -3,6 +3,7 @@
 
 mod about_dialog;
 mod app;
+mod color_dialog;
 mod column_dialog;
 mod conflict_dialog;
 mod icons;

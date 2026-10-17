@@ -4,6 +4,7 @@
 //! in `docs/file-browser-findings.md`.
 
 pub mod associations;
+pub mod bplist;
 pub mod breadcrumb;
 pub mod columns;
 pub mod copy_path;
@@ -12,9 +13,11 @@ pub mod dirscan;
 pub mod dragdrop;
 pub mod fileops;
 pub mod focus;
+pub mod folder_style;
 pub mod fonts;
 pub mod git;
 pub mod highlight;
+pub mod hls;
 pub mod history;
 pub mod isearch;
 pub mod layout;
@@ -32,3 +35,5 @@ pub mod text_size;
 pub mod tree;
 pub mod undo;
 pub mod watch;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod xattr;

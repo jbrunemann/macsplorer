@@ -2,6 +2,9 @@
 //! (`_InitSingleFilePrsht`, `_UpdateSizeField`, `_UpdateSizeCount`), in its
 //! own borderless window, with the Unix permissions where Windows has its
 //! Attributes check boxes and a symlink's source and target.
+//! On macOS, folders also get a Customize tab (after XP's, which Win2000
+//! lacks) for Finder's folder color and emblem, see
+//! `macsplorer_core::folder_style`.
 //! Left out on purpose: Sharing and Security tabs, Size on disk, Opens with
 //! and Advanced.
 
@@ -16,6 +19,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use egui::{Align, Key, Layout, Rect, Sense, TextEdit, Ui, pos2, vec2};
 
+use macsplorer_core::folder_style::{self, Emblem, FolderColor, FolderStyle, TagColor, format_hex};
 use macsplorer_core::listing::{Entry, Link, is_package_name};
 use macsplorer_core::properties::{
     FolderSize, FolderTotals, ItemInfo, SelectedItem, format_common_location, format_contains, format_size_line, format_target, item_info, permissions,
@@ -24,8 +28,11 @@ use macsplorer_core::properties::{
 type Permissions = [[bool; 3]; 3];
 use macsplorer_core::rename::RenameKind;
 
+use crate::color_dialog::{self, ColorDialog};
 use crate::icons::{FileIcons, IconState};
 use crate::locale;
+#[cfg(target_os = "macos")]
+use crate::native_icon;
 use crate::theme::{self, Bevel};
 
 /// The window's width. Its height is fixed for an item, like a property
@@ -45,6 +52,14 @@ const ROW_HEIGHT: f32 = 22.0;
 const BUTTON: egui::Vec2 = vec2(75.0, 23.0);
 /// Where values start, right of the labels and lined up with the name box.
 const VALUE_X: f32 = 86.0;
+/// The color swatches on the Customize tab: their size and where each starts
+/// from the one before.
+const SWATCH: f32 = 20.0;
+const SWATCH_STEP: f32 = 24.0;
+/// The preview icons on the Customize tab.
+const PREVIEW: f32 = 48.0;
+/// Whether there is a Finder to show the folder style to (and preview for).
+const FINDER: bool = cfg!(target_os = "macos");
 /// How often a running folder walk's totals are shown, like the 250 ms
 /// timer `CFolderContentsInfo::SizeThreadProc` sets.
 const SIZE_REFRESH: Duration = Duration::from_millis(250);
@@ -101,8 +116,23 @@ pub enum Outcome {
     Keep,
     Close,
     /// Rename to [`Properties::new_name`] if the name changed, then set
-    /// [`Properties::new_permissions`] if they did; OK also closes on success.
+    /// [`Properties::new_permissions`] and [`Properties::new_style`] if they
+    /// did; OK also closes on success.
     Apply { close: bool },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tab {
+    General,
+    Customize,
+}
+
+/// Finder's drawing of the chosen style on the Customize tab.
+struct Preview {
+    style: FolderStyle,
+    texture: Option<egui::TextureHandle>,
+    /// False when the emblem names an SF Symbol this Mac doesn't have.
+    known_symbol: bool,
 }
 
 /// What several selected items add to the page: no rename, dates or
@@ -124,7 +154,7 @@ pub struct Properties {
     info: Option<Result<ItemInfo, String>>,
     /// Finder's Kind, used as the type name when there is one.
     kind: Option<String>,
-    info_rx: Receiver<(io::Result<ItemInfo>, Option<String>)>,
+    info_rx: Receiver<(io::Result<ItemInfo>, Option<String>, Option<FolderStyle>)>,
     /// The permission boxes as shown, once the item has been read.
     permissions: Option<Permissions>,
     /// The permissions on disk, to tell whether the boxes were changed.
@@ -135,6 +165,16 @@ pub struct Properties {
     shown_at: Instant,
     /// Set when the dialog is for a selection of several items.
     multi: Option<Multi>,
+    tab: Tab,
+    /// The folder color and the emblem box on the Customize tab.
+    color: Option<FolderColor>,
+    /// The Color dialog, while Other... has it open.
+    color_dialog: Option<ColorDialog>,
+    emblem: String,
+    /// The folder's style on disk, once read; always `None` for items that
+    /// have no Customize tab.
+    saved_style: Option<FolderStyle>,
+    preview: Option<Preview>,
 }
 
 impl Properties {
@@ -144,10 +184,12 @@ impl Properties {
         let (tx, info_rx) = channel();
         let size = Arc::new(FolderSize::default());
         let (path, walker, ctx2) = (entry.path.clone(), size.clone(), ctx.clone());
+        let customizable = customizable(&entry, editable);
         thread::spawn(move || {
             let info = item_info(&path);
             let is_dir = info.as_ref().is_ok_and(|i| i.is_dir);
-            if tx.send((info, locale::kind_name(&path))).is_err() {
+            let style = customizable.then(|| folder_style::read(&path));
+            if tx.send((info, locale::kind_name(&path), style)).is_err() {
                 return;
             }
             ctx2.request_repaint();
@@ -171,6 +213,12 @@ impl Properties {
             shown: FolderTotals::default(),
             shown_at: Instant::now(),
             multi: None,
+            tab: Tab::General,
+            color: None,
+            color_dialog: None,
+            emblem: String::new(),
+            saved_style: None,
+            preview: None,
         }
     }
 
@@ -219,6 +267,12 @@ impl Properties {
             shown: FolderTotals::default(),
             shown_at: Instant::now(),
             multi: None,
+            tab: Tab::General,
+            color: None,
+            color_dialog: None,
+            emblem: String::new(),
+            saved_style: None,
+            preview: None,
         }
     }
 
@@ -240,6 +294,7 @@ impl Properties {
             comment: None,
             hidden: false,
             custom_icon: false,
+            folder_style: None,
             branch: None,
             // One lstat for a dialog the user just asked for.
             link: fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()).then_some(Link::Symlink),
@@ -272,7 +327,39 @@ impl Properties {
     }
 
     fn changed(&self) -> bool {
-        self.name_changed() || self.permissions_changed()
+        self.name_changed() || self.permissions_changed() || self.style_changed()
+    }
+
+    /// The style the Customize tab shows.
+    fn chosen_style(&self) -> FolderStyle {
+        FolderStyle { color: self.color, emblem: Emblem::from_input(&self.emblem) }
+    }
+
+    fn style_changed(&self) -> bool {
+        self.saved_style.as_ref().is_some_and(|saved| *saved != self.chosen_style())
+    }
+
+    /// The Customize tab's style when it differs from what is on disk.
+    pub fn new_style(&self) -> Option<FolderStyle> {
+        self.style_changed().then(|| self.chosen_style())
+    }
+
+    /// The style went through: it is the saved state now. Finder draws the
+    /// folder's own icon from now on when it has an emblem.
+    pub fn style_applied(&mut self) {
+        let style = self.chosen_style();
+        self.entry.custom_icon = style.emblem.is_some();
+        self.saved_style = Some(style);
+    }
+
+    /// Opens on the Customize tab (for screenshots).
+    #[cfg(all(test, target_os = "macos"))]
+    pub fn show_customize(&mut self) {
+        self.tab = Tab::Customize;
+    }
+
+    fn tabs(&self) -> &'static [&'static str] {
+        if self.saved_style.is_some() { &["General", "Customize"] } else { &["General"] }
     }
 
     /// The boxes' state when they differ from what is on disk.
@@ -312,7 +399,12 @@ impl Properties {
         {
             multi.types = Some(types);
         }
-        if let Ok((info, kind)) = self.info_rx.try_recv() {
+        if let Ok((info, kind, style)) = self.info_rx.try_recv() {
+            if let Some(style) = &style {
+                self.color = style.color;
+                self.emblem = style.emblem.as_ref().map_or_else(String::new, |e| e.text().to_owned());
+            }
+            self.saved_style = style;
             self.saved_permissions = info.as_ref().ok().map(|i| permissions(i.mode));
             self.permissions = self.saved_permissions;
             self.info = Some(info.map_err(|e| e.to_string()));
@@ -346,12 +438,23 @@ impl Properties {
             .with_minimize_button(false)
             .with_maximize_button(false)
             .with_decorations(false);
-        ctx.show_viewport_immediate(self.viewport, builder, |ui, _| {
+        let outcome = ctx.show_viewport_immediate(self.viewport, builder, |ui, _| {
             if ui.input(|i| i.viewport().close_requested()) {
                 return Outcome::Close;
             }
             self.ui(ui, icons)
-        })
+        });
+        if let Some(dialog) = &mut self.color_dialog {
+            match dialog.show(ctx) {
+                color_dialog::Outcome::Keep => {}
+                color_dialog::Outcome::Cancel => self.color_dialog = None,
+                color_dialog::Outcome::Ok(rgb) => {
+                    self.color = Some(FolderColor::from_rgb(rgb));
+                    self.color_dialog = None;
+                }
+            }
+        }
+        outcome
     }
 
     /// Draws the whole window: frame, caption, the General tab, buttons.
@@ -369,8 +472,20 @@ impl Properties {
         let buttons_top = inner.bottom() - 7.0 - BUTTON.y;
         let tab_top = inner.top() + 18.0 + 6.0;
         let page = Rect::from_min_max(pos2(inner.left() + 6.0, tab_top + TAB_HEIGHT), pos2(inner.right() - 6.0, buttons_top - 7.0));
-        tab_page(ui, page, "General");
-        self.general(ui, page, icons);
+        let tabs = self.tabs();
+        let selected = tabs.len().min(self.tab as usize + 1) - 1;
+        let mut pick = tab_page(ui, page, tabs, selected);
+        // Ctrl+Tab and Ctrl+Shift+Tab go to the next and previous tab, like a property sheet.
+        if let Some(back) = ui.input(|i| (i.modifiers.ctrl && i.key_pressed(Key::Tab)).then_some(i.modifiers.shift)) {
+            pick = Some(if back { selected + tabs.len() - 1 } else { selected + 1 } % tabs.len());
+        }
+        if let Some(n) = pick {
+            self.tab = if n == 1 { Tab::Customize } else { Tab::General };
+        }
+        match self.tab {
+            Tab::Customize if tabs.len() > 1 => self.customize(ui, page, icons),
+            _ => self.general(ui, page, icons),
+        }
 
         let changed = self.editable && self.changed();
         let apply = Rect::from_min_size(pos2(inner.right() - 6.0 - BUTTON.x, buttons_top), BUTTON);
@@ -393,7 +508,7 @@ impl Properties {
     fn general(&mut self, ui: &mut Ui, page: Rect, icons: &mut FileIcons) {
         let left = page.left() + 14.0;
         let icon = Rect::from_min_size(pos2(left, page.top() + 12.0), vec2(32.0, 32.0));
-        icons.paint(ui, icon, &self.entry, IconState::Normal);
+        icons.paint_large(ui, icon, &self.entry, IconState::Normal);
         let field = Rect::from_min_max(pos2(page.left() + VALUE_X, icon.center().y - 10.5), pos2(page.right() - 12.0, icon.center().y + 10.5));
         let text_rect = theme::sunken_field(ui.painter(), field);
         let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect.shrink2(vec2(2.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
@@ -455,6 +570,119 @@ impl Properties {
             }
             y += GROUP_BOTTOM;
         }
+    }
+
+    /// The Customize tab: the folder color, the emblem (macOS), a preview
+    /// and Restore Default.
+    fn customize(&mut self, ui: &mut Ui, page: Rect, icons: &mut FileIcons) {
+        let mut y = self.color_group(ui, page, page.top() + 12.0);
+        if folder_style::EMBLEMS {
+            y = self.emblem_group(ui, page, y);
+        }
+        self.preview_group(ui, page, y, icons);
+        let restore = Rect::from_min_size(pos2(page.left() + 14.0, page.bottom() - 12.0 - BUTTON.y), vec2(100.0, BUTTON.y));
+        if theme::push_button(ui, restore, "Restore Default", self.chosen_style() != FolderStyle::default(), false).clicked() {
+            self.color = None;
+            self.emblem.clear();
+        }
+    }
+
+    /// The color swatches and Other...; returns the bottom of the group.
+    fn color_group(&mut self, ui: &mut Ui, page: Rect, mut y: f32) -> f32 {
+        let value_x = page.left() + VALUE_X;
+        row_label(ui, page, y, "Color:");
+        let center = y + ROW_HEIGHT / 2.0;
+        let choices = std::iter::once(None).chain(TagColor::ALL.map(|c| Some(FolderColor::Tag(c))));
+        for (n, choice) in choices.enumerate() {
+            let rect = Rect::from_min_size(pos2(value_x + n as f32 * SWATCH_STEP, center - SWATCH / 2.0), vec2(SWATCH, SWATCH));
+            let response = ui.interact(rect, egui::Id::new(("folder color", n)), Sense::click());
+            swatch(ui, rect, choice, self.color == choice);
+            if response.on_hover_text(choice.map_or("None", |c| c.tag().name())).clicked() {
+                self.color = choice;
+            }
+        }
+        y += ROW_HEIGHT + 4.0;
+        let other = Rect::from_min_size(pos2(value_x, y), BUTTON);
+        if theme::push_button(ui, other, "Other...", true, false).clicked() && self.color_dialog.is_none() {
+            self.color_dialog = Some(ColorDialog::new(self.color.map_or([255, 255, 255], FolderColor::rgb)));
+        }
+        if let Some(color @ FolderColor::Custom(rgb)) = self.color {
+            let rect = Rect::from_min_size(pos2(other.right() + 8.0, other.center().y - SWATCH / 2.0), vec2(SWATCH, SWATCH));
+            swatch(ui, rect, Some(color), true);
+            // Finder sees our own colors as its nearest one.
+            let text = if FINDER { format!("{}, Finder: {}", format_hex(rgb), color.tag().name()) } else { format_hex(rgb) };
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            ui.painter().text(pos2(rect.right() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, theme::color::text());
+        }
+        y + BUTTON.y + GROUP_BOTTOM
+    }
+
+    /// The emblem box and its hints; returns the bottom of the group.
+    fn emblem_group(&mut self, ui: &mut Ui, page: Rect, mut y: f32) -> f32 {
+        let value_x = page.left() + VALUE_X;
+        etched_line(ui, page, y);
+        y += GROUP_TOP;
+        row_label(ui, page, y, "Emblem:");
+        let field = Rect::from_min_max(pos2(value_x, y + ROW_HEIGHT / 2.0 - 10.5), pos2(page.right() - 12.0, y + ROW_HEIGHT / 2.0 + 10.5));
+        let text_rect = theme::sunken_field(ui.painter(), field);
+        let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect.shrink2(vec2(2.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
+        edit.add(TextEdit::singleline(&mut self.emblem).id(egui::Id::new("folder emblem")).frame(egui::Frame::NONE).desired_width(f32::INFINITY));
+        y += ROW_HEIGHT + 2.0;
+
+        let style = self.chosen_style();
+        let hint = match &style.emblem {
+            Some(Emblem::Symbol(name)) if !self.preview(ui, &style).known_symbol => (format!("This Mac has no SF Symbol called \"{name}\"."), theme::color::error_text()),
+            _ => ("or the name of an SF Symbol, like star.fill.".to_owned(), theme::color::text()),
+        };
+        for (text, color) in [("An emoji (Control-Command-Space),".to_owned(), theme::color::text()), hint] {
+            let row = Rect::from_min_max(pos2(value_x, y), pos2(page.right() - 12.0, y + ROW_HEIGHT - 4.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)), |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate());
+            });
+            y += ROW_HEIGHT - 4.0;
+        }
+        y + GROUP_BOTTOM
+    }
+
+    /// Macsplorer's Large Icons drawing of the chosen style, and Finder's.
+    fn preview_group(&mut self, ui: &mut Ui, page: Rect, mut y: f32, icons: &mut FileIcons) {
+        etched_line(ui, page, y);
+        y += GROUP_TOP;
+        row_label(ui, page, y, "Preview:");
+        let style = self.chosen_style();
+        let ours = Rect::from_min_size(pos2(page.left() + VALUE_X + 8.0, y + 3.0), vec2(PREVIEW, PREVIEW));
+        let mut entry = self.entry.clone();
+        entry.custom_icon = style.emblem.is_some();
+        entry.folder_style = Some(style.clone()).filter(FolderStyle::is_customized);
+        icons.paint_large(ui, ours, &entry, IconState::Normal);
+        if !FINDER {
+            return;
+        }
+        let theirs = ours.translate(vec2(PREVIEW + 48.0, 0.0));
+        if let Some(texture) = self.preview(ui, &style).texture.as_ref().map(egui::TextureHandle::id) {
+            ui.painter().image(texture, theirs, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        for (icon, caption) in [(ours, "Macsplorer"), (theirs, "Finder")] {
+            ui.painter().text(pos2(icon.center().x, icon.bottom() + 3.0), egui::Align2::CENTER_TOP, caption, font.clone(), theme::color::text());
+        }
+    }
+
+    /// Finder's drawing of `style`, made again when the style changes.
+    fn preview(&mut self, ui: &Ui, style: &FolderStyle) -> &Preview {
+        if self.preview.as_ref().is_none_or(|p| p.style != *style) {
+            let px = (PREVIEW * ui.ctx().pixels_per_point()).round() as usize;
+            #[cfg(target_os = "macos")]
+            let (image, known_symbol) = (
+                native_icon::render_folder_preview(style, px),
+                !matches!(&style.emblem, Some(Emblem::Symbol(name)) if !native_icon::has_symbol(name)),
+            );
+            #[cfg(not(target_os = "macos"))]
+            let (image, known_symbol) = (None::<egui::ColorImage>, { let _ = px; true });
+            let texture = image.map(|img| ui.ctx().load_texture("folder-preview", img, egui::TextureOptions::LINEAR));
+            self.preview = Some(Preview { style: style.clone(), texture, known_symbol });
+        }
+        self.preview.as_ref().expect("just set")
     }
 
     /// The page's groups below the name, top to bottom. Their row counts
@@ -528,25 +756,84 @@ fn common_type(entries: &[Entry]) -> String {
     format!("All of type {}", common.unwrap_or_default())
 }
 
-/// A raised tab page with one selected tab joined to its top edge.
-fn tab_page(ui: &Ui, page: Rect, label: &str) {
-    let p = ui.painter();
-    theme::bevel(p, page, Bevel::Raised);
+/// Whether the item gets a Customize tab: a plain folder (not a package or
+/// a selection) that can be changed, where folder styles are stored.
+fn customizable(entry: &Entry, editable: bool) -> bool {
+    folder_style::SUPPORTED && editable && entry.kind == RenameKind::Folder
+}
+
+/// A raised tab page with its tabs along the top edge. The selected tab is
+/// joined to the page and stands out two pixels further up and to each side
+/// than the others, like the comctl32 tab control. Returns a clicked tab.
+fn tab_page(ui: &Ui, page: Rect, labels: &[&str], selected: usize) -> Option<usize> {
+    theme::bevel(ui.painter(), page, Bevel::Raised);
     let font = egui::TextStyle::Body.resolve(ui.style());
-    let text_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme::color::text()).size().x);
-    let tab = Rect::from_min_max(pos2(page.left(), page.top() - TAB_HEIGHT), pos2(page.left() + text_w + 16.0, page.top() + 1.0));
+    let mut x = page.left() + 2.0;
+    let mut tabs = Vec::new();
+    for label in labels {
+        let text_w = ui.fonts_mut(|f| f.layout_no_wrap((*label).to_owned(), font.clone(), theme::color::text()).size().x);
+        tabs.push(Rect::from_min_max(pos2(x, page.top() - TAB_HEIGHT + 2.0), pos2(x + text_w + 12.0, page.top() + 1.0)));
+        x += text_w + 12.0;
+    }
+    let mut clicked = None;
+    for (n, (tab, label)) in tabs.iter().zip(labels).enumerate() {
+        let tab = if n == selected { tab.expand2(vec2(2.0, 0.0)).with_min_y(tab.top() - 2.0) } else { *tab };
+        if ui.interact(tab, egui::Id::new(("property tab", n)), Sense::click()).clicked() {
+            clicked = Some(n);
+        }
+        if n != selected {
+            paint_tab(ui, tab, page.top(), label, false);
+        }
+    }
+    if let Some(tab) = tabs.get(selected) {
+        paint_tab(ui, tab.expand2(vec2(2.0, 0.0)).with_min_y(tab.top() - 2.0), page.top(), labels[selected], true);
+    }
+    clicked
+}
+
+/// One tab above a page whose top edge is at `page_top`; a `joined` tab
+/// opens the page's edge under it.
+fn paint_tab(ui: &Ui, tab: Rect, page_top: f32, label: &str, joined: bool) {
+    let p = ui.painter();
     let (l, t, r) = (tab.left() + 0.5, tab.top() + 0.5, tab.right() - 0.5);
+    let bottom = if joined { page_top + 1.0 } else { page_top };
     let line = |a: egui::Pos2, b: egui::Pos2, c| p.line_segment([a, b], egui::Stroke::new(1.0, c));
-    // Open the page's top edge under the tab, then draw the tab's sides.
-    p.rect_filled(Rect::from_min_max(pos2(tab.left() + 1.0, page.top()), pos2(tab.right() - 2.0, page.top() + 2.0)), 0.0, theme::color::face());
-    p.rect_filled(Rect::from_min_max(pos2(tab.left() + 1.0, tab.top() + 1.0), pos2(tab.right() - 2.0, page.top())), 0.0, theme::color::face());
-    line(pos2(l, page.top() + 1.0), pos2(l, t + 2.0), theme::color::highlight());
+    if joined {
+        p.rect_filled(Rect::from_min_max(pos2(tab.left() + 1.0, page_top), pos2(tab.right() - 2.0, page_top + 2.0)), 0.0, theme::color::face());
+    }
+    p.rect_filled(Rect::from_min_max(pos2(tab.left() + 1.0, tab.top() + 1.0), pos2(tab.right() - 2.0, page_top)), 0.0, theme::color::face());
+    line(pos2(l, bottom), pos2(l, t + 2.0), theme::color::highlight());
     line(pos2(l + 1.0, t + 1.0), pos2(l + 1.0, t + 1.0) + vec2(0.5, 0.0), theme::color::highlight());
     line(pos2(l + 2.0, t), pos2(r - 2.0, t), theme::color::highlight());
-    line(pos2(r - 1.0, t + 2.0), pos2(r - 1.0, page.top() + 1.0), theme::color::shadow());
-    line(pos2(r, t + 2.0), pos2(r, page.top() + 1.0), theme::color::dark());
+    line(pos2(r - 1.0, t + 2.0), pos2(r - 1.0, bottom), theme::color::shadow());
+    line(pos2(r, t + 2.0), pos2(r, bottom), theme::color::dark());
     line(pos2(r - 1.0, t + 1.0), pos2(r - 1.0, t + 1.0) + vec2(0.5, 0.0), theme::color::dark());
-    p.text(pos2(tab.center().x, tab.center().y - 1.0), egui::Align2::CENTER_CENTER, label, font, theme::color::text());
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let center = pos2(tab.center().x, (tab.top() + page_top) / 2.0 - if joined { 0.5 } else { 0.0 });
+    p.text(center, egui::Align2::CENTER_CENTER, label, font, theme::color::text());
+}
+
+/// A color swatch button: raised, or pushed in when `chosen`, with the color
+/// in a framed square; "None" is a white square with a diagonal line.
+fn swatch(ui: &Ui, rect: Rect, color: Option<FolderColor>, chosen: bool) {
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, if chosen { theme::color::checked_face() } else { theme::color::face() });
+    theme::bevel(p, rect, if chosen { Bevel::Sunken } else { Bevel::Raised });
+    let inner = Rect::from_center_size(rect.center() + if chosen { vec2(1.0, 1.0) } else { vec2(0.0, 0.0) }, vec2(12.0, 12.0));
+    p.rect_filled(inner, 0.0, color.map_or(egui::Color32::WHITE, |c| {
+        let [r, g, b] = c.rgb();
+        egui::Color32::from_rgb(r, g, b)
+    }));
+    if color.is_none() {
+        p.line_segment([inner.left_bottom() + vec2(1.0, -1.0), inner.right_top() + vec2(-1.0, 1.0)], egui::Stroke::new(1.0, theme::color::shadow()));
+    }
+    p.rect_stroke(inner, 0.0, egui::Stroke::new(1.0, egui::Color32::BLACK), egui::StrokeKind::Inside);
+}
+
+/// A row's label at the page's left edge.
+fn row_label(ui: &Ui, page: Rect, y: f32, text: &str) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    ui.painter().text(pos2(page.left() + 14.0, y + ROW_HEIGHT / 2.0), egui::Align2::LEFT_CENTER, text, font, theme::color::text());
 }
 
 /// The etched groove between groups of rows.

@@ -92,7 +92,7 @@ impl ConflictDialog {
 
         let top = inner.top() + 18.0 + 12.0;
         if let Some(folder) = &self.ask.folder {
-            icons.paint(ui, Rect::from_min_size(pos2(inner.left() + 14.0, top), vec2(32.0, 32.0)), folder, IconState::Normal);
+            icons.paint_large(ui, Rect::from_min_size(pos2(inner.left() + 14.0, top), vec2(32.0, 32.0)), folder, IconState::Normal);
         }
         let left = inner.left() + TEXT_X;
         let right = inner.right() - 14.0;
@@ -164,7 +164,7 @@ fn paragraph(ui: &Ui, left: f32, right: f32, y: f32, text: &str) -> f32 {
 fn item(ui: &Ui, icons: &mut FileIcons, left: f32, y: f32, entry: Option<&Entry>) -> f32 {
     let icon = Rect::from_min_size(pos2(left, y), vec2(32.0, 32.0));
     let Some(entry) = entry else { return icon.bottom() };
-    icons.paint(ui, icon, entry, IconState::Normal);
+    icons.paint_large(ui, icon, entry, IconState::Normal);
     let font = egui::TextStyle::Body.resolve(ui.style());
     let text_x = icon.right() + 12.0;
     let mut lines = Vec::new();

@@ -19,6 +19,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Rect, Shape, TextureHandle, TextureOptions, Ui};
 use egui::epaint::ColorMode;
 use egui::layers::ShapeIdx;
+use macsplorer_core::folder_style::{FolderColor, FolderStyle};
 use macsplorer_core::listing::{Entry, is_hidden_name};
 use macsplorer_core::places::{KnownFolder, known_folder};
 use macsplorer_core::rename::RenameKind;
@@ -96,6 +97,8 @@ pub struct FileIcons {
     seti: Option<SetiTheme>,
     /// By path and pixel size.
     native: HashMap<(PathBuf, usize), Option<Native>>,
+    /// Customized folders, by style, whether the emblem shows, and pixel size.
+    styled: HashMap<(FolderStyle, bool, usize), Option<Native>>,
     /// Tintable SF Symbol masks for the known folders, by rendered pixel size.
     symbols: HashMap<(KnownFolder, usize), Option<TextureHandle>>,
     /// The 16 px icons of the apps in the "Open With" menu, by path and pixel size.
@@ -112,12 +115,12 @@ impl FileIcons {
         if let Err(e) = &seti {
             eprintln!("macsplorer: Seti icon theme unavailable: {e}");
         }
-        Self { seti: seti.ok(), native: HashMap::new(), symbols: HashMap::new(), menu: HashMap::new(), budget: NATIVE_PER_FRAME }
+        Self { seti: seti.ok(), native: HashMap::new(), styled: HashMap::new(), symbols: HashMap::new(), menu: HashMap::new(), budget: NATIVE_PER_FRAME }
     }
 
     /// The selection tint depends on the palette: drop the blended variants.
     pub fn palette_changed(&mut self) {
-        for native in self.native.values_mut().flatten() {
+        for native in self.native.values_mut().chain(self.styled.values_mut()).flatten() {
             native.textures.clear();
         }
     }
@@ -129,7 +132,13 @@ impl FileIcons {
     /// Forgets rendered native icons (an app update can change its icon).
     pub fn clear_native(&mut self) {
         self.native.clear();
+        self.styled.clear();
         self.menu.clear();
+    }
+
+    /// Forgets the rendered icon of `path` (its folder style changed).
+    pub fn forget_native(&mut self, path: &Path) {
+        self.native.retain(|(p, _), _| p != path);
     }
 
     /// The Finder icon of the app at `app`, 16 points square, for a menu
@@ -146,7 +155,34 @@ impl FileIcons {
             .map(TextureHandle::id)
     }
 
+    /// A small icon (List, Details, dialogs' rows): a customized folder
+    /// shows its color but not its emblem.
     pub fn paint(&mut self, ui: &Ui, rect: Rect, entry: &Entry, state: IconState) {
+        self.paint_sized(ui, rect, entry, state, false);
+    }
+
+    /// A large icon (Large Icons, Properties): a customized folder shows its
+    /// color and its emblem.
+    pub fn paint_large(&mut self, ui: &Ui, rect: Rect, entry: &Entry, state: IconState) {
+        self.paint_sized(ui, rect, entry, state, true);
+    }
+
+    fn paint_sized(&mut self, ui: &Ui, rect: Rect, entry: &Entry, state: IconState, large: bool) {
+        // A customized folder: on macOS Finder's folder in its color, the
+        // emblem only when large. Pasted custom icons (no emblem, but the
+        // custom icon flag) still take the native icon below.
+        if let Some(style) = entry.folder_style.as_ref().filter(|s| entry.kind == RenameKind::Folder && (s.emblem.is_some() || !entry.custom_icon)) {
+            let show_emblem = large && style.emblem.is_some();
+            if cfg!(target_os = "macos") && (style.color.is_some() || show_emblem) && self.paint_styled(ui, rect, style, show_emblem, state) {
+                return;
+            }
+            // Linux, or while Finder's drawing isn't ready: the folder in its color.
+            match style.color.map(FolderColor::rgb) {
+                Some([r, g, b]) => blended(ui, state, || theme::paint_colored_folder(ui.painter(), rect, Color32::from_rgb(r, g, b))),
+                None => blended(ui, state, || self.paint_vector(ui, rect, entry)),
+            }
+            return;
+        }
         let wants_native = entry.kind == RenameKind::Package || entry.custom_icon;
         if wants_native && self.paint_native(ui, rect, entry, state) {
             return;
@@ -217,19 +253,42 @@ impl FileIcons {
             self.native.insert(key.clone(), native);
         }
         let Some(Some(native)) = self.native.get_mut(&key) else { return false };
-        let tex = native.textures.entry(state).or_insert_with(|| {
-            let mut img = (*native.image).clone();
-            if let Some((toward, t)) = state.blend() {
-                for p in &mut img.pixels {
-                    *p = blend_color(*p, toward, t);
-                }
-            }
-            ui.ctx().load_texture(format!("icon:{}:{px}:{state:?}", entry.path.display()), img, TextureOptions::LINEAR)
-        });
-        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+        draw_native(ui, rect, native, &format!("icon:{}:{px}", entry.path.display()), state);
         true
     }
+
+    /// Paints Finder's folder for `style`, like [`paint_native`](Self::paint_native).
+    fn paint_styled(&mut self, ui: &Ui, rect: Rect, style: &FolderStyle, show_emblem: bool, state: IconState) -> bool {
+        let px = (rect.width() * ui.ctx().pixels_per_point()).round().max(16.0) as usize;
+        let key = (style.clone(), show_emblem, px);
+        if !self.styled.contains_key(&key) {
+            if self.budget == 0 {
+                ui.ctx().request_repaint();
+                return false;
+            }
+            self.budget -= 1;
+            let native = native_icon::render_folder(style, show_emblem, px).map(|img| Native { image: Arc::new(img), textures: HashMap::new() });
+            self.styled.insert(key.clone(), native);
+        }
+        let Some(Some(native)) = self.styled.get_mut(&key) else { return false };
+        draw_native(ui, rect, native, &format!("folder:{style:?}:{show_emblem}:{px}"), state);
+        true
+    }
+}
+
+/// Paints a rendered icon in `state`, making the blended texture on first use.
+fn draw_native(ui: &Ui, rect: Rect, native: &mut Native, name: &str, state: IconState) {
+    let tex = native.textures.entry(state).or_insert_with(|| {
+        let mut img = (*native.image).clone();
+        if let Some((toward, t)) = state.blend() {
+            for p in &mut img.pixels {
+                *p = blend_color(*p, toward, t);
+            }
+        }
+        ui.ctx().load_texture(format!("{name}:{state:?}"), img, TextureOptions::LINEAR)
+    });
+    let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
 }
 
 /// Draws the Git branch glyph around `center`, as vector shapes so it needs

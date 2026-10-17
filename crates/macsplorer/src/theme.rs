@@ -990,9 +990,22 @@ fn undo_arrow(p: &Painter, r: Rect, shift: Vec2, color: Color32) {
 }
 
 fn folder(p: &Painter, r: Rect, enabled: bool) {
+    let (fill, dark, light) = if enabled { (FOLDER, FOLDER_DARK, FOLDER_LIGHT) } else { (face(), shadow(), highlight()) };
+    folder_shape(p, r, fill, dark, light);
+}
+
+/// The folder in `fill` instead of yellow (a folder color): the edge and the
+/// highlight are derived from it as the yellow folder's are, about 0.6 of
+/// the fill and 0.6 of the way to white.
+pub fn paint_colored_folder(p: &Painter, r: Rect, fill: Color32) {
+    let dark = Color32::from_rgb((fill.r() as f32 * 0.62) as u8, (fill.g() as f32 * 0.62) as u8, (fill.b() as f32 * 0.62) as u8);
+    let light = fill.lerp_to_gamma(Color32::WHITE, 0.6);
+    folder_shape(p, r, fill, dark, light);
+}
+
+fn folder_shape(p: &Painter, r: Rect, fill: Color32, dark: Color32, light: Color32) {
     let s = r.width() / 16.0;
     let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s);
-    let (fill, dark, light) = if enabled { (FOLDER, FOLDER_DARK, FOLDER_LIGHT) } else { (face(), shadow(), highlight()) };
     // Tab, then body.
     p.add(egui::Shape::convex_polygon(
         vec![at(1.5, 3.5), at(6.0, 3.5), at(7.5, 5.0), at(7.5, 6.0), at(1.5, 6.0)],

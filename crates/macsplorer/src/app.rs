@@ -1388,6 +1388,20 @@ impl Explorer {
                         }
                     }
                 }
+                if let Some(style) = dialog.new_style() {
+                    match macsplorer_core::folder_style::write(dialog.path(), &style) {
+                        Ok(()) => {
+                            self.status = None;
+                            dialog.style_applied();
+                            self.icons.forget_native(dialog.path());
+                            self.reload();
+                        }
+                        Err(e) => {
+                            self.status = Some(format!("Couldn't customize the folder: {e}"));
+                            return true;
+                        }
+                    }
+                }
                 !close
             }
         });
@@ -2693,7 +2707,7 @@ impl Explorer {
                     let galley = icon_label(ui, entry.display_name(settings.show_extensions), &font, color, unfolded);
                     let size = layout::label_size((galley.size().x, galley.size().y), line_height, !unfolded);
                     let cell = IconCell::new(grid.slot(pos), size);
-                    icons.paint(ui, screen(cell.image), entry, IconState::of(selected, focused, entry.hidden || cut.contains(&entry.path)));
+                    icons.paint_large(ui, screen(cell.image), entry, IconState::of(selected, focused, entry.hidden || cut.contains(&entry.path)));
                     if pointer.is_some_and(|p| cell.hit(p)) {
                         hit = Some(pos);
                         on_label = pointer.is_some_and(|p| cell.label.contains(p));
@@ -4529,6 +4543,52 @@ mod screenshot {
         });
     }
 
+    /// A folder of customized folders, next to the fixture: tag colors,
+    /// colors of Macsplorer's own, emblems, and combinations.
+    #[cfg(target_os = "macos")]
+    fn customized_folders() -> PathBuf {
+        use macsplorer_core::folder_style::{Emblem, FolderColor, FolderStyle, TagColor, write};
+        let dir = fixture().parent().unwrap().join("Customized");
+        let _ = fs::remove_dir_all(&dir);
+        let styles = [
+            ("Launch Plans", Some(FolderColor::Tag(TagColor::Red)), Some(Emblem::Emoji("🚀".into()))),
+            ("Recipes", Some(FolderColor::Custom([0, 128, 128])), Some(Emblem::Emoji("🍲".into()))),
+            ("Home", Some(FolderColor::Tag(TagColor::Purple)), Some(Emblem::Symbol("house.fill".into()))),
+            ("Cycling", Some(FolderColor::Custom([255, 128, 192])), Some(Emblem::Symbol("figure.outdoor.cycle".into()))),
+            ("Old Taxes", Some(FolderColor::Custom([128, 64, 0])), None),
+            ("Invoices", Some(FolderColor::Tag(TagColor::Green)), None),
+            ("Notes", None, Some(Emblem::Emoji("📝".into()))),
+            ("Plain", None, None),
+        ];
+        for (name, color, emblem) in styles {
+            fs::create_dir_all(dir.join(name)).unwrap();
+            write(&dir.join(name), &FolderStyle { color, emblem }).unwrap();
+        }
+        dir
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn customized_large_icons() {
+        shoot("customized-large-icons", egui::vec2(900.0, 400.0), |app| {
+            app.navigate(customized_folders());
+            app.finish_listing();
+            app.settings.view = ViewMode::LargeIcons;
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn customized_details() {
+        shoot("customized-details", egui::vec2(900.0, 400.0), |app| {
+            app.navigate(customized_folders());
+            app.finish_listing();
+            app.settings.view = ViewMode::Details;
+        });
+    }
+
     fn select(app: &mut Explorer, names: &[&str]) {
         for name in names {
             let i = app.entries.iter().position(|e| e.name == *name).unwrap();
@@ -5052,6 +5112,11 @@ mod screenshot {
     fn shoot_properties_of(shot: &str, names: &[&str]) {
         let listing = list_dir(&fixture(), false).unwrap();
         let entries: Vec<Entry> = names.iter().map(|n| listing.iter().find(|e| e.path == fixture().join(n)).unwrap().clone()).collect();
+        shoot_properties_dialog(shot, entries, |_| {});
+    }
+
+    /// The dialog for `entries`, with `setup` run on it once it exists.
+    fn shoot_properties_dialog(shot: &str, entries: Vec<Entry>, setup: impl Fn(&mut Properties)) {
         let entry = entries[0].clone();
         let size = if entries.len() > 1 { crate::properties::size_for_multi() } else { crate::properties::size_for(&entry) };
         let mut harness = Harness::builder()
@@ -5063,11 +5128,14 @@ mod screenshot {
                     // Fonts installed now apply from the next frame.
                     let Some(dialog) = dialog else {
                         theme::install(ui.ctx());
-                        *dialog = Some(if entries.len() > 1 {
+                        theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                        let mut new = if entries.len() > 1 {
                             Properties::new_multi(ui.ctx(), entries.clone(), true)
                         } else {
                             Properties::new(ui.ctx(), entry.clone(), true, true)
-                        });
+                        };
+                        setup(&mut new);
+                        *dialog = Some(new);
                         return;
                     };
                     // The harness's panel has a margin; the window has none.
@@ -5096,6 +5164,72 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn properties_folder() {
         shoot_properties("properties-folder", "Projects");
+    }
+
+    /// The Win2000 folder in the folder colors, as Linux draws them: Finder's
+    /// seven and two of our own, at List and Large Icons size.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn colored_folders() {
+        use macsplorer_core::folder_style::TagColor;
+        let colors: Vec<[u8; 3]> = TagColor::ALL.iter().map(|c| c.rgb()).chain([[0, 128, 128], [128, 64, 0]]).collect();
+        let mut harness = Harness::builder().with_size(egui::vec2(40.0 * colors.len() as f32 + 8.0, 64.0)).with_pixels_per_point(2.0).wgpu().build_ui(|ui| {
+            ui.painter().rect_filled(ui.ctx().content_rect(), 0.0, theme::color::window());
+            for (n, [r, g, b]) in colors.iter().copied().enumerate() {
+                let x = 8.0 + 40.0 * n as f32;
+                let fill = egui::Color32::from_rgb(r, g, b);
+                theme::paint_colored_folder(ui.painter(), egui::Rect::from_min_size(egui::pos2(x + 8.0, 6.0), egui::vec2(16.0, 16.0)), fill);
+                theme::paint_colored_folder(ui.painter(), egui::Rect::from_min_size(egui::pos2(x, 26.0), egui::vec2(32.0, 32.0)), fill);
+            }
+        });
+        harness.run();
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("colored-folders.png")).unwrap();
+    }
+
+    /// The Color dialog with Define Custom Colors open, on a teal.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn color_dialog() {
+        let mut harness = Harness::builder().with_size(egui::vec2(470.0, 334.0)).with_pixels_per_point(2.0).wgpu().build_ui_state(
+            |ui, dialog: &mut Option<crate::color_dialog::ColorDialog>| {
+                let Some(dialog) = dialog else {
+                    theme::install(ui.ctx());
+                    theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                    *dialog = Some(crate::color_dialog::ColorDialog::new([0, 128, 160]));
+                    return;
+                };
+                let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                dialog.ui(&mut window);
+            },
+            None,
+        );
+        for _ in 0..5 {
+            harness.run();
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("color-dialog.png")).unwrap();
+    }
+
+    /// The Customize tab of a teal folder with a rocket (Finder: green). The
+    /// folder lives outside the fixture so the window shots don't change.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn properties_customize() {
+        use macsplorer_core::folder_style::{Emblem, FolderColor, FolderStyle};
+        let parent = std::env::temp_dir().join("macsplorer-screenshot").join("Customize");
+        let folder = parent.join("Launch Plans");
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir_all(&folder).unwrap();
+        let style = FolderStyle { color: Some(FolderColor::Custom([0, 128, 128])), emblem: Some(Emblem::Emoji("🚀".into())) };
+        macsplorer_core::folder_style::write(&folder, &style).unwrap();
+        let entry = list_dir(&parent, false).unwrap().remove(0);
+        shoot_properties_dialog("properties-customize", vec![entry], Properties::show_customize);
     }
 
     #[test]

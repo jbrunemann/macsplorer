@@ -67,6 +67,7 @@ mod tests {
             comment: None,
             hidden: false,
             custom_icon: false,
+            folder_style: None,
             branch: None,
             link,
         }

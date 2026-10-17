@@ -314,6 +314,26 @@ If you select several items first, the window shows them together: their combine
 
 <img src="images/properties-selection.png" alt="Properties of three selected items" width="380">
 
+### Customizing a folder
+
+A folder's Properties window has a second tab, **Customize**, where you give the folder a color and a picture, the same way Finder's **Customize Folder** does. Finder shows the changes too, and folders you customized in Finder show up here with their settings.
+
+<img src="images/properties-customize.png" alt="The Customize tab of a folder's Properties" width="380">
+
+- **Color**: click a color square, or the white one with the line through it for no color. These are Finder's colors: the color is a Finder tag, so the folder also shows that tag in Finder.
+- **Other...** opens the Color window for any other color: pick one of the basic colors, or click **Define Custom Colors >>** to pick from the whole range or type the numbers. **Add to Custom Colors** keeps a color in the boxes below for next time. Finder only knows its own seven colors, so Finder shows the one that looks most like yours. The line next to the button says which. If you change the color in Finder later, Finder's color is used from then on.
+- **Emblem**: the picture drawn on the folder. Type an emoji (press Control-Command-Space to pick one), or the name of one of Apple's SF Symbols, such as `star.fill` or `house.fill`. Leave it empty for a plain folder.
+- **Preview** shows the folder as Macsplorer and as Finder will draw it.
+- **Restore Default** takes the color and the emblem off.
+
+<img src="images/color-dialog.png" alt="The Color window with Define Custom Colors open" width="470">
+
+Click **OK** or **Apply** to save. A colored folder shows its color in the list. **Large Icons** also shows the emblem; **List** and **Details** show only the color, and the **Folders** pane always shows the plain yellow folder. The tab isn't there for apps or other packages.
+
+On Linux the tab has colors only: no emblem, and no Finder. A colored folder is the yellow folder in its color. The color is kept with the folder itself, so it stays when you move or copy the folder within Macsplorer, but some disks (USB sticks formatted for Windows, some network drives) can't keep it; Macsplorer then says so in the status bar.
+
+<img src="images/customized-large-icons.png" alt="Customized folders in Large Icons" width="900">
+
 ## 11. Finding files
 
 Type in the **Search this folder** box at the top right. The list shows only the items in the current folder whose names contain what you typed, upper or lower case doesn't matter. Clear the box to see everything again.

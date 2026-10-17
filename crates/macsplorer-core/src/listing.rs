@@ -45,6 +45,8 @@ pub struct Entry {
     pub hidden: bool,
     /// Finder shows its own icon for this item (`kHasCustomIcon`).
     pub custom_icon: bool,
+    /// A folder's color and emblem (`folder_style`), when it has either.
+    pub folder_style: Option<crate::folder_style::FolderStyle>,
     /// For a folder that is the top of a Git working tree (see
     /// [`is_git_repo`]): its branch, as `git::branch_label` writes it.
     pub branch: Option<String>,
@@ -189,6 +191,7 @@ fn read_entry(path: PathBuf, name: String, own: &fs::Metadata, branches: bool) -
         group,
         comment,
         custom_icon: flags & K_HAS_CUSTOM_ICON != 0,
+        folder_style: folder_style(&path, kind, flags),
         branch: (branches && kind == RenameKind::Folder && is_git_repo(&path)).then(|| crate::git::branch_label(&path)).flatten(),
         link,
         hidden: is_hidden_name(&name),
@@ -196,6 +199,15 @@ fn read_entry(path: PathBuf, name: String, own: &fs::Metadata, branches: bool) -
         path,
         kind,
     }
+}
+
+/// A customized folder's style, when it has one.
+fn folder_style(path: &Path, kind: RenameKind, flags: u16) -> Option<crate::folder_style::FolderStyle> {
+    use crate::folder_style::{FolderStyle, may_be_customized, read};
+    if kind != RenameKind::Folder || !may_be_customized(flags) {
+        return None;
+    }
+    Some(read(path)).filter(FolderStyle::is_customized)
 }
 
 /// `kHasCustomIcon` in the Finder flags: Finder shows the item's own icon.
@@ -294,67 +306,25 @@ fn cached(cache: &OnceLock<Mutex<HashMap<u32, String>>>, id: u32, look_up: impl 
     map.entry(id).or_insert_with(|| look_up().unwrap_or_else(|| id.to_string())).clone()
 }
 
-/// Reads an extended attribute, `None` if it isn't there.
-#[cfg(unix)]
-fn read_xattr(path: &Path, name: &std::ffi::CStr) -> Option<Vec<u8>> {
-    use std::os::unix::ffi::OsStrExt;
-    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut buf = vec![0u8; 4096];
-    // SAFETY: valid NUL-terminated path and name, and a buffer of buf.len() bytes.
-    #[cfg(target_os = "macos")]
-    let n = unsafe { libc::getxattr(cpath.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
-    // SAFETY: as above.
-    #[cfg(target_os = "linux")]
-    let n = unsafe { libc::getxattr(cpath.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
-    let n = usize::try_from(n).ok()?;
-    buf.truncate(n);
-    Some(buf)
-}
-
 /// Finder's comment: the `kMDItemFinderComment` attribute, a binary plist
 /// holding one string. Finder keeps the same text in `.DS_Store`.
 #[cfg(target_os = "macos")]
 pub fn comment(path: &Path) -> Option<String> {
-    let data = read_xattr(path, c"com.apple.metadata:kMDItemFinderComment")?;
+    let data = crate::xattr::read(path, c"com.apple.metadata:kMDItemFinderComment")?;
     plist_string(&data).filter(|s| !s.is_empty())
 }
 
 /// The freedesktop.org comment attribute, which Dolphin and Nautilus edit.
 #[cfg(target_os = "linux")]
 pub fn comment(path: &Path) -> Option<String> {
-    let data = read_xattr(path, c"user.xdg.comment")?;
+    let data = crate::xattr::read(path, c"user.xdg.comment")?;
     Some(String::from_utf8_lossy(&data).into_owned()).filter(|s| !s.is_empty())
 }
 
 /// The string in a binary plist whose top object is one string.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn plist_string(data: &[u8]) -> Option<String> {
-    if data.len() < 8 + 32 || &data[..8] != b"bplist00" {
-        return None;
-    }
-    let trailer = &data[data.len() - 32..];
-    let offset_size = trailer[6] as usize;
-    let top = u64::from_be_bytes(trailer[16..24].try_into().ok()?) as usize;
-    let table = u64::from_be_bytes(trailer[24..32].try_into().ok()?) as usize;
-    let entry = data.get(table + top * offset_size..table + (top + 1) * offset_size)?;
-    let at = entry.iter().fold(0usize, |n, &b| n << 8 | b as usize);
-    let marker = *data.get(at)?;
-    let (mut len, mut start) = ((marker & 0x0f) as usize, at + 1);
-    if len == 0x0f {
-        // The length follows as an integer object: 0x1n, then 2^n bytes.
-        let int = *data.get(start)?;
-        let bytes = 1usize << (int & 0x0f);
-        len = data.get(start + 1..start + 1 + bytes)?.iter().fold(0usize, |n, &b| n << 8 | b as usize);
-        start += 1 + bytes;
-    }
-    match marker >> 4 {
-        0x5 => data.get(start..start + len).map(|b| String::from_utf8_lossy(b).into_owned()),
-        0x6 => {
-            let units: Vec<u16> = data.get(start..start + 2 * len)?.as_chunks::<2>().0.iter().map(|&c| u16::from_be_bytes(c)).collect();
-            Some(String::from_utf16_lossy(&units))
-        }
-        _ => None,
-    }
+    crate::bplist::strings(data).filter(|s| s.len() == 1)?.pop()
 }
 
 pub fn is_package_name(name: &str) -> bool {
@@ -518,6 +488,7 @@ mod tests {
             comment: None,
             hidden: false,
             custom_icon: false,
+            folder_style: None,
             branch: None,
             link: None,
         }
