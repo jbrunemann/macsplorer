@@ -480,4 +480,4 @@ Check that the search box is empty, then turn on **View › Hidden files and fol
 Both need Git to be installed on your Mac. Macsplorer looks for it when it starts, so if you install Git while Macsplorer is open, close and reopen it. If you have Git and they still don't show, [Git repositories](#git-repositories) explains when they appear. After changes made by other programs, press ⌘R to bring the summary up to date.
 
 **Which version do I have?**
-Choose **Help › About Macsplorer**. A small window shows the app icon, the version and the font the text is set in. When the font comes from a file, its location is a link: click it and the window closes and the font's folder opens with the file selected. Press OK, Return or Escape to close the window.
+Choose **Help › About Macsplorer**. A small window shows the app icon, the version, the locale (the region that dates and numbers follow, and the language names are sorted by) and the font the text is set in. When the font comes from a file, its location is a link: click it and the window closes and the font's folder opens with the file selected. Press OK, Return or Escape to close the window.

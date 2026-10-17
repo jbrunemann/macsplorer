@@ -5058,6 +5058,7 @@ mod screenshot {
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
     fn about_dialog() {
+        crate::locale::install();
         let mut harness = Harness::builder().with_size(crate::about_dialog::SIZE).with_pixels_per_point(2.0).wgpu().build_ui_state(
             |ui, state: &mut (AboutDialog, bool)| {
                 if !state.1 {

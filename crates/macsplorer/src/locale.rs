@@ -12,11 +12,26 @@ use chrono::{DateTime, Local};
 #[cfg(unix)]
 use macsplorer_core::properties::{RelativeDay, relative_day};
 
+/// The locale in use, for the About box: the identifier dates and numbers
+/// follow, and the collation names sort by.
+#[cfg(unix)]
+static SUMMARY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// "en_DE (sorting: en)"; blank before `install` and on other systems.
+pub fn summary() -> String {
+    #[cfg(unix)]
+    return SUMMARY.get().cloned().unwrap_or_default();
+    #[cfg(not(unix))]
+    String::new()
+}
+
 /// Reads the number separators and the sort order. Call once at startup,
 /// before any thread starts (Linux's `setlocale` isn't thread-safe).
 #[cfg(unix)]
 pub fn install() {
-    macsplorer_core::natural::set_collation_locale(&imp::collation());
+    let collation = imp::collation();
+    let _ = SUMMARY.set(format!("{} (sorting: {})", imp::identifier(), if collation.is_empty() { "root" } else { &collation }));
+    macsplorer_core::natural::set_collation_locale(&collation);
     let (group, decimal) = imp::separators();
     // Narrow no-break spaces (French and others) are missing from Tahoma.
     macsplorer_core::listing::set_number_format(&group.replace('\u{202f}', "\u{a0}"), &decimal);
@@ -88,6 +103,11 @@ mod imp {
     /// List sort order chosen in System Settings > Language & Region.
     pub fn collation() -> String {
         NSLocale::currentLocale().collatorIdentifier().to_string()
+    }
+
+    /// The locale identifier, like "en_DE" (language and region).
+    pub fn identifier() -> String {
+        NSLocale::currentLocale().localeIdentifier().to_string()
     }
 
     pub fn separators() -> (String, String) {
@@ -180,6 +200,16 @@ mod imp {
         unsafe {
             let name = libc::setlocale(libc::LC_COLLATE, c"".as_ptr());
             if name.is_null() { String::new() } else { CStr::from_ptr(name).to_string_lossy().into_owned() }
+        }
+    }
+
+    /// `LC_TIME` from the environment, like "de_DE.UTF-8".
+    pub fn identifier() -> String {
+        // SAFETY: called at startup before other threads; the returned
+        // string stays valid until the next setlocale.
+        unsafe {
+            let name = libc::setlocale(libc::LC_TIME, c"".as_ptr());
+            if name.is_null() { "C".into() } else { CStr::from_ptr(name).to_string_lossy().into_owned() }
         }
     }
 

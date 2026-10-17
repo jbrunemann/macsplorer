@@ -7,9 +7,10 @@ use std::path::PathBuf;
 use eframe::egui;
 use egui::{Align, Align2, Key, Layout, Rect, Sense, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
+use crate::locale;
 use crate::theme::{self, Bevel};
 
-pub const SIZE: egui::Vec2 = vec2(380.0, 272.0);
+pub const SIZE: egui::Vec2 = vec2(380.0, 292.0);
 const FRAME: f32 = 4.0;
 const BUTTON: egui::Vec2 = vec2(75.0, 23.0);
 const TITLE: &str = "About Macsplorer";
@@ -78,7 +79,10 @@ impl AboutDialog {
         ui.painter().galley(pos2(left, blurb_y), galley, color);
         let galley = ui.fonts_mut(|f| f.layout("Licensed under the MIT License.".to_owned(), font.clone(), color, right - left));
         ui.painter().galley(pos2(left, blurb_y + blurb_height + 6.0), galley, color);
-        let font_y = blurb_y + blurb_height + 6.0 + 20.0;
+        let locale_y = blurb_y + blurb_height + 6.0 + 20.0;
+        let galley = ui.fonts_mut(|f| f.layout(format!("Locale: {}", locale::summary()), font.clone(), color, right - left));
+        ui.painter().galley(pos2(left, locale_y), galley, color);
+        let font_y = locale_y + 20.0;
         let font_info = theme::ui_font();
         let galley = ui.fonts_mut(|f| f.layout(format!("Font: {}", font_info.label), font.clone(), color, right - left));
         let label_height = galley.size().y;
