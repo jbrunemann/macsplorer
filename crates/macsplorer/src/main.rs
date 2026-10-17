@@ -12,7 +12,6 @@ mod item_drag;
 mod locale;
 mod native_drag;
 mod native_icon;
-mod network;
 mod open_with;
 mod open_with_dialog;
 mod pasteboard;

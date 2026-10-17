@@ -1,6 +1,5 @@
 //! Windows 2000's "Copying..." and "Moving..." dialog for a paste, in its
-//! own borderless window (also "Sending..." for a LocalSend transfer, see
-//! `network`): the flying-paper animation, the item and where it
+//! own borderless window: the flying-paper animation, the item and where it
 //! goes, the progress bar, the time left and Cancel. When it shows and
 //! closes is traced (`macsplorer_core::copy_progress`); the layout and
 //! wording are Windows 2000's from memory, and the animation is drawn with
@@ -13,7 +12,7 @@ use eframe::egui;
 use egui::{Key, Rect, Sense, Ui, pos2, vec2};
 
 use macsplorer_core::copy_progress::{DialogClock, Phase};
-use macsplorer_core::fileops::Progress;
+use macsplorer_core::fileops::{Progress, ProgressView};
 
 use crate::theme::{self, Bevel, Icon};
 
@@ -28,55 +27,11 @@ const FRAME_TIME: f64 = 1.0 / 15.0;
 /// Seconds a sheet of paper takes from one folder to the other.
 const FLIGHT: f64 = 1.2;
 
-/// What the dialog shows of the work going on.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Snapshot {
-    pub done: u64,
-    /// 0 while the work is still being counted.
-    pub total: u64,
-    /// The item and where it goes, one line each.
-    pub lines: [String; 2],
-}
-
-/// Work the dialog can follow and cancel: a paste's [`Progress`], or a send.
-pub trait Tracked: Send + Sync {
-    fn snapshot(&self) -> Snapshot;
-    fn cancel(&self);
-    fn is_cancelled(&self) -> bool;
-}
-
-impl Tracked for Progress {
-    fn snapshot(&self) -> Snapshot {
-        let view = self.view();
-        let lines = match &view.item {
-            Some((src, dir)) => [label(src), format!("From '{}' to '{}'", src.parent().map(label).unwrap_or_default(), label(dir))],
-            None => Default::default(),
-        };
-        Snapshot { done: view.done, total: view.total, lines }
-    }
-
-    fn cancel(&self) {
-        Progress::cancel(self)
-    }
-
-    fn is_cancelled(&self) -> bool {
-        Progress::is_cancelled(self)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Copy,
-    Move,
-    /// To a device on the network: the paper flies to a computer.
-    Send,
-}
-
 pub struct ProgressDialog {
-    /// Matches the paste's `OpDone`, or the send's.
+    /// Matches the paste's `OpDone`.
     pub id: u64,
-    pub progress: Arc<dyn Tracked>,
-    kind: Kind,
+    pub progress: Arc<Progress>,
+    moving: bool,
     clock: DialogClock,
     /// The paste worker is done; the dialog closes when the clock allows.
     pub finished: bool,
@@ -84,9 +39,8 @@ pub struct ProgressDialog {
 }
 
 impl ProgressDialog {
-    pub fn new(id: u64, progress: Arc<dyn Tracked>, kind: Kind) -> Self {
-        let viewport = egui::ViewportId::from_hash_of(("progress", kind == Kind::Send, id));
-        Self { id, progress, kind, clock: DialogClock::default(), finished: false, viewport }
+    pub fn new(id: u64, progress: Arc<Progress>, moving: bool) -> Self {
+        Self { id, progress, moving, clock: DialogClock::default(), finished: false, viewport: egui::ViewportId::from_hash_of(("progress", id)) }
     }
 
     pub fn size() -> egui::Vec2 {
@@ -106,7 +60,7 @@ impl ProgressDialog {
             }
             Phase::Shown => {}
         }
-        let title = title(self.kind);
+        let title = title(self.moving);
         let builder = egui::ViewportBuilder::default()
             .with_title(title)
             .with_inner_size(Self::size())
@@ -114,12 +68,12 @@ impl ProgressDialog {
             .with_minimize_button(false)
             .with_maximize_button(false)
             .with_decorations(false);
-        let view = self.progress.snapshot();
+        let view = self.progress.view();
         let time_left = self.clock.time_left(view.done, view.total).to_owned();
         let cancelled = self.progress.is_cancelled();
         let cancel = ctx.show_viewport_immediate(self.viewport, builder, |ui, _| {
             let closed = ui.input(|i| i.viewport().close_requested());
-            draw(ui, title, self.kind, &view, &time_left, now, !cancelled && !self.finished) || closed
+            draw(ui, title, &view, &time_left, now, !cancelled && !self.finished) || closed
         });
         if cancel {
             self.progress.cancel();
@@ -129,17 +83,13 @@ impl ProgressDialog {
     }
 }
 
-fn title(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Copy => "Copying...",
-        Kind::Move => "Moving...",
-        Kind::Send => "Sending...",
-    }
+fn title(moving: bool) -> &'static str {
+    if moving { "Moving..." } else { "Copying..." }
 }
 
 /// Draws the whole window. Returns true when Cancel was clicked or Escape
 /// pressed.
-pub fn draw(ui: &mut Ui, title: &str, kind: Kind, view: &Snapshot, time_left: &str, now: f64, can_cancel: bool) -> bool {
+pub fn draw(ui: &mut Ui, title: &str, view: &ProgressView, time_left: &str, now: f64, can_cancel: bool) -> bool {
     let (outer, _) = ui.allocate_exact_size(vec2(WIDTH, HEIGHT), Sense::hover());
     let p = ui.painter();
     p.rect_filled(outer, 0.0, theme::color::face());
@@ -150,10 +100,14 @@ pub fn draw(ui: &mut Ui, title: &str, kind: Kind, view: &Snapshot, time_left: &s
 
     let (left, right) = (inner.left() + MARGIN, inner.right() - MARGIN);
     let mut y = inner.top() + 18.0 + 8.0;
-    animation(ui, Rect::from_min_size(pos2(left, y), ANIMATION), kind, now);
+    animation(ui, Rect::from_min_size(pos2(left, y), ANIMATION), now);
     y += ANIMATION.y + 6.0;
-    for line in &view.lines {
-        text_line(ui, pos2(left, y), right - left, line);
+    let (name, from) = match &view.item {
+        Some((src, dir)) => (label(src), format!("From '{}' to '{}'", src.parent().map(label).unwrap_or_default(), label(dir))),
+        None => (String::new(), String::new()),
+    };
+    for line in [name, from] {
+        text_line(ui, pos2(left, y), right - left, &line);
         y += 15.0;
     }
     y += 6.0;
@@ -205,15 +159,14 @@ fn progress_bar(ui: &Ui, rect: Rect, fraction: f32) {
     }
 }
 
-/// Paper flying from the folder on the left to the one on the right, or to
-/// a computer for a send.
-fn animation(ui: &Ui, area: Rect, kind: Kind, now: f64) {
+/// Paper flying from the folder on the left to the one on the right.
+fn animation(ui: &Ui, area: Rect, now: f64) {
     let p = ui.painter();
     let folder = vec2(32.0, 32.0);
     let from = Rect::from_min_size(pos2(area.left() + 4.0, area.bottom() - folder.y - 2.0), folder);
     let to = Rect::from_min_size(pos2(area.right() - folder.x - 4.0, area.bottom() - folder.y - 2.0), folder);
     theme::paint_icon(p, from, Icon::FolderOpen, true);
-    theme::paint_icon(p, to, if kind == Kind::Send { Icon::Computer } else { Icon::Folder }, true);
+    theme::paint_icon(p, to, Icon::Folder, true);
     // The same 15 frames a second as the AVI, so the flight steps like it.
     let t = (((now / FRAME_TIME).floor() * FRAME_TIME) % FLIGHT / FLIGHT) as f32;
     let start = from.center() + vec2(0.0, -8.0);
