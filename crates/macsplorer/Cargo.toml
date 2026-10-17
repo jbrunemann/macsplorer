@@ -10,10 +10,16 @@ eframe = "0.36.2"
 egui_extras = "0.36.2"
 egui-classic-menu = { version = "1.1.0", path = "../egui-classic-menu" }
 macsplorer-core = { version = "1.0.0", path = "../macsplorer-core" }
+localsend-client = { version = "1.4.0", path = "../localsend-client", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[features]
+default = ["localsend-tls"]
+# HTTPS for sending to LocalSend devices; see localsend-client's `tls`.
+localsend-tls = ["localsend-client/tls"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

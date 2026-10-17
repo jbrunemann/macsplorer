@@ -73,10 +73,11 @@ The summary and the **Branch** column need Git to be installed. Without it they 
 
 ### The Folders pane
 
-The tree on the left has two sections:
+The tree on the left has three sections:
 
 - **Favorites**: your home folder, Desktop, Downloads, Documents, Pictures, Music, Movies, Applications and the Trash. Shortcuts (symbolic links) to folders that you keep directly in your home folder are listed too, just above the Trash.
 - **Locations**: your Mac, shown by its own name with a little monitor icon (it is only a label, nothing opens from it), then your Mac's disk, plus any USB sticks, external drives or network disks you have connected.
+- **Network**: **Network Neighborhood**, the phones, tablets and computers nearby that you can send files to. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).
 
 Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds, + and − do the same without moving, Home and End jump to the first and last folder, and Page Up and Page Down move a pageful at a time. Typing the first letters of a folder's name jumps to it, among the folders you can see. When you move with the keys, the folder opens on the right half a second after you stop, so you can run through the tree quickly without waiting for every folder on the way.
 
@@ -200,6 +201,7 @@ The status bar shows how many items you have selected and how much space they ta
 | **Show in Finder** | Opens a Finder window with the item selected. |
 | **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |
 | **Eject** | For disks and drives: safely disconnects them. |
+| **Send To** | Sends the selected items to a phone or computer nearby that runs LocalSend. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby). |
 | **Cut**, **Copy**, **Copy as Path**, **Paste**, **Move Here** | See [Copying, moving and deleting](#8-copying-moving-and-deleting). |
 | **Delete** | Moves the item to the Trash. |
 | **Rename** | See [Renaming](#7-renaming). |
@@ -278,6 +280,28 @@ The pointer shows what will happen: a plus sign for a copy, a little arrow for a
 Drag items out of the window to put them in a Finder window, on the desktop, into another Macsplorer window or another app, or onto the Trash in the Dock. Items dragged from Finder can be dropped on Macsplorer in the same way.
 
 On Linux, files dragged from another file manager such as Nautilus go into the folder you're looking at: moved when they are on the same disk, copied otherwise. This works in an X11 session, or on Wayland when Macsplorer is started with `WINIT_UNIX_BACKEND=x11`. Dragging out of the window isn't there yet; use Copy and Paste inside Macsplorer.
+
+### Sending to a phone or computer nearby
+
+Macsplorer can send files to phones, tablets and computers on the same Wi-Fi or network that run [LocalSend](https://localsend.org), a free app for Android, iPhone, iPad, Windows, Mac and Linux. Nothing has to be set up: open LocalSend on the other device and leave it open.
+
+In the Folders pane, click the **+** next to **Network Neighborhood** under **Network**. Macsplorer looks for LocalSend on your network, which takes a few seconds, and lists every device it finds by the name LocalSend gives it, with the LocalSend logo. Point at a device to see what kind of device it is and its network address. Click **−** to stop looking; right-click Network Neighborhood and choose **Search Again** if a device you just started doesn't show up.
+
+<img src="images/network-neighborhood.png" alt="Network Neighborhood with a phone and a computer found" width="560">
+
+To send, do one of these:
+
+- Drag files or folders onto a device in the Folders pane.
+- Right-click the selected items and choose **Send To**, then the device. The Send To menu starts looking on its own when Network Neighborhood is closed, so a device may take a moment to appear in it.
+- Right-click a device and choose **Send Selected Items**.
+
+<img src="images/send-to-menu.png" alt="Send To in the right-click menu, with two devices" width="560">
+
+The other device asks whether to accept the files, and the "Sending..." window waits until someone answers there. Once they accept, it shows how far it has got; **Cancel** stops it. A folder arrives as a folder with everything in it. The status bar says when the files have arrived, or why they didn't: declined, a device that is busy with another transfer, or one that asks for a PIN (not supported yet; switch the PIN off in LocalSend's settings on that device).
+
+Sending can't be undone: the files are on the other device. Receiving files from other devices isn't there yet.
+
+The first time, your Mac may ask whether Macsplorer may find devices on your local network. Choose **Allow**; if you said no, switch Macsplorer on in **System Settings › Privacy & Security › Local Network**. While Macsplorer is looking, it shows up by your Mac's name in LocalSend's list on other devices, but it can't receive files yet, so sending to it from there fails.
 
 ### Between windows and Finder
 
@@ -489,6 +513,9 @@ Check that the search box is empty, then turn on **View › Hidden files and fol
 
 **The Git summary or the Branch column is missing.**
 Both need Git to be installed on your Mac. Macsplorer looks for it when it starts, so if you install Git while Macsplorer is open, close and reopen it. If you have Git and they still don't show, [Git repositories](#git-repositories) explains when they appear. After changes made by other programs, press ⌘R to bring the summary up to date.
+
+**My phone doesn't show up in Network Neighborhood.**
+Check that LocalSend is open on it and that both are on the same network (guest Wi-Fi networks often keep devices apart). Then right-click Network Neighborhood and choose **Search Again**. If your Mac asked about finding devices on your local network and you said no, see [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).
 
 **Which version do I have?**
 Choose **Help › About Macsplorer**. A small window shows the app icon, the version, the locale (the region that dates and numbers follow, and the language names are sorted by) and the font the text is set in. When the font comes from a file, its location is a link: click it and the window closes and the font's folder opens with the file selected. Press OK, Return or Escape to close the window.

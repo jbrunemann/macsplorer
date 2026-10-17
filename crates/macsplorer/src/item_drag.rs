@@ -7,6 +7,9 @@
 //! (`CLVDragDropManager::OnCreateDragImage` in comctl32 makes it from the
 //! items' icons and labels). The drop target is drawn selected
 //! (`LVIS_DROPHILITED`, `TVIS_DROPHILITED`).
+//!
+//! A target is a folder, or a LocalSend device in the Folders pane
+//! (`network`), which the items are sent to.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,14 +29,24 @@ use crate::theme;
 pub enum Mark {
     Item(PathBuf),
     Tree(NodeKey),
+    /// A device row in the Folders pane, by its `network` key.
+    Device(String),
+}
+
+/// Where a drop goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    Folder(PathBuf),
+    /// A LocalSend device, by its `network` key.
+    Device(String),
 }
 
 /// A part of the window a drag can be over, in screen points, already cut to
 /// what is visible of it.
 pub struct DropZone {
     rect: Rect,
-    /// The folder a drop here goes into; `None` refuses it (a file).
-    dir: Option<PathBuf>,
+    /// Where a drop here goes; `None` refuses it (a file).
+    target: Option<Target>,
     mark: Option<Mark>,
     /// A collapsed folder in the Folders pane, which expands when the
     /// pointer rests on it.
@@ -69,9 +82,18 @@ impl DragFrame {
 
     /// A zone, cut to `clip`; later ones are on top of earlier ones.
     pub fn zone(&mut self, clip: Rect, rect: Rect, dir: Option<PathBuf>, mark: Option<Mark>, expand: Option<NodeKey>) {
-        let rect = rect.intersect(clip);
+        self.push(clip, DropZone { rect, target: dir.map(Target::Folder), mark, expand });
+    }
+
+    /// A device row, which the items are sent to.
+    pub fn device(&mut self, clip: Rect, rect: Rect, key: &str) {
+        self.push(clip, DropZone { rect, target: Some(Target::Device(key.to_owned())), mark: Some(Mark::Device(key.to_owned())), expand: None });
+    }
+
+    fn push(&mut self, clip: Rect, zone: DropZone) {
+        let rect = zone.rect.intersect(clip);
         if rect.is_positive() {
-            self.zones.push(DropZone { rect, dir, mark, expand });
+            self.zones.push(DropZone { rect, ..zone });
         }
     }
 
@@ -96,7 +118,7 @@ impl DragFrame {
 
 /// Where the pointer is during a drag and what a drop there does.
 pub struct Over {
-    pub dir: PathBuf,
+    pub target: Target,
     pub mark: Option<Mark>,
     pub effect: Effect,
 }
@@ -135,7 +157,7 @@ pub enum Step {
     /// Expand this tree folder (the pointer rested on it).
     Expand(NodeKey),
     /// The button went up over a target.
-    Drop { dir: PathBuf, effect: Effect },
+    Drop { target: Target, effect: Effect },
     /// Up elsewhere, or Escape.
     Cancel,
 }
@@ -160,13 +182,13 @@ impl ItemDrag {
 
     /// Whether the drop target is a Folders pane row.
     pub fn over_tree(&self) -> bool {
-        matches!(self.over.as_ref().and_then(|o| o.mark.as_ref()), Some(Mark::Tree(_)))
+        matches!(self.over.as_ref().and_then(|o| o.mark.as_ref()), Some(Mark::Tree(_) | Mark::Device(_)))
     }
 
     /// One frame: finds the target under the pointer with the zones drawn
-    /// this frame and `effect`, which gives a folder's drop effect (`None`:
+    /// this frame and `effect`, which gives a target's drop effect (`None`:
     /// refused).
-    pub fn step(&mut self, ui: &Ui, frame: &DragFrame, pointer: Pointer, effect: impl Fn(&[PathBuf], &Path) -> Option<Effect>) -> Step {
+    pub fn step(&mut self, ui: &Ui, frame: &DragFrame, pointer: Pointer, effect: impl Fn(&[PathBuf], &Target) -> Option<Effect>) -> Step {
         let Pointer { pos, down, escape } = pointer;
         let now = ui.input(|i| i.time);
         if escape {
@@ -174,13 +196,13 @@ impl ItemDrag {
         }
         let zone = pos.and_then(|p| frame.at(p));
         self.over = zone.and_then(|z| {
-            let dir = z.dir.clone()?;
-            let effect = effect(&self.paths, &dir)?;
-            Some(Over { dir, mark: z.mark.clone(), effect })
+            let target = z.target.clone()?;
+            let effect = effect(&self.paths, &target)?;
+            Some(Over { target, mark: z.mark.clone(), effect })
         });
         if !down {
             return match self.over.take() {
-                Some(Over { dir, effect, .. }) => Step::Drop { dir, effect },
+                Some(Over { target, effect, .. }) => Step::Drop { target, effect },
                 None => Step::Cancel,
             };
         }

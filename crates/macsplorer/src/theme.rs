@@ -838,6 +838,9 @@ pub enum Icon {
     Drive,
     /// Explorer's My Computer: a monitor on a base.
     Computer,
+    /// Network Neighborhood: two small computers on a cable. Drawn for
+    /// Macsplorer in the Windows 95 manner, not copied from Windows.
+    Network,
 }
 
 /// Draws a 16×16 icon scaled into `r`. Disabled icons are embossed gray,
@@ -935,15 +938,54 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
             p.rect_stroke(body, 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
             p.rect_filled(Rect::from_min_max(at(11.0, 7.0), at(13.0, 8.5)), 0.0, Color32::from_rgb(0x20, 0xC0, 0x20));
         }
-        Icon::Computer => {
-            for (y, row) in COMPUTER.iter().enumerate() {
-                for (x, ch) in row.bytes().enumerate() {
-                    let Some(color) = computer_pixel(ch) else { continue };
-                    p.rect_filled(Rect::from_min_max(at(x as f32, y as f32), at(x as f32 + 1.0, y as f32 + 1.0)), 0.0, color);
-                }
-            }
+        Icon::Computer => pixels(p, r.min, s, &COMPUTER, computer_pixel),
+        Icon::Network => pixels(p, r.min, s, &NETWORK, network_pixel),
+    }
+}
+
+/// 16×16 pixel art with its top left at `min`, `s` points a pixel.
+fn pixels(p: &Painter, min: Pos2, s: f32, art: &[&str; 16], color: fn(u8) -> Option<Color32>) {
+    let at = |x: f32, y: f32| pos2(min.x + x * s, min.y + y * s);
+    for (y, row) in art.iter().enumerate() {
+        for (x, ch) in row.bytes().enumerate() {
+            let Some(color) = color(ch) else { continue };
+            p.rect_filled(Rect::from_min_max(at(x as f32, y as f32), at(x as f32 + 1.0, y as f32 + 1.0)), 0.0, color);
         }
     }
+}
+
+/// Network Neighborhood: two monitors joined by a cable. `K` outline, `w`
+/// the screen's glare, `B` and `b` the screen, `g` the base, `D` the cable.
+const NETWORK: [&str; 16] = [
+    "KKKKKKKK        ",
+    "KwwBBBBK        ",
+    "KwBBBBbK        ",
+    "KBBBBBbK        ",
+    "KBBbbbbK        ",
+    "KKKKKKKK        ",
+    " gggggg         ",
+    "   D            ",
+    "   D    KKKKKKKK",
+    "   D    KwwBBBBK",
+    "   D    KwBBBBbK",
+    "   DDDDDKBBBBBbK",
+    "        KBBbbbbK",
+    "        KKKKKKKK",
+    "         gggggg ",
+    "                ",
+];
+
+fn network_pixel(ch: u8) -> Option<Color32> {
+    let (r, g, b) = match ch {
+        b'K' => (0x39, 0x39, 0x39),
+        b'w' => (0xFF, 0xFF, 0xFF),
+        b'B' => (0x63, 0xCE, 0xFF),
+        b'b' => (0x31, 0x9C, 0xFF),
+        b'g' => (0x84, 0x84, 0x84),
+        b'D' => (0x00, 0x00, 0x00),
+        _ => return None,
+    };
+    Some(Color32::from_rgb(r, g, b))
 }
 
 /// My Computer's icon, one character per pixel of the 16×16 art: a monitor with

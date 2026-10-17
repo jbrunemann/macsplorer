@@ -52,13 +52,14 @@ use crate::goto_dialog::{self, GotoDialog};
 use crate::shortcuts_dialog::{self, ShortcutsDialog};
 use crate::pasteboard::{self, Pasteboard};
 use crate::icons::{self, FileIcons, IconState};
-use crate::item_drag::{self, DragFrame, ItemDrag, Mark, Pointer, Step};
+use crate::item_drag::{self, DragFrame, ItemDrag, Mark, Pointer, Step, Target};
 use crate::native_drag;
+use crate::network::{NetAction, Network};
 use crate::locale;
 use crate::open_with;
 use crate::open_with_dialog::{self, OpenWithDialog};
 use crate::platform;
-use crate::progress_dialog::ProgressDialog;
+use crate::progress_dialog::{self, ProgressDialog};
 use crate::properties::{Outcome, Properties};
 use crate::scrollbar::{self, Bars};
 use crate::theme::{self, Bevel, Icon};
@@ -66,8 +67,8 @@ use crate::trash::SystemTrash;
 
 const LIST_ROW_HEIGHT: f32 = 17.0;
 const LIST_HEADER_HEIGHT: f32 = 18.0;
-const TREE_ROW_HEIGHT: f32 = 18.0;
-const TREE_INDENT: f32 = 19.0;
+pub(crate) const TREE_ROW_HEIGHT: f32 = 18.0;
+pub(crate) const TREE_INDENT: f32 = 19.0;
 /// How long a new window size has to stay before it is written, so a
 /// resize writes the settings file once, at its end.
 const WINDOW_SAVE_DELAY: f64 = 0.5;
@@ -172,8 +173,8 @@ enum Action {
     DragItems(usize),
     /// A drag of a Folders pane row.
     DragFolder(PathBuf),
-    /// The drag was dropped on this folder.
-    Drop { dir: PathBuf, effect: Effect },
+    /// The drag was dropped on this folder or device.
+    Drop { target: Target, effect: Effect },
     BeginRename,
     CommitRename,
     CancelRename,
@@ -226,6 +227,26 @@ enum Action {
     /// Properties for an item of the list: with several items selected, one
     /// dialog for the whole selection.
     ItemProperties(PathBuf),
+    /// Network Neighborhood's rows and the Send To menu.
+    Network(NetAction),
+}
+
+/// A message in the status bar's left pane, in place of the object count:
+/// what went wrong (in red), or what is going on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Status {
+    pub(crate) text: String,
+    pub(crate) error: bool,
+}
+
+impl Status {
+    pub(crate) fn error(text: impl Into<String>) -> Self {
+        Self { text: text.into(), error: true }
+    }
+
+    pub(crate) fn note(text: impl Into<String>) -> Self {
+        Self { text: text.into(), error: false }
+    }
 }
 
 /// What this window's Cut or Copy remembered. Where the system pasteboard
@@ -378,7 +399,7 @@ pub struct Explorer {
     search: String,
     /// Give the search field the keyboard, its text selected, next frame.
     search_needs_focus: bool,
-    status: Option<String>,
+    status: Option<Status>,
     tree: FolderTree,
     /// Tree folder listings run on worker threads and report back here.
     /// Each result carries the hidden-items setting it was loaded with, so
@@ -433,6 +454,8 @@ pub struct Explorer {
     open_with: Option<(PathBuf, Vec<PathBuf>)>,
     /// Open Properties dialogs, each in its own window.
     properties: Vec<Properties>,
+    /// Network Neighborhood: LocalSend devices to send to.
+    network: Network,
     ctx: egui::Context,
     home: Option<Home>,
 }
@@ -447,6 +470,10 @@ impl Explorer {
         let (op_tx, op_rx) = channel();
         let (conflict_tx, conflict_rx) = channel();
         let wake = ctx.clone();
+        #[cfg(unix)]
+        let computer_name = computer_name().unwrap_or_else(|| "My Computer".into());
+        #[cfg(not(unix))]
+        let computer_name = String::from("My Computer");
         let mut app = Self {
             history: History::new(start),
             entries: Vec::new(),
@@ -454,10 +481,8 @@ impl Explorer {
             visible_cache: None,
             load_error: None,
             free_space: None,
-            #[cfg(unix)]
-            computer_name: computer_name().unwrap_or_else(|| "My Computer".into()),
-            #[cfg(not(unix))]
-            computer_name: "My Computer".into(),
+            network: Network::new(ctx.clone(), &computer_name),
+            computer_name,
             list_tx,
             list_rx,
             list_request: 0,
@@ -579,7 +604,7 @@ impl Explorer {
     /// Unmounts and ejects a volume off the UI thread; `poll_ejects` reports.
     #[cfg(unix)]
     fn eject(&mut self, volume: PathBuf) {
-        self.status = Some(format!("Ejecting {}...", volume.display()));
+        self.status = Some(Status::note(format!("Ejecting {}...", volume.display())));
         let (tx, ctx) = (self.eject_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let result = platform::eject(&volume);
@@ -604,7 +629,7 @@ impl Explorer {
                     self.reload();
                 }
                 Err(e) => {
-                    self.status = Some(format!("Couldn't eject {}: {e}", volume.display()));
+                    self.status = Some(Status::error(format!("Couldn't eject {}: {e}", volume.display())));
                 }
             }
         }
@@ -692,10 +717,11 @@ impl Explorer {
     /// Copies or (with `cut`) moves `paths` into `dest` on a worker thread,
     /// with the progress dialog and the Replace question: a paste or a drop.
     fn transfer(&mut self, paths: Vec<PathBuf>, dest: PathBuf, cut: bool) {
-        self.status = Some(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len()));
+        self.status = Some(Status::note(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len())));
         self.transfer_count += 1;
         let (id, progress) = (self.transfer_count, std::sync::Arc::new(Progress::default()));
-        self.transfers.push(ProgressDialog::new(id, progress.clone(), cut));
+        let kind = if cut { progress_dialog::Kind::Move } else { progress_dialog::Kind::Copy };
+        self.transfers.push(ProgressDialog::new(id, progress.clone(), kind));
         let (tx, ctx, ask_tx) = (self.op_tx.clone(), self.ctx.clone(), self.conflict_tx.clone());
         thread::spawn(move || {
             let ask_ctx = ctx.clone();
@@ -852,7 +878,11 @@ impl Explorer {
             return;
         }
         let native = drag.native;
-        let step = drag.step(ui, &self.drag_frame, pointer, |paths, dir| dragdrop::drop_effect(paths, dir, forced, allowed));
+        let step = drag.step(ui, &self.drag_frame, pointer, |paths, target| match target {
+            Target::Folder(dir) => dragdrop::drop_effect(paths, dir, forced, allowed),
+            // A send copies, whatever the keys.
+            Target::Device(_) => allowed.contains(Effect::Copy).then_some(Effect::Copy),
+        });
         if native {
             native_drag::set_answer(drag.over.as_ref().map(|o| o.effect));
         }
@@ -862,8 +892,8 @@ impl Explorer {
                 drag.paint(ui.ctx(), &mut self.icons, &self.entries);
                 actions.push(Action::TreeExpand(key));
             }
-            Step::Drop { dir, effect } => {
-                actions.push(Action::Drop { dir, effect });
+            Step::Drop { target, effect } => {
+                actions.push(Action::Drop { target, effect });
                 native_drag::set_answer(None);
             }
             Step::Cancel => {
@@ -906,7 +936,7 @@ impl Explorer {
     fn undo_last(&mut self) {
         let Some(op) = self.undo.pop() else { return };
         self.rename = None;
-        self.status = Some(format!("Undoing {}...", op.label().to_lowercase()));
+        self.status = Some(Status::note(format!("Undoing {}...", op.label().to_lowercase())));
         let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let mut done = OpDone { dirs: op.dirs(), select: Vec::new(), error: None, undo: None, transfer: None };
@@ -928,7 +958,7 @@ impl Explorer {
 
     fn poll_ops(&mut self) {
         while let Ok(done) = self.op_rx.try_recv() {
-            self.status = done.error;
+            self.status = done.error.map(Status::error);
             for dialog in &mut self.transfers {
                 dialog.finished |= done.transfer == Some(dialog.id);
             }
@@ -1144,6 +1174,7 @@ impl Explorer {
     }
 
     fn after_navigation(&mut self) {
+        self.network.deselect();
         self.address_peeking = false;
         self.peek_dir = None;
         self.selection.clear();
@@ -1188,7 +1219,7 @@ impl Explorer {
 
     fn navigate(&mut self, path: PathBuf) {
         if !path.is_dir() {
-            self.status = Some(format!("{} is not a folder.", self.shown(&path)));
+            self.status = Some(Status::error(format!("{} is not a folder.", self.shown(&path))));
             return;
         }
         self.history.push(path);
@@ -1207,7 +1238,7 @@ impl Explorer {
                 self.rename_pending_select = true;
                 self.reload();
             }
-            Err(e) => self.status = Some(format!("Couldn't create the folder: {e}")),
+            Err(e) => self.status = Some(Status::error(format!("Couldn't create the folder: {e}"))),
         }
     }
 
@@ -1236,7 +1267,7 @@ impl Explorer {
         } else if let Some(app) = open_with::chosen_app(&path) {
             self.open_with(path, Some(app));
         } else if let Err(e) = platform::open_default(&path) {
-            self.status = Some(format!("Couldn't open {}: {e}", self.shown(&path)));
+            self.status = Some(Status::error(format!("Couldn't open {}: {e}", self.shown(&path))));
         }
     }
 
@@ -1250,12 +1281,13 @@ impl Explorer {
             return;
         };
         if let Err(e) = Command::new("open").arg("-a").arg(&app).arg(&path).spawn() {
-            self.status = Some(format!("Couldn't open {} with {}: {e}", self.shown(&path), open_with::app_name(&app)));
+            self.status = Some(Status::error(format!("Couldn't open {} with {}: {e}", self.shown(&path), open_with::app_name(&app))));
         }
     }
 
     fn tree_select(&mut self, key: NodeKey) {
         self.focus = Pane::Tree;
+        self.network.deselect();
         let path = key.path.clone();
         self.tree.take_open();
         self.tree.select(key);
@@ -1266,6 +1298,7 @@ impl Explorer {
     /// folder opens once the keys pause (`tree::OPEN_DELAY_MS`).
     fn tree_key_select(&mut self, key: NodeKey) {
         self.focus = Pane::Tree;
+        self.network.deselect();
         self.tree.select_from_keyboard(key, now_ms(&self.ctx));
         self.ctx.request_repaint();
     }
@@ -1389,7 +1422,7 @@ impl Explorer {
     /// status bar. Returns the new path.
     fn rename_item(&mut self, path: &Path, name: &str) -> Option<PathBuf> {
         if let Err(e) = validate_name(name) {
-            self.status = Some(e.to_string());
+            self.status = Some(Status::error(e.to_string()));
             return None;
         }
         let target = path.with_file_name(name);
@@ -1411,11 +1444,11 @@ impl Explorer {
                 Some(target)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                self.status = Some(format!("There is already an item named \"{name}\" here."));
+                self.status = Some(Status::error(format!("There is already an item named \"{name}\" here.")));
                 None
             }
             Err(e) => {
-                self.status = Some(format!("Couldn't rename: {e}"));
+                self.status = Some(Status::error(format!("Couldn't rename: {e}")));
                 None
             }
         }
@@ -1480,7 +1513,7 @@ impl Explorer {
                             self.reload();
                         }
                         Err(e) => {
-                            self.status = Some(format!("Couldn't change the permissions: {e}"));
+                            self.status = Some(Status::error(format!("Couldn't change the permissions: {e}")));
                             return true;
                         }
                     }
@@ -1495,7 +1528,7 @@ impl Explorer {
                             self.reload();
                         }
                         Err(e) => {
-                            self.status = Some(format!("Couldn't customize the folder: {e}"));
+                            self.status = Some(Status::error(format!("Couldn't customize the folder: {e}")));
                             return true;
                         }
                     }
@@ -1680,12 +1713,13 @@ impl Explorer {
                     self.drag = Some(ItemDrag::new(&self.ctx, paths, &self.drag_frame));
                 }
                 Action::DragFolder(path) => self.drag = Some(ItemDrag::new(&self.ctx, vec![path], &self.drag_frame)),
-                Action::Drop { dir, effect } => {
+                Action::Drop { target, effect } => {
                     if let Some(drag) = self.drag.take() {
-                        match effect {
-                            Effect::Copy => self.transfer(drag.paths, dir, false),
-                            Effect::Move => self.transfer(drag.paths, dir, true),
-                            Effect::Link => self.link(drag.paths, dir),
+                        match (target, effect) {
+                            (Target::Device(key), _) => self.network.send(&key, drag.paths),
+                            (Target::Folder(dir), Effect::Copy) => self.transfer(drag.paths, dir, false),
+                            (Target::Folder(dir), Effect::Move) => self.transfer(drag.paths, dir, true),
+                            (Target::Folder(dir), Effect::Link) => self.link(drag.paths, dir),
                         }
                     }
                 }
@@ -1742,7 +1776,7 @@ impl Explorer {
                 Action::NewWindow => {
                     let frame = self.ctx.input(|i| i.viewport().outer_rect);
                     if let Err(e) = platform::new_window(self.current(), frame) {
-                        self.status = Some(format!("Could not open a new window: {e}"));
+                        self.status = Some(Status::error(format!("Could not open a new window: {e}")));
                     }
                 }
                 Action::RevealInFinder(p) => {
@@ -1751,13 +1785,13 @@ impl Explorer {
                 Action::OpenConfig => {
                     let opened = Preferences::file_path().and_then(|file| platform::open_text(&file));
                     if let Err(e) = opened {
-                        self.status = Some(format!("Couldn't open the config file: {e}"));
+                        self.status = Some(Status::error(format!("Couldn't open the config file: {e}")));
                     }
                 }
                 #[cfg(unix)]
                 Action::OpenTerminal(p) => {
                     if let Err(e) = platform::open_terminal(&p, Preferences::load().terminal.as_deref()) {
-                        self.status = Some(format!("Couldn't open a terminal in {}: {e}", self.shown(&p)));
+                        self.status = Some(Status::error(format!("Couldn't open a terminal in {}: {e}", self.shown(&p))));
                     }
                 }
                 #[cfg(unix)]
@@ -1800,6 +1834,13 @@ impl Explorer {
                 Action::Undo => self.undo_last(),
                 Action::Properties(path) => self.open_properties(path),
                 Action::ItemProperties(path) => self.open_item_properties(path),
+                Action::Network(action) => {
+                    let selection = match action {
+                        NetAction::SendSelection(_) => self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect(),
+                        _ => Vec::new(),
+                    };
+                    self.network.apply(action, selection);
+                }
                 Action::SetDark(dark) => {
                     theme::set_dark(&self.ctx, dark);
                     Preferences::update(|p| p.dark = dark);
@@ -2477,8 +2518,13 @@ impl Explorer {
     }
 
     fn tree_view(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        let rows = self.tree.rows();
+        let mut rows = self.tree.rows();
+        // One selection in the pane: a network row's, or a folder's.
+        if self.network.has_selection() {
+            rows.iter_mut().for_each(|r| r.selected = false);
+        }
         let guides = tree_guides(&rows);
+        let can_send = !self.selection.is_empty();
         let scroll = self.tree.take_scroll_request();
         let focused = self.focus == Pane::Tree && window_focused(ui) && !text_field_focused(ui);
         let cue = focused && self.show_focus;
@@ -2506,6 +2552,12 @@ impl Explorer {
                 }
                 tree_row(ui, &mut self.icons, row, guide, scroll, focused, cue, (drag, &mut *frame), actions);
             }
+            let mut net = Vec::new();
+            self.network.tree(ui, can_send, focused, (drag, &mut *frame), &mut net);
+            if !net.is_empty() {
+                actions.push(Action::Focus(Pane::Tree));
+            }
+            actions.extend(net.into_iter().map(Action::Network));
             if drag.is_some() {
                 let content = ui.min_rect().union(ui.max_rect().with_max_y(ui.max_rect().top()));
                 item_drag::edge_scroll(ui, ui.clip_rect(), content, TREE_ROW_HEIGHT, 1);
@@ -2555,7 +2607,7 @@ impl Explorer {
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("details-menu");
         let shown = self.columns.visible();
-        let Self { entries, selection, rename, sort, settings, search, icons, open_with, listing, marquee, anchor, columns, header_left, focus_item, drag, drag_frame, .. } = self;
+        let Self { entries, selection, rename, sort, settings, search, icons, open_with, network, listing, marquee, anchor, columns, header_left, focus_item, drag, drag_frame, .. } = self;
         // Classic list views don't highlight rows on hover.
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::window();
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -2765,7 +2817,7 @@ impl Explorer {
                         actions.push(Action::MarqueeBegin { origin: (p.x, p.y - top), extend });
                     }
                     egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
-                        Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, actions),
+                        Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, network, actions),
                         None => background_menu(ui, &folder, can_paste, actions),
                     });
                 });
@@ -2904,7 +2956,7 @@ impl Explorer {
         let font = egui::TextStyle::Body.resolve(ui.style());
         let line_height = ui.fonts_mut(|f| f.row_height(&font));
         let menu_id = ui.id().with("icons-menu");
-        let Self { entries, selection, rename, settings, search, icons, open_with, listing, focus_item, marquee, anchor, drag, drag_frame, .. } = self;
+        let Self { entries, selection, rename, settings, search, icons, open_with, network, listing, focus_item, marquee, anchor, drag, drag_frame, .. } = self;
 
         let out = egui::ScrollArea::vertical()
             .id_salt("icons")
@@ -3019,7 +3071,7 @@ impl Explorer {
                 }
                 item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
                 egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
-                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, actions),
+                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, network, actions),
                     None => background_menu(ui, &folder, can_paste, actions),
                 });
             });
@@ -3068,7 +3120,7 @@ impl Explorer {
         let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
         let menu_id = ui.id().with("list-menu");
-        let Self { entries, selection, rename, settings, search, icons, open_with, listing, marquee, anchor, focus_item, drag, drag_frame, .. } = self;
+        let Self { entries, selection, rename, settings, search, icons, open_with, network, listing, marquee, anchor, focus_item, drag, drag_frame, .. } = self;
         // An item's icon rect and label box (text plus `SM_CXEDGE` each side,
         // within the column), in content coordinates. Unverified: that the
         // label box hugs the text as in Large Icons (`CLVListView::v_ItemHitTest`
@@ -3179,7 +3231,7 @@ impl Explorer {
                 }
                 item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
                 egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
-                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, actions),
+                    Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, network, actions),
                     None => background_menu(ui, &folder, can_paste, actions),
                 });
             });
@@ -3197,7 +3249,7 @@ impl Explorer {
         } else {
             (format!("{} object(s) selected", selected.len()), selected.iter().filter_map(|e| e.size).sum())
         };
-        let text = self.status.clone().unwrap_or(objects);
+        let text = self.status.as_ref().map_or(objects, |s| s.text.clone());
         let size = format_byte_size(bytes);
 
         let full = ui.available_rect_before_wrap();
@@ -3242,7 +3294,7 @@ impl Explorer {
                 x = rect.right();
             }
         }
-        let color = if self.status.is_some() { theme::color::error_text() } else { theme::color::text() };
+        let color = if self.status.as_ref().is_some_and(|s| s.error) { theme::color::error_text() } else { theme::color::text() };
         p.with_clip_rect(left.shrink(2.0)).text(egui::pos2(left.left() + 4.0, left.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), color);
         p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
         let icon = egui::Rect::from_min_size(egui::pos2(right.left() + 4.0, right.center().y - 8.0), egui::vec2(16.0, 16.0));
@@ -3266,6 +3318,10 @@ impl eframe::App for Explorer {
         self.list_branches_if_missing();
         self.poll_ejects();
         self.poll_ops();
+        self.network.poll();
+        if let Some(status) = self.network.take_status() {
+            self.status = Some(status);
+        }
         self.poll_watcher();
         self.open_due_tree_selection();
         self.refresh_clipboard();
@@ -3357,6 +3413,7 @@ impl eframe::App for Explorer {
         }
         self.show_conflict();
         self.show_transfers();
+        self.network.show_dialogs();
         self.save_columns();
         self.save_window_size();
     }
@@ -3454,7 +3511,15 @@ fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<Pat
 }
 
 /// The context menu for an item.
-fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
+fn item_menu(
+    ui: &mut Ui,
+    entry: &Entry,
+    can_paste: bool,
+    open_with: &mut Option<(PathBuf, Vec<PathBuf>)>,
+    icons: &mut FileIcons,
+    network: &Network,
+    actions: &mut Vec<Action>,
+) {
     if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
         actions.push(Action::Open(entry.path.clone()));
     }
@@ -3477,6 +3542,12 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
     if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
         actions.push(Action::Eject(entry.path.clone()));
     }
+    // Windows 2000's Send To, with the LocalSend devices nearby.
+    delayed_menu_button(ui, "Send To", false, |ui| {
+        let mut net = Vec::new();
+        network.send_to_items(ui, &mut net);
+        actions.extend(net.into_iter().map(Action::Network));
+    });
     ui.separator();
     if ui.add(menu_item("Cut", platform::shortcut(false, "X"))).clicked() {
         actions.push(Action::Cut);
@@ -3825,13 +3896,13 @@ fn window_focused(ui: &Ui) -> bool {
 }
 
 /// Where to draw the dotted connector lines for one tree row.
-struct Guide {
+pub(crate) struct Guide {
     /// For each ancestor level, whether its vertical line continues past this row.
-    ancestors: Vec<bool>,
+    pub(crate) ancestors: Vec<bool>,
     /// Whether this row has a later sibling (its own line continues down).
-    has_next: bool,
+    pub(crate) has_next: bool,
     /// Whether a row above connects to this one (false for a section's first root).
-    has_prev: bool,
+    pub(crate) has_prev: bool,
 }
 
 /// Computes connector lines with one backward pass. `next[d]` is true when
@@ -3876,6 +3947,49 @@ fn computer_row(ui: &mut Ui, name: &str) {
     p.with_clip_rect(rect).text(egui::pos2(icon.right() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, name, font, theme::color::text());
 }
 
+/// A tree row's dotted connector lines and its +/− box (when `expandable`),
+/// for a row at `depth` in `rect`. Returns the box.
+pub(crate) fn paint_branch(ui: &Ui, rect: egui::Rect, depth: usize, guide: &Guide, expandable: bool, expanded: bool) -> egui::Rect {
+    let x0 = ui.max_rect().left() + 2.0;
+    let p = ui.painter();
+    let line = egui::Stroke::new(1.0, theme::color::tree_line());
+    // Single-pixel dots on even pixel coordinates, so the pattern lines up
+    // between rows and stays crisp whatever the row's fractional offset.
+    let dotted = |a: egui::Pos2, b: egui::Pos2| {
+        let (lo, hi) = if a.x == b.x { (a.y, b.y) } else { (a.x, b.x) };
+        let mut t = (lo / 2.0).ceil() * 2.0;
+        while t < hi {
+            let at = if a.x == b.x { egui::pos2(a.x - 0.5, t) } else { egui::pos2(t, a.y - 0.5) };
+            theme::dot(p, at, line.color);
+            t += 2.0;
+        }
+    };
+    let col_x = |level: usize| (x0 + level as f32 * TREE_INDENT + TREE_INDENT / 2.0).floor() + 0.5;
+    let mid_y = rect.center().y.floor() + 0.5;
+
+    for (level, &continues) in guide.ancestors.iter().enumerate() {
+        if continues {
+            dotted(egui::pos2(col_x(level), rect.top()), egui::pos2(col_x(level), rect.bottom()));
+        }
+    }
+    let cx = col_x(depth);
+    dotted(egui::pos2(cx, if guide.has_prev { rect.top() } else { mid_y }), egui::pos2(cx, if guide.has_next { rect.bottom() } else { mid_y }));
+    dotted(egui::pos2(cx, mid_y), egui::pos2(cx + TREE_INDENT / 2.0 + 1.0, mid_y));
+
+    let boxr = egui::Rect::from_center_size(egui::pos2(cx, mid_y), egui::vec2(9.0, 9.0));
+    if expandable {
+        p.rect_filled(boxr, 0.0, theme::color::window());
+        p.rect_stroke(boxr, 0.0, line, egui::StrokeKind::Inside);
+        let s = egui::Stroke::new(1.0, theme::color::text());
+        p.hline(boxr.left() + 2.0..=boxr.right() - 2.0, mid_y, s);
+        if !expanded {
+            p.vline(cx, boxr.top() + 2.0..=boxr.bottom() - 2.0, s);
+        }
+    }
+
+    boxr
+}
+
 /// One Folders pane row in the Windows 2000 tree view style: dotted
 /// connector lines, a +/− box, a folder icon and a label that highlights
 /// only its text. `drag`: the item drag going on, if any, and the frame's
@@ -3898,42 +4012,8 @@ fn tree_row(
     let label_x = x0 + (row.depth + 1) as f32 * TREE_INDENT + 16.0 + 4.0;
     let width = (label_x - ui.max_rect().left() + text_w + 6.0).max(ui.available_width());
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TREE_ROW_HEIGHT), Sense::click_and_drag());
+    let boxr = paint_branch(ui, rect, row.depth, guide, row.expandable, row.expanded);
     let p = ui.painter();
-    let line = egui::Stroke::new(1.0, theme::color::tree_line());
-    // Single-pixel dots on even pixel coordinates, so the pattern lines up
-    // between rows and stays crisp whatever the row's fractional offset.
-    let dotted = |a: egui::Pos2, b: egui::Pos2| {
-        let (lo, hi) = if a.x == b.x { (a.y, b.y) } else { (a.x, b.x) };
-        let mut t = (lo / 2.0).ceil() * 2.0;
-        while t < hi {
-            let at = if a.x == b.x { egui::pos2(a.x - 0.5, t) } else { egui::pos2(t, a.y - 0.5) };
-            theme::dot(p, at, line.color);
-            t += 2.0;
-        }
-    };
-    let col_x = |level: usize| (x0 + level as f32 * TREE_INDENT + TREE_INDENT / 2.0).floor() + 0.5;
-    let mid_y = rect.center().y.floor() + 0.5;
-
-    for (level, &continues) in guide.ancestors.iter().enumerate() {
-        if continues {
-            dotted(egui::pos2(col_x(level), rect.top()), egui::pos2(col_x(level), rect.bottom()));
-        }
-    }
-    let cx = col_x(row.depth);
-    dotted(egui::pos2(cx, if guide.has_prev { rect.top() } else { mid_y }), egui::pos2(cx, if guide.has_next { rect.bottom() } else { mid_y }));
-    dotted(egui::pos2(cx, mid_y), egui::pos2(cx + TREE_INDENT / 2.0 + 1.0, mid_y));
-
-    let boxr = egui::Rect::from_center_size(egui::pos2(cx, mid_y), egui::vec2(9.0, 9.0));
-    if row.expandable {
-        p.rect_filled(boxr, 0.0, theme::color::window());
-        p.rect_stroke(boxr, 0.0, line, egui::StrokeKind::Inside);
-        let s = egui::Stroke::new(1.0, theme::color::text());
-        p.hline(boxr.left() + 2.0..=boxr.right() - 2.0, mid_y, s);
-        if !row.expanded {
-            p.vline(cx, boxr.top() + 2.0..=boxr.bottom() - 2.0, s);
-        }
-    }
-
     let icon_rect = egui::Rect::from_min_size(egui::pos2(x0 + (row.depth + 1) as f32 * TREE_INDENT, rect.center().y - 8.0), egui::vec2(16.0, 16.0));
     if row.placeholder {
         p.text(egui::pos2(icon_rect.left(), rect.center().y), egui::Align2::LEFT_CENTER, &row.label, font, theme::color::gray_text());
@@ -4298,7 +4378,7 @@ mod clipboard {
         assert_eq!(app.selection, BTreeSet::from([dir.join("sub").join("font.ttf")]));
         app.go_to(dir.join("nope"));
         assert_eq!(app.current(), dir.join("sub"));
-        assert!(app.status.as_deref().is_some_and(|s| s.contains("is not a folder")));
+        assert!(app.status.as_ref().is_some_and(|s| s.error && s.text.contains("is not a folder")));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -5102,7 +5182,7 @@ mod screenshot {
         let from = harness.get_by_label("a.txt").rect().center();
         let to = harness.get_by_label("sub").rect().center();
         drag_on(&mut harness, true, from, to);
-        assert!(harness.state().drag.as_ref().is_some_and(|d| d.over.as_ref().is_some_and(|o| o.dir == dir.join("sub") && o.effect == Effect::Move)));
+        assert!(harness.state().drag.as_ref().is_some_and(|d| d.over.as_ref().is_some_and(|o| o.target == Target::Folder(dir.join("sub")) && o.effect == Effect::Move)));
         harness.drop_at(to);
         run_until(&mut harness, |_| dir.join("sub/a.txt").exists());
         assert!(!dir.join("a.txt").exists());
@@ -5548,12 +5628,8 @@ mod screenshot {
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
     fn copy_progress() {
-        use macsplorer_core::fileops::ProgressView;
-        let view = ProgressView {
-            done: 41,
-            total: 100,
-            item: Some((PathBuf::from("/Users/jan/Documents/Quarterly report final version 3.pdf"), PathBuf::from("/Volumes/Backup/Reports"))),
-        };
+        use crate::progress_dialog::{Kind, Snapshot};
+        let view = Snapshot { done: 41, total: 100, lines: ["Quarterly report final version 3.pdf".into(), "From 'Documents' to 'Reports'".into()] };
         let mut harness = Harness::builder().with_size(crate::progress_dialog::ProgressDialog::size()).with_pixels_per_point(2.0).wgpu().build_ui_state(
             |ui, ready: &mut bool| {
                 if !*ready {
@@ -5563,7 +5639,7 @@ mod screenshot {
                     return;
                 }
                 let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
-                crate::progress_dialog::draw(&mut window, "Copying...", &view, "12 Seconds Remaining", 0.55, true);
+                crate::progress_dialog::draw(&mut window, "Copying...", Kind::Copy, &view, "12 Seconds Remaining", 0.55, true);
             },
             false,
         );
@@ -5806,6 +5882,49 @@ mod screenshot {
                 h.run();
             }
             h.run();
+        });
+    }
+
+    fn fake_network(app: &mut Explorer, selected: Option<&str>) {
+        use crate::network::tests::device;
+        use localsend_client::DeviceType;
+        let devices = [device("Mystic Blackberry", DeviceType::Desktop, 20), device("Jan's Pixel", DeviceType::Mobile, 31)];
+        app.network.fake(devices, true, selected.map(str::to_owned));
+        // Collapse the disk so the Network section is in sight.
+        let disk = app.tree.rows().into_iter().find(|r| r.section == Section::Locations && r.depth == 0).map(|r| r.key);
+        if let Some(key) = disk {
+            app.tree.collapse(&key);
+        }
+    }
+
+    /// Network Neighborhood expanded, with a computer and a phone found.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn network_neighborhood() {
+        shoot("network-neighborhood", egui::vec2(900.0, 640.0), |app| fake_network(app, Some("fp-31")));
+    }
+
+    /// Send To in an item's context menu, listing the devices.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn send_to_menu() {
+        shoot_driven("send-to-menu", egui::vec2(900.0, 640.0), |app| fake_network(app, None), |h| {
+            let pos = egui::pos2(275.0, 378.0);
+            h.hover_at(pos);
+            h.run();
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
+                h.run();
+            }
+            h.run();
+            let send_to = h.query_by_label_contains("Send To").map(|n| n.rect().center());
+            if let Some(at) = send_to {
+                h.hover_at(at);
+            }
+            for _ in 0..30 {
+                h.run();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         });
     }
 
