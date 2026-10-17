@@ -1,6 +1,5 @@
 //! Sidebar locations: the macOS (and Linux) stand-ins for Explorer's known folders.
 
-#[cfg(unix)]
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -91,12 +90,37 @@ pub fn known_folder(path: &Path) -> Option<KnownFolder> {
     KnownFolder::ALL.into_iter().find(|k| k.path().is_some_and(|p| p == path))
 }
 
-/// User folders that exist on this machine, in Explorer's Quick access order.
+/// User folders that exist on this machine, in Explorer's Quick access order,
+/// with the symbolic links to folders directly in the home folder (the
+/// shortcuts people keep there) before the Trash. Not from Explorer.
 pub fn favorites() -> Vec<Place> {
-    KnownFolder::ALL
+    let mut out: Vec<Place> = KnownFolder::ALL
         .into_iter()
         .filter_map(|k| k.path().filter(|p| p.is_dir()).map(|path| Place { label: k.label().into(), path }))
-        .collect()
+        .collect();
+    if let Some(home) = dirs::home_dir() {
+        let links = home_folder_links(&home, &out);
+        let at = out.iter().position(|p| Some(&p.path) == KnownFolder::Trash.path().as_ref()).unwrap_or(out.len());
+        out.splice(at..at, links);
+    }
+    out
+}
+
+/// The symbolic links directly in `home` that lead to folders, by name. Hidden
+/// ones and those already in `known` are left out.
+fn home_folder_links(home: &Path, known: &[Place]) -> Vec<Place> {
+    let Ok(dir) = fs::read_dir(home) else { return Vec::new() };
+    let mut links: Vec<Place> = dir
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_symlink()))
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.path())
+        // `is_dir` follows the link, so a dangling one or one to a file drops out.
+        .filter(|p| p.is_dir() && !known.iter().any(|k| &k.path == p))
+        .map(|path| Place { label: path.file_name().unwrap_or_default().to_string_lossy().into_owned(), path })
+        .collect();
+    links.sort_by(|a, b| crate::natural::natural_cmp(&a.label, &b.label));
+    links
 }
 
 /// The machine's name for the status bar's zone pane ("My Computer" in
@@ -254,6 +278,32 @@ mod mount_tests {
     }
 }
 
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn home_links_are_visible_symlinks_to_folders() {
+        let home = std::env::temp_dir().join(format!("macsplorer-home-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("Projects/real")).unwrap();
+        fs::create_dir_all(home.join("Documents")).unwrap();
+        fs::write(home.join("note.txt"), "").unwrap();
+        let link = |target: &str, name: &str| std::os::unix::fs::symlink(home.join(target), home.join(name)).unwrap();
+        link("Projects/real", "work");
+        link("Projects", "Archive");
+        link("note.txt", "to-file");
+        link("gone", "dangling");
+        link("Projects/real", ".hidden-link");
+        link("Documents", "docs-alias");
+        let known = [Place { label: "Documents".into(), path: home.join("Documents") }];
+        let labels: Vec<String> = home_folder_links(&home, &known).into_iter().map(|p| p.label).collect();
+        fs::remove_dir_all(&home).ok();
+        // docs-alias is a different path than Documents, so it stays.
+        assert_eq!(labels, ["Archive", "docs-alias", "work"]);
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
@@ -305,6 +355,5 @@ mod tests {
         if let Some(music) = dirs::audio_dir() {
             assert_eq!(known_folder(&music), Some(KnownFolder::Music));
         }
-        assert!(favorites().iter().all(|f| known_folder(&f.path).is_some()));
     }
 }

@@ -75,7 +75,7 @@ The summary and the **Branch** column need Git to be installed. Without it they 
 
 The tree on the left has two sections:
 
-- **Favorites**: Desktop, Downloads, Documents, Pictures, Music, Movies, your home folder, Applications and the Trash.
+- **Favorites**: Desktop, Downloads, Documents, Pictures, Music, Movies, your home folder, Applications and the Trash. Shortcuts (symbolic links) to folders that you keep directly in your home folder are listed too, just above the Trash.
 - **Locations**: your Mac, shown by its own name with a little monitor icon (it is only a label, nothing opens from it), then your Mac's disk, plus any USB sticks, external drives or network disks you have connected.
 
 Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds, + and − do the same without moving, Home and End jump to the first and last folder, and Page Up and Page Down move a pageful at a time. Typing the first letters of a folder's name jumps to it, among the folders you can see. When you move with the keys, the folder opens on the right half a second after you stop, so you can run through the tree quickly without waiting for every folder on the way.
