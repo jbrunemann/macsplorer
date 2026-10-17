@@ -3258,7 +3258,35 @@ impl Explorer {
     }
 }
 
+/// Whether the pointer is over one of the dialog windows while the main window is behind them.
+/// The dialogs are windows of their own, but AppKit still reports a pointer over one to the main
+/// window under it, so the list, the toolbar and the tree would light up through the dialog.
+/// `pointer` is the position in the main window; the window rectangles are in screen points.
+fn pointer_under_dialog(viewports: &egui::ViewportIdMap<egui::ViewportInfo>, pointer: egui::Pos2) -> bool {
+    let Some(root) = viewports.get(&egui::ViewportId::ROOT) else { return false };
+    let (Some(inner), false) = (root.inner_rect, root.focused.unwrap_or(false)) else { return false };
+    let screen = inner.min + pointer.to_vec2();
+    viewports.iter().filter(|(id, _)| **id != egui::ViewportId::ROOT).any(|(_, info)| {
+        info.minimized != Some(true) && info.outer_rect.or(info.inner_rect).is_some_and(|rect| rect.contains(screen))
+    })
+}
+
 impl eframe::App for Explorer {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let last = raw.events.iter().rev().find_map(|e| match e {
+            egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => Some(Some(*pos)),
+            egui::Event::PointerGone => Some(None),
+            _ => None,
+        });
+        let pointer = last.unwrap_or_else(|| ctx.input(|i| i.pointer.latest_pos()));
+        if !pointer.is_some_and(|pos| pointer_under_dialog(&raw.viewports, pos)) {
+            return;
+        }
+        let pointer_event = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
+        raw.events.retain(|e| !pointer_event(e));
+        raw.events.push(egui::Event::PointerGone);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.poll_loads();
         self.poll_lists();
@@ -4129,6 +4157,22 @@ fn expand_tilde(input: &str, home: Option<&Home>) -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn dialogs_hide_the_pointer_from_the_window_behind() {
+        let rect = |x: f32, y: f32, w: f32, h: f32| Some(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)));
+        let dialog_id = egui::ViewportId::from_hash_of("dialog");
+        let mut viewports = egui::ViewportIdMap::default();
+        viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: rect(100.0, 100.0, 800.0, 600.0), focused: Some(false), ..Default::default() });
+        // No dialog open.
+        assert!(!pointer_under_dialog(&viewports, egui::pos2(50.0, 50.0)));
+        viewports.insert(dialog_id, egui::ViewportInfo { outer_rect: rect(200.0, 200.0, 300.0, 300.0), ..Default::default() });
+        assert!(pointer_under_dialog(&viewports, egui::pos2(150.0, 150.0)), "inside the dialog");
+        assert!(!pointer_under_dialog(&viewports, egui::pos2(10.0, 10.0)), "beside the dialog");
+        // The main window was clicked, so it is in front of the dialog.
+        viewports.get_mut(&egui::ViewportId::ROOT).unwrap().focused = Some(true);
+        assert!(!pointer_under_dialog(&viewports, egui::pos2(150.0, 150.0)));
+    }
 
     #[test]
     fn pasted_paths_lose_their_quotes() {
