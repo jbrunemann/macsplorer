@@ -843,10 +843,6 @@ pub enum Icon {
 pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
     let s = r.width() / 16.0;
     let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s);
-    let poly = |pts: &[(f32, f32)], fill: Color32, stroke: Color32| {
-        let points: Vec<Pos2> = pts.iter().map(|&(x, y)| at(x, y)).collect();
-        p.add(PathShape::convex_polygon(points, fill, PathStroke::new(1.0, stroke)));
-    };
     let gray = |c: Color32| if enabled { c } else { shadow() };
     match icon {
         Icon::Back | Icon::Forward | Icon::Go => {
@@ -866,8 +862,16 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
         Icon::Up => {
             folder(p, r, enabled);
             let c = gray(text());
-            poly(&[(8.0, 4.0), (12.0, 8.0), (4.0, 8.0)], c, c);
-            p.rect_filled(Rect::from_min_max(at(7.0, 8.0), at(9.0, 12.0)), 0.0, c);
+            // As on Win2000's button, one pixel thick: a small head, then the line
+            // comes up from the right and turns to the head. Whole-pixel rows rather
+            // than an outlined polygon, which blurs at one device pixel per point
+            // (Linux, usually).
+            let px = |x0: f32, x1: f32, y: f32| p.rect_filled(Rect::from_min_max(at(x0, y), at(x1, y + 1.0)), 0.0, c);
+            px(6.0, 7.0, 7.0);
+            px(5.0, 8.0, 8.0);
+            px(4.0, 9.0, 9.0);
+            px(6.0, 7.0, 10.0);   // stem
+            px(6.0, 12.0, 11.0);  // corner and line
         }
         Icon::Refresh => {
             let c = gray(if is_dark() { Color32::from_rgb(0x5B, 0x8F, 0xF0) } else { Color32::from_rgb(0x1F, 0x4E, 0xB4) });
