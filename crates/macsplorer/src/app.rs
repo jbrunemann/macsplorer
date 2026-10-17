@@ -2172,7 +2172,7 @@ impl Explorer {
                 }
             });
             bar_menu_button(ui, "View", |ui| {
-                delayed_menu_button(ui, "Explorer Bar", true, |ui| {
+                delayed_menu_button(ui, "Explorer Bar", |ui| {
                     if egui_classic_menu::checkbox(ui, &mut self.settings.show_folders, "Folders").changed() {
                         ui.close();
                     }
@@ -2180,7 +2180,7 @@ impl Explorer {
                 ui.separator();
                 view_choices(ui, self.settings.view, actions);
                 ui.separator();
-                delayed_menu_button(ui, "Text Size", true, |ui| {
+                delayed_menu_button(ui, "Text Size", |ui| {
                     let current = text_size::snap(ui.ctx().zoom_factor());
                     for (zoom, label) in text_size::SIZES {
                         if egui_classic_menu::radio(ui, current == zoom, label).clicked() {
@@ -2253,7 +2253,7 @@ impl Explorer {
             let arrow = theme::drop_arrow_button(ui, self.history.can_go_back());
             egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
                 for (i, p) in self.history.back_entries().take(12) {
-                    if ui.button(place_label(p)).clicked() {
+                    if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
                         actions.push(Action::HistoryJump(i));
                     }
                 }
@@ -2265,7 +2265,7 @@ impl Explorer {
             let arrow = theme::drop_arrow_button(ui, self.history.can_go_forward());
             egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
                 for (i, p) in self.history.forward_entries().take(12) {
-                    if ui.button(place_label(p)).clicked() {
+                    if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
                         actions.push(Action::HistoryJump(i));
                     }
                 }
@@ -3446,21 +3446,15 @@ fn bar_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui) -> 
 /// A submenu item that opens when the pointer has rested on it for
 /// [`menu_delay::SHOW_DELAY_MS`], as Windows' menus do (`MenuShowDelay`); a
 /// click opens it at once. egui's own `menu_button` opens on first contact.
-/// `gutter` indents the label like a marked item. Otherwise this is egui's
-/// `SubMenuButton`.
-fn delayed_menu_button<R>(ui: &mut Ui, text: &str, gutter: bool, content: impl FnOnce(&mut Ui) -> R) {
-    use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
+fn delayed_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui) -> R) {
+    use egui::containers::menu::{MenuState, SubMenu};
     let id = ui.next_auto_id();
     let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(SubMenu::id_from_widget_id(id)));
     let inactive = ui.style().visuals.widgets.inactive;
     if open {
         ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
     }
-    let response = if gutter {
-        egui_classic_menu::submenu_row(ui, text, open)
-    } else {
-        ui.add(egui::Button::new(text).right_text(SubMenuButton::RIGHT_ARROW))
-    };
+    let response = egui_classic_menu::submenu_row(ui, text, open);
     ui.style_mut().visuals.widgets.inactive = inactive;
 
     // Remember when the rest began and in which pass it was last seen: a gap
@@ -3486,7 +3480,7 @@ fn delayed_menu_button<R>(ui: &mut Ui, text: &str, gutter: bool, content: impl F
 /// The "Open With" submenu: the file's apps, then "Choose Program...".
 /// The app list is looked up once per file and kept while the menu is open.
 fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
-    delayed_menu_button(ui, "Open With", false, |ui| {
+    delayed_menu_button(ui, "Open With", |ui| {
         if cache.as_ref().is_none_or(|(p, _)| p != path) {
             *cache = Some((path.to_path_buf(), open_with::apps_for(path)));
         }
@@ -3504,7 +3498,7 @@ fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<Pat
         if !apps.is_empty() {
             ui.separator();
         }
-        if ui.button("Choose Program...").clicked() {
+        if ui.add(gutter_item(ui, "Choose Program...", String::new())).clicked() {
             actions.push(Action::OpenWith(path.to_path_buf(), None));
         }
     });
@@ -3520,87 +3514,87 @@ fn item_menu(
     network: &Network,
     actions: &mut Vec<Action>,
 ) {
-    if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
+    if ui.add(gutter_item(ui, RichText::new("Open").font(theme::bold(theme::FONT_SIZE)), String::new())).clicked() {
         actions.push(Action::Open(entry.path.clone()));
     }
     // After Finder's -[TBaseBrowserViewController cmdShowPackageContents:]:
     // the package opens as a folder in the same window.
-    if entry.kind == RenameKind::Package && ui.button("Show Package Contents").clicked() {
+    if entry.kind == RenameKind::Package && ui.add(gutter_item(ui, "Show Package Contents", String::new())).clicked() {
         actions.push(Action::Navigate(entry.path.clone()));
     }
     if open_with::SUPPORTED && entry.kind == RenameKind::File {
         open_with_menu(ui, &entry.path, open_with, icons, actions);
     }
-    if ui.button(platform::REVEAL_LABEL).clicked() {
+    if ui.add(gutter_item(ui, platform::REVEAL_LABEL, String::new())).clicked() {
         actions.push(Action::RevealInFinder(entry.path.clone()));
     }
     #[cfg(unix)]
-    if entry.kind == RenameKind::Folder && ui.button(TERMINAL_LABEL).clicked() {
+    if entry.kind == RenameKind::Folder && ui.add(gutter_item(ui, TERMINAL_LABEL, String::new())).clicked() {
         actions.push(Action::OpenTerminal(entry.path.clone()));
     }
     #[cfg(unix)]
-    if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
+    if is_ejectable(&entry.path) && ui.add(gutter_item(ui, "Eject", String::new())).clicked() {
         actions.push(Action::Eject(entry.path.clone()));
     }
     // Windows 2000's Send To, with the LocalSend devices nearby.
-    delayed_menu_button(ui, "Send To", false, |ui| {
+    delayed_menu_button(ui, "Send To", |ui| {
         let mut net = Vec::new();
         network.send_to_items(ui, &mut net);
         actions.extend(net.into_iter().map(Action::Network));
     });
     ui.separator();
-    if ui.add(menu_item("Cut", platform::shortcut(false, "X"))).clicked() {
+    if ui.add(gutter_item(ui, "Cut", platform::shortcut(false, "X"))).clicked() {
         actions.push(Action::Cut);
     }
-    if ui.add(menu_item("Copy", platform::shortcut(false, "C"))).clicked() {
+    if ui.add(gutter_item(ui, "Copy", platform::shortcut(false, "C"))).clicked() {
         actions.push(Action::Copy);
     }
-    if ui.add(menu_item("Copy as Path", platform::shortcut(true, "C"))).clicked() {
+    if ui.add(gutter_item(ui, "Copy as Path", platform::shortcut(true, "C"))).clicked() {
         actions.push(Action::CopyAsPath);
     }
-    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, menu_item("Paste", platform::shortcut(false, "V"))).clicked() {
+    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
         actions.push(Action::Paste(Some(entry.path.clone())));
     }
-    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, menu_item("Move Here", platform::shortcut(true, "V"))).clicked() {
+    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
         actions.push(Action::MoveHere(Some(entry.path.clone())));
     }
     ui.separator();
-    if ui.add(menu_item("Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
+    if ui.add(gutter_item(ui, "Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
         actions.push(Action::Delete);
     }
-    if ui.add(menu_item("Rename", "F2".to_owned())).clicked() {
+    if ui.add(gutter_item(ui, "Rename", "F2".to_owned())).clicked() {
         actions.push(Action::BeginRename);
     }
     ui.separator();
-    if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
+    if ui.add(gutter_item(ui, "Properties", platform::shortcut(false, "I"))).clicked() {
         actions.push(Action::ItemProperties(entry.path.clone()));
     }
 }
 
 /// The context menu for empty space in the item view.
 fn background_menu(ui: &mut Ui, folder: &Path, can_paste: bool, actions: &mut Vec<Action>) {
-    if ui.add_enabled(can_paste, menu_item("Paste", platform::shortcut(false, "V"))).clicked() {
+    if ui.add_enabled(can_paste, gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
         actions.push(Action::Paste(None));
     }
-    if ui.add_enabled(can_paste, menu_item("Move Here", platform::shortcut(true, "V"))).clicked() {
+    if ui.add_enabled(can_paste, gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
         actions.push(Action::MoveHere(None));
     }
     ui.separator();
-    if ui.add(menu_item("Refresh", platform::shortcut(false, "R"))).clicked() {
+    if ui.add(gutter_item(ui, "Refresh", platform::shortcut(false, "R"))).clicked() {
         actions.push(Action::Refresh);
     }
     #[cfg(unix)]
-    if ui.button(TERMINAL_LABEL).clicked() {
+    if ui.add(gutter_item(ui, TERMINAL_LABEL, String::new())).clicked() {
         actions.push(Action::OpenTerminal(folder.to_path_buf()));
     }
     ui.separator();
-    delayed_menu_button(ui, "New", false, |ui| {
-        if ui.button("Folder").clicked() {
+    delayed_menu_button(ui, "New", |ui| {
+        if ui.add(gutter_item(ui, "Folder", String::new())).clicked() {
             actions.push(Action::NewFolder);
         }
     });
     ui.separator();
-    if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
+    if ui.add(gutter_item(ui, "Properties", platform::shortcut(false, "I"))).clicked() {
         actions.push(Action::Properties(folder.to_path_buf()));
     }
 }
@@ -3851,14 +3845,14 @@ fn header_menu(ui: &mut Ui, columns: &ColumnSet, actions: &mut Vec<Action>) {
     let (items, more) = columns.menu();
     for item in items {
         let mut checked = item.checked;
-        if ui.add_enabled(item.enabled, egui::Checkbox::new(&mut checked, item.column.caption())).clicked() {
+        if ui.add_enabled_ui(item.enabled, |ui| egui_classic_menu::checkbox(ui, &mut checked, item.column.caption())).inner.clicked() {
             actions.push(Action::ToggleColumn(item.column));
             ui.close();
         }
     }
     if more {
         ui.separator();
-        if ui.button("More...").clicked() {
+        if ui.add(gutter_item(ui, "More...", String::new())).clicked() {
             actions.push(Action::ChooseColumns);
             ui.close();
         }
@@ -4078,26 +4072,26 @@ fn tree_row(
     egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| {
         if row.expandable {
             let label = if row.expanded { "Collapse" } else { "Expand" };
-            if ui.button(RichText::new(label).font(theme::bold(theme::FONT_SIZE))).clicked() {
+            if ui.add(gutter_item(ui, RichText::new(label).font(theme::bold(theme::FONT_SIZE)), String::new())).clicked() {
                 actions.push(Action::TreeToggle(row.key.clone()));
             }
         }
-        if ui.button("Open").clicked() {
+        if ui.add(gutter_item(ui, "Open", String::new())).clicked() {
             actions.push(Action::TreeSelect(row.key.clone()));
         }
-        if ui.button(platform::REVEAL_LABEL).clicked() {
+        if ui.add(gutter_item(ui, platform::REVEAL_LABEL, String::new())).clicked() {
             actions.push(Action::RevealInFinder(row.key.path.clone()));
         }
         #[cfg(unix)]
-        if ui.button(TERMINAL_LABEL).clicked() {
+        if ui.add(gutter_item(ui, TERMINAL_LABEL, String::new())).clicked() {
             actions.push(Action::OpenTerminal(row.key.path.clone()));
         }
         #[cfg(unix)]
-        if is_ejectable(&row.key.path) && ui.button("Eject").clicked() {
+        if is_ejectable(&row.key.path) && ui.add(gutter_item(ui, "Eject", String::new())).clicked() {
             actions.push(Action::Eject(row.key.path.clone()));
         }
         ui.separator();
-        if ui.button("Properties").clicked() {
+        if ui.add(gutter_item(ui, "Properties", String::new())).clicked() {
             actions.push(Action::Properties(row.key.path.clone()));
         }
     });
@@ -4177,21 +4171,15 @@ fn place_label(p: &Path) -> String {
     p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// The view modes as radio items, for the View menu and the Views button.
-/// A menu entry with its keyboard shortcut at the right edge in the weak
-/// (muted) text color, like macOS menus.
-fn menu_item(label: &str, keys: String) -> egui::Button<'_> {
-    egui::Button::new(label).shortcut_text(RichText::new(keys).family(theme::shortcut_family()))
-}
-
-/// [`menu_item`] between the check mark and arrow gutters, so the labels and
+/// A menu row between the check mark and arrow gutters, so the labels and
 /// shortcuts of a menu bar dropdown line up the way Windows' do. No shortcut
 /// when `keys` is empty.
-fn gutter_item(ui: &Ui, label: &str, keys: String) -> egui::Button<'static> {
+fn gutter_item(ui: &Ui, label: impl Into<RichText>, keys: String) -> egui::Button<'static> {
     let shortcut = (!keys.is_empty()).then(|| RichText::new(keys).family(theme::shortcut_family()));
     egui_classic_menu::item(ui, label, shortcut)
 }
 
+/// The view modes as radio items, for the View menu and the Views button.
 fn view_choices(ui: &mut Ui, current: ViewMode, actions: &mut Vec<Action>) {
     for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::List, "List"), (ViewMode::Details, "Details")] {
         if egui_classic_menu::radio(ui, current == mode, label).clicked() {
