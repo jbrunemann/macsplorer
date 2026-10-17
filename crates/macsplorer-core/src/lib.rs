@@ -6,7 +6,6 @@
 pub mod associations;
 pub mod autosuggest;
 pub mod bplist;
-pub mod breadcrumb;
 pub mod columns;
 pub mod copy_path;
 pub mod copy_progress;

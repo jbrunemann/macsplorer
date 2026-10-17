@@ -1,4 +1,4 @@
-//! The prototype window: toolbar, breadcrumb, navigation pane, item view
+//! The prototype window: toolbar, address bar, navigation pane, item view
 //! (Large Icons, List or Details), status bar.
 
 use std::collections::BTreeSet;
@@ -15,7 +15,6 @@ use egui::{Align, Key, Layout, RichText, Sense, TextEdit, Ui};
 use egui_extras::{Column as TableColumn, TableBuilder};
 
 use macsplorer_core::autosuggest::{self, Folder};
-use macsplorer_core::breadcrumb::{Crumb, crumbs};
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
 use macsplorer_core::fileops::{self, Choice, Progress, transfer_with};
@@ -31,7 +30,7 @@ use macsplorer_core::marquee::{self, Marquee};
 use macsplorer_core::listing::{Entry, SortSpec, entry_at, format_byte_size, format_size, list_dir, list_dir_with, sort_entries};
 #[cfg(unix)]
 use macsplorer_core::listing::free_space;
-use macsplorer_core::natural::{self, natural_cmp};
+use macsplorer_core::natural;
 use macsplorer_core::preferences::{Preferences, SortOrder, ViewMode};
 use macsplorer_core::goto::{Candidate, Source as GotoSource};
 use macsplorer_core::places::{favorites, volumes};
@@ -353,7 +352,7 @@ pub struct Explorer {
     /// A rename armed by clicking the selected item's label, started when
     /// its delay passes unless a double-click or key press cancels it.
     slow_click: SlowClick<PathBuf>,
-    /// `Some` while the address bar shows a text field instead of crumbs.
+    /// `Some` while the address bar shows a text field instead of the path.
     address_edit: Option<String>,
     address_needs_focus: bool,
     /// The folders inside the directory the typed address is in, which the
@@ -2428,42 +2427,25 @@ impl Explorer {
             self.peek(None);
         }
         while self.folders_rx.try_recv().is_ok() {}
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
-        // When the path is too long, the leading crumbs fold into a "«"
-        // button that lists them, and the tail stays visible, as in Explorer.
-        let all = crumbs(self.current(), self.home.as_ref());
-        let widths: Vec<f32> = all.iter().map(|c| crumb_width(ui, &c.label) + crumb_width(ui, "›")).collect();
-        let mut room = ui.available_width();
-        let mut first = all.len();
-        while first > 0 && widths[first - 1] <= room - if first > 1 { crumb_width(ui, "«") } else { 0.0 } {
-            room -= widths[first - 1];
-            first -= 1;
+        // The path as it is typed back. A click anywhere in the field edits it
+        // (see `address_bar`). When it is too long the front is cut off and the
+        // end, the open folder, stays.
+        let shown = self.address_text();
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let width = ui.available_width();
+        let fit = |text: &str| ui.painter().layout_no_wrap(text.to_owned(), font.clone(), theme::color::text());
+        let mut galley = fit(&shown);
+        if galley.size().x > width {
+            let chars: Vec<char> = shown.chars().collect();
+            let cut = (1..chars.len()).find(|&i| fit(&format!("…{}", chars[i..].iter().collect::<String>())).size().x <= width).unwrap_or(chars.len() - 1);
+            galley = fit(&format!("…{}", chars[cut..].iter().collect::<String>()));
         }
-        // The current folder always stays, even if it has to be clipped.
-        let first = first.min(all.len().saturating_sub(1));
-        if first > 0 {
-            let overflow = crumb_button(ui, "«");
-            egui::Popup::menu(&overflow).style(theme::menu_style).show(|ui| {
-                for crumb in &all[..first] {
-                    if ui.button(&crumb.label).on_hover_text(full_path(crumb)).clicked() {
-                        actions.push(Action::Navigate(crumb.path.clone()));
-                    }
-                }
-            });
-        }
-        for crumb in &all[first..] {
-            if crumb_button(ui, &crumb.label).on_hover_text(full_path(crumb)).clicked() {
-                actions.push(Action::Navigate(crumb.path.clone()));
-            }
-            // Explorer's chevron: a menu of the crumb's subfolders.
-            let chevron = crumb_button(ui, "›");
-            egui::Popup::menu(&chevron).style(theme::menu_style).show(|ui| {
-                let folders = subfolders(&crumb.path, self.settings.show_hidden);
-                if let Some(path) = scrolled_menu(ui, &folders) {
-                    actions.push(Action::Navigate(path));
-                }
-            });
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ui.available_height().max(16.0)), Sense::hover());
+        ui.painter().with_clip_rect(rect).galley(egui::pos2(rect.left() + 2.0, rect.center().y - galley.size().y / 2.0), galley, theme::color::text());
+        // The `~` and a cut front hide the full path, so the tooltip gives it.
+        let full = self.current().display().to_string();
+        if full != shown {
+            resp.on_hover_text(full);
         }
     }
 
@@ -3817,30 +3799,6 @@ fn selectable_name(ui: &mut Ui, text: &str, color: egui::Color32, selected: bool
     rect
 }
 
-/// A flat crumb in the address field that pops out when hovered.
-fn crumb_width(ui: &Ui, text: &str) -> f32 {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::text()).size().x + 6.0
-}
-
-/// The tooltip of a crumb: the full path, which the `~` hides.
-fn full_path(crumb: &Crumb) -> String {
-    crumb.path.display().to_string()
-}
-
-fn crumb_button(ui: &mut Ui, text: &str) -> egui::Response {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, theme::color::text());
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(galley.size().x + 6.0, 16.0), Sense::click());
-    if resp.is_pointer_button_down_on() {
-        theme::bevel(ui.painter(), rect, Bevel::SunkenThin);
-    } else if resp.hovered() {
-        theme::bevel(ui.painter(), rect, Bevel::RaisedThin);
-    }
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, theme::color::text());
-    resp
-}
-
 /// egui's input clock in milliseconds.
 fn now_ms(ctx: &egui::Context) -> u64 {
     ctx.input(|i| (i.time * 1000.0) as u64)
@@ -4122,52 +4080,6 @@ fn select_all(ui: &Ui, id: egui::Id, text: &str) {
         state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(end))));
         TextEdit::store_state(ui.ctx(), id, state);
     }
-}
-
-fn subfolders(dir: &Path, show_hidden: bool) -> Vec<(String, PathBuf)> {
-    let mut out: Vec<_> = list_dir(dir, show_hidden)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(Entry::is_folder)
-        .map(|e| (e.name, e.path))
-        .collect();
-    out.sort_by(|a, b| natural_cmp(&a.0, &b.0));
-    out
-}
-
-/// Tallest the crumb chevron's menu grows before it scrolls.
-const MENU_MAX_HEIGHT: f32 = 400.0;
-
-/// A menu of `items` that scrolls with a classic scroll bar once it is
-/// taller than [`MENU_MAX_HEIGHT`]. Returns the clicked item's path. The
-/// size is worked out up front so the popup doesn't resize when the bar
-/// appears.
-fn scrolled_menu(ui: &mut Ui, items: &[(String, PathBuf)]) -> Option<PathBuf> {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let (pad, spacing, min_height) = (ui.spacing().button_padding, ui.spacing().item_spacing.y, ui.spacing().interact_size.y);
-    let text_width = items.iter().map(|(name, _)| ui.painter().layout_no_wrap(name.clone(), font.clone(), theme::color::text()).size().x).fold(0.0, f32::max);
-    let row = (ui.fonts_mut(|f| f.row_height(&font)) + 2.0 * pad.y).max(min_height) + spacing;
-    let content = row * items.len() as f32 - spacing;
-    let height = content.min(MENU_MAX_HEIGHT);
-    let overflows = content > height;
-    let width = text_width + 2.0 * pad.x + if overflows { scrollbar::WIDTH } else { 0.0 };
-    let (outer, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
-
-    // The bar is known to be needed from the first frame.
-    let id = ui.id().with("menu-bars");
-    ui.data_mut(|d| d.insert_temp(id, egui::Vec2b::new(false, overflows)));
-    let (bars, viewport) = Bars::begin(ui, id, outer, [false, true], row);
-    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down_justified(Align::Min)));
-    let mut clicked = None;
-    let out = egui::ScrollArea::vertical().auto_shrink(false).scroll_bar_visibility(scrollbar::hidden(&mut inner)).show(&mut inner, |ui| {
-        for (name, path) in items {
-            if ui.button(name).clicked() {
-                clicked = Some(path.clone());
-            }
-        }
-    });
-    bars.end(&mut inner, &out);
-    clicked
 }
 
 fn place_label(p: &Path) -> String {
@@ -5806,41 +5718,6 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn properties_kind() {
         shoot_properties("properties-kind", "budget.xlsx");
-    }
-
-    /// The last crumb's chevron menu in a folder with too many subfolders to fit.
-    #[test]
-    #[ignore = "renders a screenshot; run with --ignored"]
-    fn chevron_menu() {
-        let dir = std::env::temp_dir().join("macsplorer-screenshot-menu").join("Many folders");
-        let _ = fs::remove_dir_all(&dir);
-        for i in 1..=40 {
-            fs::create_dir_all(dir.join(format!("Folder {i:02}"))).unwrap();
-        }
-        let mut harness = Harness::builder().with_size(egui::vec2(500.0, 520.0)).with_pixels_per_point(2.0).wgpu().build_eframe(|cc| {
-            theme::install(&cc.egui_ctx);
-            let mut app = Explorer::new(cc.egui_ctx.clone(), dir.clone());
-            app.finish_listing();
-            app
-        });
-        for _ in 0..10 {
-            harness.run();
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let pos = egui::pos2(169.0, 85.0);
-        harness.hover_at(pos);
-        harness.run();
-        for pressed in [true, false] {
-            harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
-            harness.run();
-        }
-        for _ in 0..3 {
-            harness.run();
-        }
-        let image = harness.render().expect("render");
-        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
-        fs::create_dir_all(&out).unwrap();
-        image.save(out.join("chevron-menu.png")).unwrap();
     }
 
     /// The View menu, which is mostly checkboxes.
