@@ -14,6 +14,7 @@ use egui::text_selection::CCursorRange;
 use egui::{Align, Key, Layout, RichText, Sense, TextEdit, Ui};
 use egui_extras::{Column as TableColumn, TableBuilder};
 
+use macsplorer_core::autosuggest::{self, Folder};
 use macsplorer_core::breadcrumb::crumbs;
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
@@ -342,6 +343,14 @@ pub struct Explorer {
     /// `Some` while the address bar shows a text field instead of crumbs.
     address_edit: Option<String>,
     address_needs_focus: bool,
+    /// The folders inside the directory the typed address is in, which the
+    /// Fish-style prediction picks from. Read off the UI thread, dropped when
+    /// the field closes so the next edit sees new folders.
+    address_folders: Option<(PathBuf, Vec<Folder>)>,
+    /// The directory a worker is reading for `address_folders`.
+    address_looking: Option<PathBuf>,
+    folders_tx: Sender<(PathBuf, Vec<Folder>)>,
+    folders_rx: Receiver<(PathBuf, Vec<Folder>)>,
     search: String,
     /// Give the search field the keyboard, its text selected, next frame.
     search_needs_focus: bool,
@@ -407,6 +416,7 @@ pub struct Explorer {
 impl Explorer {
     pub fn new(ctx: egui::Context, start: PathBuf) -> Self {
         let (load_tx, load_rx) = channel();
+        let (folders_tx, folders_rx) = channel();
         let (list_tx, list_rx) = channel();
         let (git_tx, git_rx) = channel();
         let (eject_tx, eject_rx) = channel();
@@ -460,6 +470,10 @@ impl Explorer {
             slow_click: SlowClick::default(),
             address_edit: None,
             address_needs_focus: false,
+            address_folders: None,
+            address_looking: None,
+            folders_tx,
+            folders_rx,
             search: String::new(),
             search_needs_focus: false,
             status: None,
@@ -2168,25 +2182,87 @@ impl Explorer {
         }
     }
 
+    /// The address bar's text field, with a Fish-style prediction of the
+    /// folder being typed: its rest shows dimmed after the text, and Right
+    /// or End with the cursor at the end of the text takes it. Enter still
+    /// goes to what was typed.
+    fn edit_address(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let id = address_id();
+        let mut text = self.address_edit.take().unwrap_or_default();
+        if cursor_at_end(ui, id, &text)
+            && ui.memory(|m| m.has_focus(id))
+            && let Some(next) = self.address_suggestion(&text)
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowRight) | i.consume_key(egui::Modifiers::NONE, Key::End))
+        {
+            text = next.completed;
+            if let Some(mut state) = TextEdit::load_state(ui.ctx(), id) {
+                state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(text.chars().count()))));
+                TextEdit::store_state(ui.ctx(), id, state);
+            }
+        }
+        let out = TextEdit::singleline(&mut text).id(id).desired_width(f32::INFINITY).frame(egui::Frame::NONE).show(ui);
+        let resp = out.response;
+        if std::mem::take(&mut self.address_needs_focus) {
+            resp.request_focus();
+            select_all(ui, id, &text);
+        }
+        let collapsed_at_end = out.cursor_range.is_some_and(|r| r.primary.index == r.secondary.index && r.primary.index.0 == text.chars().count());
+        if resp.has_focus()
+            && collapsed_at_end
+            && let Some(next) = self.address_suggestion(&text)
+        {
+            let galley = ui.painter().layout_no_wrap(next.ghost, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
+            let at = out.galley_pos + egui::vec2(out.galley.size().x, 0.0);
+            ui.painter().with_clip_rect(ui.max_rect()).galley(at, galley, theme::color::gray_text());
+        }
+        if resp.lost_focus() && !ui.input(|i| i.key_pressed(Key::Enter)) {
+            return;
+        }
+        if resp.lost_focus() {
+            actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_deref())));
+        }
+        self.address_edit = Some(text);
+    }
+
+    /// The prediction for the typed `text`. The folders it picks from are
+    /// read by a worker, so there is none until they arrive.
+    fn address_suggestion(&mut self, text: &str) -> Option<autosuggest::Suggestion> {
+        let (parent, _) = autosuggest::split(text)?;
+        let dir = expand_tilde(parent, self.home.as_deref());
+        while let Ok(read) = self.folders_rx.try_recv() {
+            if self.address_looking.as_ref() == Some(&read.0) {
+                self.address_looking = None;
+            }
+            self.address_folders = Some(read);
+        }
+        match &self.address_folders {
+            Some((read, folders)) if *read == dir => autosuggest::suggest(text, folders),
+            _ => {
+                if self.address_looking.as_ref() != Some(&dir) {
+                    self.address_looking = Some(dir.clone());
+                    let (tx, ctx) = (self.folders_tx.clone(), self.ctx.clone());
+                    thread::spawn(move || {
+                        let folders = list_dir(&dir, true).map(Folder::from_entries).unwrap_or_default();
+                        if tx.send((dir, folders)).is_ok() {
+                            ctx.request_repaint();
+                        }
+                    });
+                }
+                None
+            }
+        }
+    }
+
     fn address_contents(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (icon, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
         theme::paint_icon(ui.painter(), icon, Icon::Folder, true);
-        if let Some(text) = &mut self.address_edit {
-            let id = address_id();
-            let resp = ui.add(TextEdit::singleline(text).id(id).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
-            if std::mem::take(&mut self.address_needs_focus) {
-                resp.request_focus();
-                select_all(ui, id, text);
-            }
-            if resp.lost_focus() {
-                if ui.input(|i| i.key_pressed(Key::Enter)) {
-                    actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_deref())));
-                } else {
-                    self.address_edit = None;
-                }
-            }
+        if self.address_edit.is_some() {
+            self.edit_address(ui, actions);
             return;
         }
+        self.address_folders = None;
+        self.address_looking = None;
+        while self.folders_rx.try_recv().is_ok() {}
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
         // When the path is too long, the leading crumbs fold into a "«"
@@ -3851,6 +3927,14 @@ fn tree_roots() -> Vec<Root> {
     Root::from_places(&favs, Section::Favorites).chain(Root::from_places(&vols, Section::Locations)).collect()
 }
 
+/// Whether the text field `id` has its cursor, with nothing selected, after
+/// the last character of `text`.
+fn cursor_at_end(ui: &Ui, id: egui::Id, text: &str) -> bool {
+    TextEdit::load_state(ui.ctx(), id)
+        .and_then(|state| state.cursor.char_range())
+        .is_some_and(|r| r.primary.index == r.secondary.index && r.primary.index.0 == text.chars().count())
+}
+
 fn select_all(ui: &Ui, id: egui::Id, text: &str) {
     if let Some(mut state) = TextEdit::load_state(ui.ctx(), id) {
         let end = text.chars().count();
@@ -4700,6 +4784,50 @@ mod screenshot {
             app
         });
         (harness, dir)
+    }
+
+    /// Types `typed` into the address bar of `harness` and waits for the
+    /// folders it predicts from to be read.
+    fn type_address(harness: &mut Harness<'_, Explorer>, typed: String) {
+        let app = harness.state_mut();
+        app.address_edit = Some(typed);
+        app.address_needs_focus = true;
+        harness.run_steps(3);
+        // Cursor to the end, off the selection that focusing makes.
+        harness.key_press(Key::End);
+        run_until(harness, |app| app.address_folders.is_some());
+        harness.run_steps(2);
+    }
+
+    #[test]
+    fn the_address_bar_predicts_the_folder_and_right_takes_it() {
+        let (mut harness, dir) = drag_harness("predict");
+        let base = dir.display().to_string();
+        type_address(&mut harness, format!("{base}/su"));
+        let want = autosuggest::suggest(harness.state().address_edit.as_deref().unwrap(), &harness.state().address_folders.as_ref().unwrap().1).unwrap();
+        assert_eq!(want.ghost, "b/");
+        harness.key_press(Key::ArrowRight);
+        harness.run_steps(2);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        // Nothing left to predict, so Right is the text field's again.
+        harness.key_press(Key::ArrowRight);
+        harness.run_steps(2);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The address bar's dimmed prediction after typed text.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn address_prediction() {
+        shoot_driven("address-prediction", egui::vec2(900.0, 160.0), |app| {
+            app.address_edit = Some(format!("{}/Pro", app.current().display()));
+            app.address_needs_focus = true;
+        }, |harness| {
+            harness.key_press(Key::End);
+            run_until(harness, |app| app.address_folders.is_some());
+            harness.run_steps(3);
+        });
     }
 
     /// Runs frames until `done` or a few seconds have passed.

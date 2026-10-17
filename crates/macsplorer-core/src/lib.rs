@@ -4,6 +4,7 @@
 //! in `docs/file-browser-findings.md`.
 
 pub mod associations;
+pub mod autosuggest;
 pub mod bplist;
 pub mod breadcrumb;
 pub mod columns;

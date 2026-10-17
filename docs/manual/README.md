@@ -96,6 +96,8 @@ The small **›** after each folder opens a list of the folders inside it, so yo
 
 To type a path instead, click the empty space in the address bar or press ⌘L (F4 and ⌥D work too), type the location and press Enter (or click **Go**). A **~** at the start stands for your home folder, so `~/Documents` takes you to your Documents folder. Quotes around a pasted path, as Terminal or **Copy as Path** add them, are left out. If you type the path of a file, Macsplorer opens the folder that holds it and selects the file. Press Esc to stop typing and go back to the clickable path.
 
+While you type a folder's path, Macsplorer guesses the folder you mean and shows the rest of its name in gray after what you typed, as the Fish shell does. Press → (or End) to accept it, and the name and a `/` are filled in; keep typing to ignore it. Enter and **Go** always use exactly what you typed. The guess is a folder inside the folder you have typed so far, and it appears once you type the first letter of the name. You don't have to type accents: **A** finds **Äpfel**, as long as no folder starts with a plain **A**. A hidden folder is only guessed when you start its name with a dot.
+
 ### Back, Forward and Up
 
 - **Back** returns to the folder you were in before, and **Forward** goes ahead again after going back. The small arrow beside each one shows a list of the places you've been, so you can jump several steps at once.
