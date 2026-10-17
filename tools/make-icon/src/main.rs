@@ -2,7 +2,8 @@
 //! a Windows 2000 window and a pixel-art Windows 2000 folder.
 //!
 //! `cargo run -p make-icon` writes `assets/icon.png` (1024²), a full
-//! `.iconset`, and `assets/macsplorer.icns` (via `iconutil`).
+//! `.iconset`, `assets/macsplorer.icns` (via `iconutil`) and the Linux icon
+//! sizes in `assets/hicolor`.
 
 use std::path::Path;
 use std::process::Command;
@@ -321,6 +322,13 @@ fn main() {
     for base in [16u32, 32, 128, 256, 512] {
         draw(base).save_png(iconset.join(format!("icon_{base}x{base}.png"))).unwrap();
         draw(base * 2).save_png(iconset.join(format!("icon_{base}x{base}@2x.png"))).unwrap();
+    }
+
+    // The Linux bundle's icons, in the hicolor theme's folders.
+    for size in [32u32, 64, 128, 256, 512] {
+        let dir = root.join(format!("hicolor/{size}x{size}/apps"));
+        std::fs::create_dir_all(&dir).expect("create hicolor dir");
+        draw(size).save_png(dir.join("macsplorer.png")).unwrap();
     }
 
     let status = Command::new("iconutil")
