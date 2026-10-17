@@ -346,15 +346,23 @@ pub struct Explorer {
     /// The folders inside the directory the typed address is in, which the
     /// Fish-style prediction picks from. Read off the UI thread, dropped when
     /// the field closes so the next edit sees new folders.
-    address_folders: Option<(PathBuf, Vec<Folder>)>,
+    address_folders: Option<(PathBuf, Option<Vec<Folder>>)>,
     /// The directory a worker is reading for `address_folders`.
     address_looking: Option<PathBuf>,
     /// The last change to the address text was a deletion: no prediction
     /// until something is typed, since it would only bring back what was
     /// just backspaced.
     address_deleted: bool,
-    folders_tx: Sender<(PathBuf, Vec<Folder>)>,
-    folders_rx: Receiver<(PathBuf, Vec<Folder>)>,
+    /// The address field showed a prediction last frame. Tab takes it then,
+    /// and cycles through the panes otherwise.
+    address_predicting: bool,
+    /// ↓ in the address field was pressed: the view lists the folder being
+    /// typed (`peek_dir`) until the field closes.
+    address_peeking: bool,
+    /// The folder the view lists instead of the open one while peeking.
+    peek_dir: Option<PathBuf>,
+    folders_tx: Sender<(PathBuf, Option<Vec<Folder>>)>,
+    folders_rx: Receiver<(PathBuf, Option<Vec<Folder>>)>,
     search: String,
     /// Give the search field the keyboard, its text selected, next frame.
     search_needs_focus: bool,
@@ -477,6 +485,9 @@ impl Explorer {
             address_folders: None,
             address_looking: None,
             address_deleted: false,
+            address_predicting: false,
+            address_peeking: false,
+            peek_dir: None,
             folders_tx,
             folders_rx,
             search: String::new(),
@@ -954,7 +965,8 @@ impl Explorer {
         self.list_request += 1;
         self.listing = true;
         self.list_branches = self.columns.is_visible(Column::Branch);
-        let (request, dir, show_hidden, branches) = (self.list_request, self.current().to_path_buf(), self.settings.show_hidden, self.list_branches);
+        let dir = self.peek_dir.clone().unwrap_or_else(|| self.current().to_path_buf());
+        let (request, show_hidden, branches) = (self.list_request, self.settings.show_hidden, self.list_branches);
         let (tx, ctx) = (self.list_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let result = list_dir_with(&dir, show_hidden, branches).map_err(|e| platform::open_error(&dir, &e));
@@ -1097,6 +1109,8 @@ impl Explorer {
     }
 
     fn after_navigation(&mut self) {
+        self.address_peeking = false;
+        self.peek_dir = None;
         self.selection.clear();
         self.anchor = None;
         self.focus_item = None;
@@ -1121,6 +1135,20 @@ impl Explorer {
             self.tree.take_open();
             self.sync_tree();
         }
+    }
+
+    /// Lists `dir` in the view instead of the open folder, or the open folder
+    /// again with `None`, without going there (no history, no Folders pane
+    /// change). The selection belongs to the folder that was up, so it goes.
+    fn peek(&mut self, dir: Option<PathBuf>) {
+        if self.peek_dir == dir {
+            return;
+        }
+        self.peek_dir = dir;
+        self.selection.clear();
+        self.anchor = None;
+        self.focus_item = None;
+        self.reload_list();
     }
 
     fn navigate(&mut self, path: PathBuf) {
@@ -1800,7 +1828,9 @@ impl Explorer {
         ui.ctx().memory_mut(|m| m.move_focus(egui::FocusDirection::None));
         let (cycle, address, find) = ui.input(|i| {
             let m = i.modifiers;
-            let cycle = focus::direction(i.key_pressed(Key::Tab) || i.key_pressed(Key::F6), m.ctrl, m.alt || m.mac_cmd, m.shift);
+            // Tab completes a shown prediction (`edit_address`) instead of leaving the field.
+            let completes = self.address_predicting && i.key_pressed(Key::Tab) && !m.shift;
+            let cycle = focus::direction((i.key_pressed(Key::Tab) && !completes) || i.key_pressed(Key::F6), m.ctrl, m.alt || m.mac_cmd, m.shift);
             // Explorer's F4 and Alt+D (below), and the browsers' Cmd+L.
             let address = i.key_pressed(Key::F4) || (m.command && i.key_pressed(Key::L));
             // Explorer's F3 and Ctrl+F, Finder's Cmd+F.
@@ -2188,17 +2218,21 @@ impl Explorer {
     }
 
     /// The address bar's text field, with a Fish-style prediction of the
-    /// folder being typed: its rest shows dimmed after the text, and Right
-    /// or End with the cursor at the end of the text takes it. Enter still
+    /// folder being typed: its rest shows dimmed after the text, and Right,
+    /// End or Tab with the cursor at the end of the text takes it. (Tab
+    /// cycles through the panes when there is no prediction.) Enter still
     /// goes to what was typed.
     fn edit_address(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let id = address_id();
         let mut text = self.address_edit.take().unwrap_or_default();
+        if ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)) {
+            self.address_peeking = true;
+        }
         if !self.address_deleted
             && cursor_at_end(ui, id, &text)
             && ui.memory(|m| m.has_focus(id))
             && let Some(next) = self.address_suggestion(&text)
-            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowRight) | i.consume_key(egui::Modifiers::NONE, Key::End))
+            && ui.input_mut(|i| [Key::ArrowRight, Key::End, Key::Tab].into_iter().fold(false, |taken, key| i.consume_key(egui::Modifiers::NONE, key) | taken))
         {
             text = next.completed;
             if let Some(mut state) = TextEdit::load_state(ui.ctx(), id) {
@@ -2217,11 +2251,15 @@ impl Explorer {
             select_all(ui, id, &text);
         }
         let collapsed_at_end = out.cursor_range.is_some_and(|r| r.primary.index == r.secondary.index && r.primary.index.0 == text.chars().count());
-        if resp.has_focus()
-            && !self.address_deleted
-            && collapsed_at_end
-            && let Some(next) = self.address_suggestion(&text)
-        {
+        let shown = if resp.has_focus() && !self.address_deleted && collapsed_at_end { self.address_suggestion(&text) } else { None };
+        self.address_predicting = shown.is_some();
+        if self.address_peeking {
+            let target = self.peek_target(&text, shown.as_ref());
+            if target.is_some() {
+                self.peek(target);
+            }
+        }
+        if let Some(next) = shown {
             let galley = ui.painter().layout_no_wrap(next.ghost, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
             let at = out.galley_pos + egui::vec2(out.galley.size().x, 0.0);
             ui.painter().with_clip_rect(ui.max_rect()).galley(at, galley, theme::color::gray_text());
@@ -2233,6 +2271,21 @@ impl Explorer {
             actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_deref())));
         }
         self.address_edit = Some(text);
+    }
+
+    /// The folder the typed `text` is heading for, for the view to list: the
+    /// predicted one, else the one the last name spells out, else the folder
+    /// it is in. `None` until the folders it is in have been read.
+    fn peek_target(&self, text: &str, shown: Option<&autosuggest::Suggestion>) -> Option<PathBuf> {
+        if let Some(next) = shown {
+            return Some(expand_tilde(&next.completed, self.home.as_deref()));
+        }
+        let (parent, partial) = autosuggest::split(text)?;
+        let dir = expand_tilde(parent, self.home.as_deref());
+        match &self.address_folders {
+            Some((read, Some(folders))) if *read == dir => Some(folders.iter().find(|f| f.name == partial).map_or(dir.clone(), |f| dir.join(&f.name))),
+            _ => None,
+        }
     }
 
     /// The prediction for the typed `text`. The folders it picks from are
@@ -2247,13 +2300,13 @@ impl Explorer {
             self.address_folders = Some(read);
         }
         match &self.address_folders {
-            Some((read, folders)) if *read == dir => autosuggest::suggest(text, folders),
+            Some((read, folders)) if *read == dir => folders.as_deref().and_then(|folders| autosuggest::suggest(text, folders)),
             _ => {
                 if self.address_looking.as_ref() != Some(&dir) {
                     self.address_looking = Some(dir.clone());
                     let (tx, ctx) = (self.folders_tx.clone(), self.ctx.clone());
                     thread::spawn(move || {
-                        let folders = list_dir(&dir, true).map(Folder::from_entries).unwrap_or_default();
+                        let folders = list_dir(&dir, true).map(Folder::from_entries).ok();
                         if tx.send((dir, folders)).is_ok() {
                             ctx.request_repaint();
                         }
@@ -2274,6 +2327,11 @@ impl Explorer {
         self.address_folders = None;
         self.address_looking = None;
         self.address_deleted = false;
+        self.address_predicting = false;
+        if self.address_peeking {
+            self.address_peeking = false;
+            self.peek(None);
+        }
         while self.folders_rx.try_recv().is_ok() {}
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
@@ -4816,7 +4874,7 @@ mod screenshot {
         let (mut harness, dir) = drag_harness("predict");
         let base = dir.display().to_string();
         type_address(&mut harness, format!("{base}/su"));
-        let want = autosuggest::suggest(harness.state().address_edit.as_deref().unwrap(), &harness.state().address_folders.as_ref().unwrap().1).unwrap();
+        let want = autosuggest::suggest(harness.state().address_edit.as_deref().unwrap(), harness.state().address_folders.as_ref().unwrap().1.as_deref().unwrap()).unwrap();
         assert_eq!(want.ghost, "b/");
         harness.key_press(Key::ArrowRight);
         harness.run_steps(2);
@@ -4825,6 +4883,50 @@ mod screenshot {
         harness.key_press(Key::ArrowRight);
         harness.run_steps(2);
         assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tab_takes_a_prediction_and_otherwise_cycles_the_panes() {
+        let (mut harness, dir) = drag_harness("tab");
+        let base = dir.display().to_string();
+        type_address(&mut harness, format!("{base}/su"));
+        harness.key_press(Key::Tab);
+        harness.run_steps(3);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        assert_eq!(harness.state().current_stop(), Stop::Address, "Tab stayed in the field");
+        // Nothing to predict now, so Tab goes on to the search box.
+        harness.key_press(Key::Tab);
+        harness.run_steps(3);
+        assert_eq!(harness.state().current_stop(), Stop::Search);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn down_in_the_address_bar_shows_the_folder_being_typed() {
+        let (mut harness, dir) = drag_harness("peek");
+        fs::write(dir.join("sub").join("inside.txt"), "x").unwrap();
+        let base = dir.display().to_string();
+        let names = |app: &Explorer| app.entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+        type_address(&mut harness, format!("{base}/su"));
+        assert_eq!(harness.state().peek_dir, None, "typing alone leaves the view");
+        // ↓ shows the predicted folder, and the field keeps the keyboard and its text.
+        harness.key_press(Key::ArrowDown);
+        run_until(&mut harness, |app| app.peek_dir.is_some() && !app.listing);
+        assert_eq!(harness.state().peek_dir, Some(dir.join("sub/")));
+        assert_eq!(names(harness.state()), ["inside.txt"]);
+        assert_eq!(harness.state().current(), dir);
+        assert_eq!(harness.state().current_stop(), Stop::Address);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/su").as_str()));
+        // Without a prediction the folder it is in is shown.
+        harness.key_press(Key::Backspace);
+        run_until(&mut harness, |app| app.peek_dir.as_deref() == Some(&dir) && !app.listing);
+        assert_eq!(names(harness.state()), ["sub", "a.txt"]);
+        // Esc ends the peek.
+        harness.key_press(Key::Escape);
+        run_until(&mut harness, |app| app.peek_dir.is_none() && !app.listing);
+        assert_eq!(names(harness.state()), ["sub", "a.txt"]);
+        assert!(!harness.state().address_peeking);
         fs::remove_dir_all(&dir).unwrap();
     }
 
