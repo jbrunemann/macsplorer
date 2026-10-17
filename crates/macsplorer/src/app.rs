@@ -1,7 +1,7 @@
 //! The prototype window: toolbar, address bar, navigation pane, item view
 //! (Large Icons, List or Details), status bar.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
@@ -532,7 +532,11 @@ impl Explorer {
             rename_pending_select: false,
             focus: Pane::List,
             navigating_from_tree: false,
-            icons: FileIcons::new(),
+            icons: {
+                let mut icons = FileIcons::new();
+                icons.set_favorite_emblems(favorite_emblems());
+                icons
+            },
             open_with: None,
             properties: Vec::new(),
             ctx,
@@ -1487,6 +1491,7 @@ impl Explorer {
                             self.status = None;
                             dialog.style_applied();
                             self.icons.forget_native(dialog.path());
+                            self.icons.set_favorite_emblems(favorite_emblems());
                             self.reload();
                         }
                         Err(e) => {
@@ -1728,6 +1733,7 @@ impl Explorer {
                 }
                 Action::Refresh => {
                     self.icons.clear_native();
+                    self.icons.set_favorite_emblems(favorite_emblems());
                     self.tree.set_roots(tree_roots());
                     let loads = self.tree.refresh();
                     self.load(loads);
@@ -4060,6 +4066,11 @@ fn tree_key_action(rows: &[Row], key: Key, page: usize) -> Option<Action> {
     }
 }
 
+/// The emblems the favorites carry (set in Properties or Finder), by path.
+fn favorite_emblems() -> HashMap<PathBuf, macsplorer_core::folder_style::Emblem> {
+    favorites().into_iter().filter_map(|p| macsplorer_core::folder_style::read(&p.path).emblem.map(|e| (p.path, e))).collect()
+}
+
 fn tree_roots() -> Vec<Root> {
     let favs = favorites();
     let vols = volumes();
@@ -4829,6 +4840,22 @@ mod screenshot {
             app.navigate(customized_folders());
             app.finish_listing();
             app.settings.view = ViewMode::Details;
+        });
+    }
+
+    /// A favorite with an emblem of its own shows just the emblem, no color.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn favorite_emblems() {
+        use macsplorer_core::folder_style::Emblem;
+        use macsplorer_core::places::KnownFolder;
+        shoot("favorite-emblems", egui::vec2(900.0, 400.0), |app| {
+            let emblems = [
+                (KnownFolder::Documents, Emblem::Symbol("star.fill".into())),
+                (KnownFolder::Music, Emblem::Emoji("🚀".into())),
+            ];
+            app.icons.set_favorite_emblems(emblems.into_iter().filter_map(|(k, e)| k.path().map(|p| (p, e))).collect());
         });
     }
 

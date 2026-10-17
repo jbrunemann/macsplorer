@@ -100,6 +100,8 @@ pub struct FileIcons {
     /// The pictures drawn on folders (SF Symbols as tintable masks, emoji in
     /// color), by rendered pixel size.
     emblems: HashMap<(Emblem, usize), Option<TextureHandle>>,
+    /// The emblems customized favorites carry in the Folders pane, by path.
+    favorite_emblems: HashMap<PathBuf, Emblem>,
     /// The 16 px icons of the apps in the "Open With" menu, by path and pixel size.
     menu: HashMap<(PathBuf, usize), Option<TextureHandle>>,
     budget: usize,
@@ -114,7 +116,7 @@ impl FileIcons {
         if let Err(e) = &seti {
             eprintln!("macsplorer: Seti icon theme unavailable: {e}");
         }
-        Self { seti: seti.ok(), native: HashMap::new(), emblems: HashMap::new(), menu: HashMap::new(), budget: NATIVE_PER_FRAME }
+        Self { seti: seti.ok(), native: HashMap::new(), emblems: HashMap::new(), favorite_emblems: HashMap::new(), menu: HashMap::new(), budget: NATIVE_PER_FRAME }
     }
 
     /// The selection tint depends on the palette: drop the blended variants.
@@ -209,11 +211,19 @@ impl FileIcons {
         }
     }
 
-    /// Paints the yellow folder, with Finder's glyph on it for the user
-    /// folders that have one.
+    /// The emblems of the customized favorites, read by the caller off the
+    /// drawing path.
+    pub fn set_favorite_emblems(&mut self, emblems: HashMap<PathBuf, Emblem>) {
+        self.favorite_emblems = emblems;
+    }
+
+    /// Paints the yellow folder (never the folder's color), with the
+    /// folder's own emblem if a favorite has one, else Finder's glyph for the
+    /// user folders that have one.
     pub fn paint_tree_folder(&mut self, ui: &Ui, rect: Rect, path: &Path) {
         let hidden = path.file_name().is_some_and(|n| is_hidden_name(&n.to_string_lossy()));
-        blended(ui, if hidden { IconState::Cut } else { IconState::Normal }, || self.paint_folder(ui, rect, path, None, None));
+        let emblem = self.favorite_emblems.get(path).cloned();
+        blended(ui, if hidden { IconState::Cut } else { IconState::Normal }, || self.paint_folder(ui, rect, path, None, emblem.as_ref()));
     }
 
     /// The Win2000 folder, yellow or in `fill`, with `emblem` on it or else

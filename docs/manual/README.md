@@ -338,7 +338,7 @@ A folder's Properties window has a second tab, **Customize**, where you give the
 
 <img src="images/color-dialog.png" alt="The Color window with Define Custom Colors open" width="470">
 
-Click **OK** or **Apply** to save. Macsplorer always draws the Windows 2000 folder, in the color you picked and with the emblem on it; Finder draws its own look. **Large Icons** also shows the emblem; **List** and **Details** show only the color, and the **Folders** pane always shows the plain yellow folder. The tab isn't there for apps or other packages.
+Click **OK** or **Apply** to save. Macsplorer always draws the Windows 2000 folder, in the color you picked and with the emblem on it; Finder draws its own look. **Large Icons** also shows the emblem; **List** and **Details** show only the color, and in the **Folders** pane the folders under **Favorites** show just the emblem, on the plain yellow folder (no color). The tab isn't there for apps or other packages.
 
 On Linux the tab has colors only: no emblem, and no Finder. A colored folder is the yellow folder in its color. The color is kept with the folder itself, so it stays when you move or copy the folder within Macsplorer, but some disks (USB sticks formatted for Windows, some network drives) can't keep it; Macsplorer then says so in the status bar.
 

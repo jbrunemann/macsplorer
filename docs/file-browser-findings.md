@@ -550,7 +550,8 @@ differ between a Gray and a Blue drawing belong to the folder and get the
 color with the Gray's shading (`folder_style::tint`); the rest, an emoji,
 stays. Where it shows: Large Icons and the dialogs' 32 px icons draw color
 and emblem, List and Details only the color (an emblem-only folder is the
-yellow folder there), the Folders pane never either (the user's choice).
+yellow folder there), the Folders pane never the color (the user's choice), but a folder under
+Favorites shows its emblem there (not from Explorer).
 The Color dialog is `ChooseColor` from memory (comdlg32 isn't analyzed):
 48 basic colors, 16 custom boxes kept in `settings.json`
 (`custom_colors`), "Define Custom Colors >>" with the hue/sat spectrum, the
