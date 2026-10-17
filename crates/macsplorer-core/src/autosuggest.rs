@@ -47,7 +47,8 @@ pub fn split(input: &str) -> Option<(&str, &str)> {
 
 /// The folder `input` is most likely heading for, from the `folders` of the
 /// directory [`split`] names. Nothing is suggested before a first letter is
-/// typed. Hidden folders only show for a name that starts with a dot.
+/// typed, and a name typed in full is left out (the prediction would be a
+/// lone `/`). Hidden folders only show for a name that starts with a dot.
 ///
 /// A name with the typed letters in the same case beats one that matches in
 /// another case, as in Fish, and that beats one that only matches with its
@@ -59,20 +60,26 @@ pub fn suggest(input: &str, folders: &[Folder]) -> Option<Suggestion> {
         return None;
     }
     let dots = partial.starts_with('.');
-    let candidates = folders.iter().filter(|f| dots || !f.hidden);
-    let first = |matching: &dyn Fn(&Folder) -> bool| candidates.clone().filter(|f| matching(f)).min_by(|a, b| natural_cmp(&a.name, &b.name));
     let wanted = fold(partial);
     let plain = base_letters(partial);
+    // Names with something left to type: one that is typed in full has
+    // nothing to predict, and a lone `/` isn't worth showing.
+    let left = |f: &Folder| typed_end(&f.name, &plain).filter(|&end| end < f.name.len());
+    let candidates = folders.iter().filter(|f| (dots || !f.hidden) && left(f).is_some());
+    let first = |matching: &dyn Fn(&Folder) -> bool| candidates.clone().filter(|f| matching(f)).min_by(|a, b| natural_cmp(&a.name, &b.name));
     let found = first(&|f| f.name.starts_with(partial))
         .or_else(|| first(&|f| fold(&f.name).starts_with(&wanted)))
         // Accents typed have to fit; only left-out ones are forgiven.
         .or_else(|| if has_accents(partial) { None } else { first(&|f| base_letters(&f.name).starts_with(&plain)) })?;
-    // The shortest start of the name that says what was typed, with the
-    // accents that go on its last letter.
-    let name = found.name.as_str();
+    let end = left(found)?;
+    Some(Suggestion { ghost: format!("{}/", &found.name[end..]), completed: format!("{parent}{}/", found.name) })
+}
+
+/// Where in `name` what was typed (as `base_letters`) ends: the shortest start
+/// of the name that says it, with the accents that go on its last letter.
+fn typed_end(name: &str, plain: &str) -> Option<usize> {
     let start = name.char_indices().map(|(i, _)| i).chain(Some(name.len())).find(|&i| base_letters(&name[..i]) == plain)?;
-    let typed_end = start + name[start..].chars().take_while(|&c| is_accent(c)).map(char::len_utf8).sum::<usize>();
-    Some(Suggestion { ghost: format!("{}/", &found.name[typed_end..]), completed: format!("{parent}{}/", found.name) })
+    Some(start + name[start..].chars().take_while(|&c| is_accent(c)).map(char::len_utf8).sum::<usize>())
 }
 
 /// `s` in lower case without accents: decomposed, then the combining marks
@@ -136,8 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn a_complete_name_suggests_the_slash() {
-        assert_eq!(ghost("/Users", &["Users"]).as_deref(), Some("/"));
+    fn a_name_typed_in_full_is_not_predicted() {
+        assert_eq!(ghost("/Users", &["Users"]), None);
+        assert_eq!(ghost("/a/doc", &["Doc", "Documents"]).as_deref(), Some("uments/"));
+        assert_eq!(ghost("/a/Doc", &["Doc", "Documents"]).as_deref(), Some("uments/"));
     }
 
     #[test]

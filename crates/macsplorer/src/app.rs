@@ -349,6 +349,10 @@ pub struct Explorer {
     address_folders: Option<(PathBuf, Vec<Folder>)>,
     /// The directory a worker is reading for `address_folders`.
     address_looking: Option<PathBuf>,
+    /// The last change to the address text was a deletion: no prediction
+    /// until something is typed, since it would only bring back what was
+    /// just backspaced.
+    address_deleted: bool,
     folders_tx: Sender<(PathBuf, Vec<Folder>)>,
     folders_rx: Receiver<(PathBuf, Vec<Folder>)>,
     search: String,
@@ -472,6 +476,7 @@ impl Explorer {
             address_needs_focus: false,
             address_folders: None,
             address_looking: None,
+            address_deleted: false,
             folders_tx,
             folders_rx,
             search: String::new(),
@@ -2189,7 +2194,8 @@ impl Explorer {
     fn edit_address(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let id = address_id();
         let mut text = self.address_edit.take().unwrap_or_default();
-        if cursor_at_end(ui, id, &text)
+        if !self.address_deleted
+            && cursor_at_end(ui, id, &text)
             && ui.memory(|m| m.has_focus(id))
             && let Some(next) = self.address_suggestion(&text)
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowRight) | i.consume_key(egui::Modifiers::NONE, Key::End))
@@ -2200,14 +2206,19 @@ impl Explorer {
                 TextEdit::store_state(ui.ctx(), id, state);
             }
         }
+        let before = text.clone();
         let out = TextEdit::singleline(&mut text).id(id).desired_width(f32::INFINITY).frame(egui::Frame::NONE).show(ui);
         let resp = out.response;
+        if resp.changed() {
+            self.address_deleted = text.len() < before.len() && ui.input(|i| i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete));
+        }
         if std::mem::take(&mut self.address_needs_focus) {
             resp.request_focus();
             select_all(ui, id, &text);
         }
         let collapsed_at_end = out.cursor_range.is_some_and(|r| r.primary.index == r.secondary.index && r.primary.index.0 == text.chars().count());
         if resp.has_focus()
+            && !self.address_deleted
             && collapsed_at_end
             && let Some(next) = self.address_suggestion(&text)
         {
@@ -2262,6 +2273,7 @@ impl Explorer {
         }
         self.address_folders = None;
         self.address_looking = None;
+        self.address_deleted = false;
         while self.folders_rx.try_recv().is_ok() {}
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
@@ -4813,6 +4825,26 @@ mod screenshot {
         harness.key_press(Key::ArrowRight);
         harness.run_steps(2);
         assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn backspacing_in_the_address_bar_does_not_predict() {
+        let (mut harness, dir) = drag_harness("backspace");
+        let base = dir.display().to_string();
+        type_address(&mut harness, format!("{base}/sub"));
+        harness.key_press(Key::Backspace);
+        harness.run_steps(2);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/su").as_str()));
+        assert!(harness.state().address_deleted);
+        // The prediction `b/` would just undo the backspace.
+        harness.key_press(Key::ArrowRight);
+        harness.run_steps(2);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/su").as_str()));
+        // Typing brings it back.
+        harness.event(egui::Event::Text("b".into()));
+        harness.run_steps(2);
+        assert!(!harness.state().address_deleted);
         fs::remove_dir_all(&dir).unwrap();
     }
 
