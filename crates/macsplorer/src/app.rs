@@ -741,6 +741,21 @@ impl Explorer {
         });
     }
 
+    /// Files dropped on the window from another app, where the platform has no
+    /// `native_drag` (Linux, through winit's X11 file drop, which says neither
+    /// where the pointer is nor which keys are down): they go into the open
+    /// folder, moved when they are on the same disk and copied otherwise, like
+    /// a drop on the folder without keys.
+    fn drop_files(&mut self, paths: Vec<PathBuf>) {
+        let dest = self.current().to_path_buf();
+        match dragdrop::drop_effect(&paths, &dest, None, Allowed::ALL) {
+            Some(Effect::Copy) => self.transfer(paths, dest, false),
+            Some(Effect::Move) => self.transfer(paths, dest, true),
+            Some(Effect::Link) => self.link(paths, dest),
+            None => {}
+        }
+    }
+
     /// One frame of an item drag, after the views drew their drop zones:
     /// the target under the pointer, the drop, the drag image. A drag from
     /// another app comes through `native_drag`, and one of ours that leaves
@@ -3066,6 +3081,12 @@ impl eframe::App for Explorer {
             .show(ui, |ui| self.item_view(ui, &visible, &mut actions));
 
         self.drag_step(ui, &mut actions);
+        if !cfg!(target_os = "macos") {
+            let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+            if !dropped.is_empty() {
+                self.drop_files(dropped);
+            }
+        }
         self.apply(actions, &visible);
         if let Some(ms) = self.slow_click.wait_ms(now_ms(ui.ctx())) {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(ms));
@@ -4153,6 +4174,25 @@ mod clipboard {
         assert_eq!(app.focus_item.map(|i| app.entries[i].name.as_str()), Some("a.txt"));
         assert_eq!(app.selection, BTreeSet::from([dir.join("a.txt")]));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_dropped_from_another_app_go_into_the_open_folder() {
+        let (mut app, dir) = explorer("dropfiles");
+        let elsewhere = std::env::temp_dir().join(format!("macsplorer-dropfiles-src-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&elsewhere);
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("b.txt"), "from outside").unwrap();
+        // Same disk: moved.
+        app.drop_files(vec![elsewhere.join("b.txt")]);
+        wait(&mut app);
+        assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "from outside");
+        assert!(!elsewhere.join("b.txt").exists());
+        // A file already in the open folder is left alone.
+        app.drop_files(vec![dir.join("a.txt")]);
+        assert!(app.transfers.len() == 1 && !dir.join("a - Copy.txt").exists());
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&elsewhere).unwrap();
     }
 
     #[test]

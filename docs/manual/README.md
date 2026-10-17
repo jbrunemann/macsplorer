@@ -271,6 +271,8 @@ The pointer shows what will happen: a plus sign for a copy, a little arrow for a
 
 Drag items out of the window to put them in a Finder window, on the desktop, into another Macsplorer window or another app, or onto the Trash in the Dock. Items dragged from Finder can be dropped on Macsplorer in the same way.
 
+On Linux, files dragged from another file manager such as Nautilus go into the folder you're looking at: moved when they are on the same disk, copied otherwise. This works in an X11 session, or on Wayland when Macsplorer is started with `WINIT_UNIX_BACKEND=x11`. Dragging out of the window isn't there yet; use Copy and Paste inside Macsplorer.
+
 ### Between windows and Finder
 
 Copy and Cut use the Mac's own clipboard, so you can copy in one Macsplorer window and paste in another, or copy in Finder and paste in Macsplorer, and the other way round.
@@ -358,7 +360,7 @@ All of these are in the **View** menu.
 | **Large Icons, List, Details** | Picks a view (see [Choosing how files are shown](#4-choosing-how-files-are-shown)). |
 | **Text Size** | Makes everything bigger (see below). |
 | **File name extensions** | Shows the ending of file names, such as `.pdf` or `.jpg`. When you hide them, an ending is still shown where hiding it could be misleading, such as an app named `Invoice.pdf.app`. |
-| **Hidden files and folders** | Shows the items your Mac normally hides, such as settings files whose names start with a dot. They appear faded so you can tell them apart. |
+| **Hidden files and folders** | Shows the items your Mac normally hides, such as settings files whose names start with a dot. They appear faded so you can tell them apart. On Linux this also covers names listed in a folder's `.hidden` file and backup files ending in `~`, as in Nautilus. |
 | **Special files in color** | Turns the [colored names](#colored-names) on or off. |
 | **Dark mode** | Light text on a dark background. |
 | **Expand to open folder** | Lets the Folders pane follow you to the folder you're in. |

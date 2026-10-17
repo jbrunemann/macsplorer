@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 #[cfg(unix)]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -116,9 +116,27 @@ impl Entry {
     }
 }
 
-/// Whether a file name makes the item hidden (a leading dot).
+/// Whether a file name makes the item hidden: a leading dot, and on Linux a
+/// trailing `~` as well (an editor's backup file, which GLib and Nautilus hide).
+/// Folders can also list names in a `.hidden` file, see [`hidden_list`].
 pub fn is_hidden_name(name: &str) -> bool {
-    name.starts_with('.')
+    name.starts_with('.') || (cfg!(target_os = "linux") && is_backup_name(name))
+}
+
+/// A backup file's name ends in `~` (`notes.txt~`), like GLib's `is-backup`.
+fn is_backup_name(name: &str) -> bool {
+    name.len() > 1 && name.ends_with('~')
+}
+
+/// The names `dir`'s `.hidden` file lists, one per line, which Nautilus (GLib)
+/// hides without a leading dot. Only Linux honors it; Finder doesn't, so on
+/// macOS the list is always empty.
+pub fn hidden_list(dir: &Path) -> HashSet<String> {
+    if cfg!(target_os = "linux") { fs::read_to_string(dir.join(".hidden")).map(|t| parse_hidden_list(&t)).unwrap_or_default() } else { HashSet::new() }
+}
+
+fn parse_hidden_list(text: &str) -> HashSet<String> {
+    text.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()
 }
 
 /// Reads one directory. Entries that vanish or can't be read while listing
@@ -132,14 +150,16 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
 /// so only ask for it while the Branch column is shown.
 pub fn list_dir_with(dir: &Path, show_hidden: bool, branches: bool) -> io::Result<Vec<Entry>> {
     let mut out = Vec::new();
+    let listed = hidden_list(dir);
     for item in fs::read_dir(dir)? {
         let Ok(item) = item else { continue };
         let name = item.file_name().to_string_lossy().into_owned();
-        if is_hidden_name(&name) && !show_hidden {
+        let hidden = is_hidden_name(&name) || listed.contains(&name);
+        if hidden && !show_hidden {
             continue;
         }
         let Ok(own) = item.metadata() else { continue };
-        out.push(read_entry(item.path(), name, &own, branches));
+        out.push(read_entry(item.path(), name, &own, branches, hidden));
     }
     Ok(out)
 }
@@ -148,11 +168,12 @@ pub fn list_dir_with(dir: &Path, show_hidden: bool, branches: bool) -> io::Resul
 pub fn entry_at(path: &Path) -> Option<Entry> {
     let name = path.file_name()?.to_string_lossy().into_owned();
     let own = fs::symlink_metadata(path).ok()?;
-    Some(read_entry(path.to_path_buf(), name, &own, false))
+    let hidden = is_hidden_name(&name) || path.parent().is_some_and(|dir| hidden_list(dir).contains(&name));
+    Some(read_entry(path.to_path_buf(), name, &own, false, hidden))
 }
 
 /// An entry from the item's own metadata (`own`, not following a link).
-fn read_entry(path: PathBuf, name: String, own: &fs::Metadata, branches: bool) -> Entry {
+fn read_entry(path: PathBuf, name: String, own: &fs::Metadata, branches: bool, hidden: bool) -> Entry {
     // Follow symlinks so a link to a folder behaves like a folder.
     let target = fs::metadata(&path);
     let broken = target.is_err();
@@ -194,7 +215,7 @@ fn read_entry(path: PathBuf, name: String, own: &fs::Metadata, branches: bool) -
         folder_style: folder_style(&path, kind, flags),
         branch: (branches && kind == RenameKind::Folder && is_git_repo(&path)).then(|| crate::git::branch_label(&path)).flatten(),
         link,
-        hidden: is_hidden_name(&name),
+        hidden,
         name,
         path,
         kind,
@@ -550,6 +571,44 @@ mod tests {
             assert_eq!(e.hidden_extension(false), None);
         }
         assert_eq!(entry(".zshrc.bak", RenameKind::File, Some(1)).display_name(false), ".zshrc");
+    }
+
+    #[test]
+    fn hidden_names() {
+        assert!(is_hidden_name(".config"));
+        assert!(!is_hidden_name("notes.txt"));
+        assert!(is_backup_name("notes.txt~") && !is_backup_name("~") && !is_backup_name("a~b"));
+        // Only Linux hides backup files.
+        assert_eq!(is_hidden_name("notes.txt~"), cfg!(target_os = "linux"));
+    }
+
+    #[test]
+    fn hidden_file_lists_one_name_per_line() {
+        let names = parse_hidden_list("Documents\n\nsome name.txt\nlast");
+        assert_eq!(names.len(), 3);
+        assert!(names.contains("Documents") && names.contains("some name.txt") && names.contains("last"));
+    }
+
+    #[test]
+    fn hidden_file_hides_listed_names_on_linux() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-hidden-{}", std::process::id()));
+        fs::create_dir_all(dir.join("Secret")).unwrap();
+        fs::write(dir.join("shown.txt"), "x").unwrap();
+        fs::write(dir.join("old.txt~"), "x").unwrap();
+        fs::write(dir.join(".hidden"), "Secret\n").unwrap();
+        let linux = cfg!(target_os = "linux");
+        let names = |show: bool| -> Vec<String> {
+            let mut n: Vec<_> = list_dir(&dir, show).unwrap().into_iter().map(|e| e.name).collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(false), if linux { vec!["shown.txt"] } else { vec!["Secret", "old.txt~", "shown.txt"] });
+        // Shown, they come back marked hidden so the list fades them.
+        let all = list_dir(&dir, true).unwrap();
+        let faded = |n: &str| all.iter().find(|e| e.name == n).unwrap().hidden;
+        assert_eq!((faded("Secret"), faded("old.txt~"), faded("shown.txt")), (linux, linux, false));
+        assert_eq!(entry_at(&dir.join("Secret")).unwrap().hidden, linux);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

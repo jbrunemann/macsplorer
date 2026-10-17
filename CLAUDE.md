@@ -15,7 +15,7 @@ never paste decompiled code into the source.
 | `tools/make-icon` | Renders `assets/icon.png` + `assets/macsplorer.icns` (tiny-skia). |
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
 | `scripts/bundle-macos.sh` | Builds `target/release/Macsplorer.app`. |
-| `scripts/bundle-linux.sh` | Builds `target/release/macsplorer-linux-<arch>.tar.gz` (binary, `assets/macsplorer.desktop`, icon). |
+| `scripts/bundle-linux.sh` | Builds `target/release/macsplorer-linux-<arch>.tar.gz` (binary, `assets/macsplorer.desktop`, icons in the hicolor sizes, `install.sh`). The dock icon on Linux comes from the installed `.desktop` file matching the window's app id (`macsplorer`), not from `with_icon` (winit ignores that on Wayland), so run `install.sh` after unpacking. |
 | `scripts/build-linux-docker.sh` | Builds the same Linux tarball in an Ubuntu 22.04 Docker container (arm64 natively on Apple Silicon, or pass `linux/amd64`), into `target/linux-docker/`. |
 | `scripts/update-seti.py` | Refreshes `assets/seti` (Seti font/theme + language table) from the VS Code repo. |
 | `scripts/publish-wiki.py` | Mirrors `docs/manual` into the GitHub wiki (one page per chapter, sidebar, screenshots). The wiki is generated: never edit it by hand. Run it after a manual change is on `master`; `--dry-run` writes to `target/wiki`. |
@@ -77,7 +77,7 @@ live behind `#[cfg(target_os = "macos")]` with a Linux branch next to it: `platf
 (open/reveal/eject, `CMD` tooltip text, Tahoma paths), `trash.rs` (`trash` crate), `places.rs`
 (`/proc/self/mounts` volumes), `theme::resize_frame` (borderless-window resize handles),
 `xattr` and `folder_style` (folder colors only, drawn as the Win2000 folder in the color).
-Not ported yet: Open With (`open_with::SUPPORTED`), native icons, SF Symbol emblems, folder emblems, drag and drop beyond the window (`native_drag`).
+Linux hides what Nautilus hides (`listing::hidden_list`: a folder's `.hidden` file, and `~` backups in `is_hidden_name`), and takes files dropped from other apps through winit's `dropped_files` (X11 only, no pointer position: `Explorer::drop_files` puts them in the open folder). Not ported yet: Open With (`open_with::SUPPORTED`), native icons, SF Symbol emblems, folder emblems, dragging out of the window and drops on Wayland (`native_drag`).
 
 ## egui 0.36 notes (newer than most examples)
 
