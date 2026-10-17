@@ -321,14 +321,16 @@ A folder's Properties window has a second tab, **Customize**, where you give the
 <img src="images/properties-customize.png" alt="The Customize tab of a folder's Properties" width="380">
 
 - **Color**: click a color square, or the white one with the line through it for no color. These are Finder's colors: the color is a Finder tag, so the folder also shows that tag in Finder.
-- **Other...** opens the Color window for any other color: pick one of the basic colors, or click **Define Custom Colors >>** to pick from the whole range or type the numbers. **Add to Custom Colors** keeps a color in the boxes below for next time. Finder only knows its own seven colors, so Finder shows the one that looks most like yours. The line next to the button says which. If you change the color in Finder later, Finder's color is used from then on.
-- **Emblem**: the picture drawn on the folder. Type an emoji (press Control-Command-Space to pick one), or the name of one of Apple's SF Symbols, such as `star.fill` or `house.fill`. Leave it empty for a plain folder.
-- **Preview** shows the folder as Macsplorer and as Finder will draw it.
+- **Other...** opens the Color window for any other color: pick one of the basic colors, or click **Define Custom Colors >>** to pick from the whole range or type the numbers. **Add to Custom Colors** keeps a color in the boxes below for next time. The color you picked shows as a square next to the button. Finder only knows its own seven colors, so Finder shows the one that looks most like yours. If you change the color in Finder later, Finder's color is used from then on.
+- **Emblem**: the picture drawn on the folder, on its front below the tab. Click the box and type one of two things, then look at **Preview** to see how it turns out. Leave the box empty for a plain folder.
+  - **An emoji.** Press Control-Command-Space to open the Mac's emoji picker, or paste one. Emoji keep their own colors on the folder. Examples: 🚀 for a project, 🍲 for recipes, 📝 for notes, 💰 for money matters. Type one emoji only.
+  - **The name of an SF Symbol.** These are Apple's built-in line pictures, such as `star.fill`, `house.fill`, `heart.fill`, `camera.fill`, `book.fill` or `figure.outdoor.cycle`. A symbol is drawn in the dark blue of the title bar, whatever the folder's color. Names are written in lowercase with dots between the words. To find a name, open the free **SF Symbols** app from Apple, or search the web for "SF Symbols" and the thing you want. If this Mac doesn't have a symbol with the name you typed, a red line under the box says so, and the folder stays without an emblem until you fix the name.
+- **Preview** shows the folder as Macsplorer draws it.
 - **Restore Default** takes the color and the emblem off.
 
 <img src="images/color-dialog.png" alt="The Color window with Define Custom Colors open" width="470">
 
-Click **OK** or **Apply** to save. A colored folder shows its color in the list. **Large Icons** also shows the emblem; **List** and **Details** show only the color, and the **Folders** pane always shows the plain yellow folder. The tab isn't there for apps or other packages.
+Click **OK** or **Apply** to save. Macsplorer always draws the Windows 2000 folder, in the color you picked and with the emblem on it; Finder draws its own look. **Large Icons** also shows the emblem; **List** and **Details** show only the color, and the **Folders** pane always shows the plain yellow folder. The tab isn't there for apps or other packages.
 
 On Linux the tab has colors only: no emblem, and no Finder. A colored folder is the yellow folder in its color. The color is kept with the folder itself, so it stays when you move or copy the folder within Macsplorer, but some disks (USB sticks formatted for Windows, some network drives) can't keep it; Macsplorer then says so in the status bar.
 

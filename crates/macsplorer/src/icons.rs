@@ -19,9 +19,9 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Rect, Shape, TextureHandle, TextureOptions, Ui};
 use egui::epaint::ColorMode;
 use egui::layers::ShapeIdx;
-use macsplorer_core::folder_style::{FolderColor, FolderStyle};
+use macsplorer_core::folder_style::Emblem;
 use macsplorer_core::listing::{Entry, is_hidden_name};
-use macsplorer_core::places::{KnownFolder, known_folder};
+use macsplorer_core::places::known_folder;
 use macsplorer_core::rename::RenameKind;
 use macsplorer_core::seti::SetiTheme;
 
@@ -97,10 +97,9 @@ pub struct FileIcons {
     seti: Option<SetiTheme>,
     /// By path and pixel size.
     native: HashMap<(PathBuf, usize), Option<Native>>,
-    /// Customized folders, by style, whether the emblem shows, and pixel size.
-    styled: HashMap<(FolderStyle, bool, usize), Option<Native>>,
-    /// Tintable SF Symbol masks for the known folders, by rendered pixel size.
-    symbols: HashMap<(KnownFolder, usize), Option<TextureHandle>>,
+    /// The pictures drawn on folders (SF Symbols as tintable masks, emoji in
+    /// color), by rendered pixel size.
+    emblems: HashMap<(Emblem, usize), Option<TextureHandle>>,
     /// The 16 px icons of the apps in the "Open With" menu, by path and pixel size.
     menu: HashMap<(PathBuf, usize), Option<TextureHandle>>,
     budget: usize,
@@ -115,12 +114,12 @@ impl FileIcons {
         if let Err(e) = &seti {
             eprintln!("macsplorer: Seti icon theme unavailable: {e}");
         }
-        Self { seti: seti.ok(), native: HashMap::new(), styled: HashMap::new(), symbols: HashMap::new(), menu: HashMap::new(), budget: NATIVE_PER_FRAME }
+        Self { seti: seti.ok(), native: HashMap::new(), emblems: HashMap::new(), menu: HashMap::new(), budget: NATIVE_PER_FRAME }
     }
 
     /// The selection tint depends on the palette: drop the blended variants.
     pub fn palette_changed(&mut self) {
-        for native in self.native.values_mut().chain(self.styled.values_mut()).flatten() {
+        for native in self.native.values_mut().flatten() {
             native.textures.clear();
         }
     }
@@ -132,7 +131,6 @@ impl FileIcons {
     /// Forgets rendered native icons (an app update can change its icon).
     pub fn clear_native(&mut self) {
         self.native.clear();
-        self.styled.clear();
         self.menu.clear();
     }
 
@@ -168,19 +166,16 @@ impl FileIcons {
     }
 
     fn paint_sized(&mut self, ui: &Ui, rect: Rect, entry: &Entry, state: IconState, large: bool) {
-        // A customized folder: on macOS Finder's folder in its color, the
+        // A customized folder: the Win2000 folder in its color, with the
         // emblem only when large. Pasted custom icons (no emblem, but the
         // custom icon flag) still take the native icon below.
         if let Some(style) = entry.folder_style.as_ref().filter(|s| entry.kind == RenameKind::Folder && (s.emblem.is_some() || !entry.custom_icon)) {
-            let show_emblem = large && style.emblem.is_some();
-            if cfg!(target_os = "macos") && (style.color.is_some() || show_emblem) && self.paint_styled(ui, rect, style, show_emblem, state) {
-                return;
-            }
-            // Linux, or while Finder's drawing isn't ready: the folder in its color.
-            match style.color.map(FolderColor::rgb) {
-                Some([r, g, b]) => blended(ui, state, || theme::paint_colored_folder(ui.painter(), rect, Color32::from_rgb(r, g, b))),
-                None => blended(ui, state, || self.paint_vector(ui, rect, entry)),
-            }
+            let fill = style.color.map(|c| {
+                let [r, g, b] = c.rgb();
+                Color32::from_rgb(r, g, b)
+            });
+            let emblem = style.emblem.as_ref().filter(|_| large);
+            blended(ui, state, || self.paint_folder(ui, rect, &entry.path, fill, emblem));
             return;
         }
         let wants_native = entry.kind == RenameKind::Package || entry.custom_icon;
@@ -192,7 +187,7 @@ impl FileIcons {
 
     fn paint_vector(&mut self, ui: &Ui, rect: Rect, entry: &Entry) {
         match entry.kind {
-            RenameKind::Folder => self.paint_folder(ui, rect, &entry.path),
+            RenameKind::Folder => self.paint_folder(ui, rect, &entry.path, None, None),
             RenameKind::Package => {
                 let icon = if entry.extension() == Some("app") { Icon::App } else { Icon::Folder };
                 theme::paint_icon(ui.painter(), rect, icon, true);
@@ -218,23 +213,30 @@ impl FileIcons {
     /// folders that have one.
     pub fn paint_tree_folder(&mut self, ui: &Ui, rect: Rect, path: &Path) {
         let hidden = path.file_name().is_some_and(|n| is_hidden_name(&n.to_string_lossy()));
-        blended(ui, if hidden { IconState::Cut } else { IconState::Normal }, || self.paint_folder(ui, rect, path));
+        blended(ui, if hidden { IconState::Cut } else { IconState::Normal }, || self.paint_folder(ui, rect, path, None, None));
     }
 
-    fn paint_folder(&mut self, ui: &Ui, rect: Rect, path: &Path) {
-        theme::paint_icon(ui.painter(), rect, Icon::Folder, true);
-        let Some(known) = known_folder(path) else { return };
+    /// The Win2000 folder, yellow or in `fill`, with `emblem` on it or else
+    /// Finder's glyph for the user folders that have one.
+    fn paint_folder(&mut self, ui: &Ui, rect: Rect, path: &Path, fill: Option<Color32>, emblem: Option<&Emblem>) {
+        match fill {
+            Some(fill) => theme::paint_colored_folder(ui.painter(), rect, fill),
+            None => theme::paint_icon(ui.painter(), rect, Icon::Folder, true),
+        }
+        let known = known_folder(path).map(|k| Emblem::Symbol(k.symbol().to_owned()));
+        let Some(emblem) = emblem.or(known.as_ref()) else { return };
         let scale = rect.width() / 16.0;
         let px = (FOLDER_EMBLEM_SIZE * scale * ui.ctx().pixels_per_point()).round().max(1.0) as usize;
-        let texture = self.symbols.entry((known, px)).or_insert_with(|| {
-            native_icon::render_symbol(known.symbol(), px)
-                .map(|img| ui.ctx().load_texture(format!("symbol:{}:{px}", known.symbol()), img, TextureOptions::LINEAR))
+        let texture = self.emblems.entry((emblem.clone(), px)).or_insert_with(|| {
+            native_icon::render_emblem(emblem, px).map(|img| ui.ctx().load_texture(format!("emblem:{emblem:?}:{px}"), img, TextureOptions::LINEAR))
         });
         if let Some(tex) = texture {
             let center = egui::pos2(rect.left() + FOLDER_EMBLEM_CENTER.0 * scale, rect.top() + FOLDER_EMBLEM_CENTER.1 * scale);
             let target = Rect::from_center_size(center, egui::Vec2::splat(FOLDER_EMBLEM_SIZE * scale));
             let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            ui.painter().image(tex.id(), target, uv, theme::color::active_caption());
+            // A symbol is a mask in the title bar's blue; an emoji has its own colors.
+            let tint = if matches!(emblem, Emblem::Symbol(_)) { theme::color::active_caption() } else { Color32::WHITE };
+            ui.painter().image(tex.id(), target, uv, tint);
         }
     }
 
@@ -254,24 +256,6 @@ impl FileIcons {
         }
         let Some(Some(native)) = self.native.get_mut(&key) else { return false };
         draw_native(ui, rect, native, &format!("icon:{}:{px}", entry.path.display()), state);
-        true
-    }
-
-    /// Paints Finder's folder for `style`, like [`paint_native`](Self::paint_native).
-    fn paint_styled(&mut self, ui: &Ui, rect: Rect, style: &FolderStyle, show_emblem: bool, state: IconState) -> bool {
-        let px = (rect.width() * ui.ctx().pixels_per_point()).round().max(16.0) as usize;
-        let key = (style.clone(), show_emblem, px);
-        if !self.styled.contains_key(&key) {
-            if self.budget == 0 {
-                ui.ctx().request_repaint();
-                return false;
-            }
-            self.budget -= 1;
-            let native = native_icon::render_folder(style, show_emblem, px).map(|img| Native { image: Arc::new(img), textures: HashMap::new() });
-            self.styled.insert(key.clone(), native);
-        }
-        let Some(Some(native)) = self.styled.get_mut(&key) else { return false };
-        draw_native(ui, rect, native, &format!("folder:{style:?}:{show_emblem}:{px}"), state);
         true
     }
 }

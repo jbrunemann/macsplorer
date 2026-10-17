@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use egui::{Align, Key, Layout, Rect, Sense, TextEdit, Ui, pos2, vec2};
 
-use macsplorer_core::folder_style::{self, Emblem, FolderColor, FolderStyle, TagColor, format_hex};
+use macsplorer_core::folder_style::{self, Emblem, FolderColor, FolderStyle, TagColor};
 use macsplorer_core::listing::{Entry, Link, is_package_name};
 use macsplorer_core::properties::{
     FolderSize, FolderTotals, ItemInfo, SelectedItem, format_common_location, format_contains, format_size_line, format_target, item_info, permissions,
@@ -56,10 +56,8 @@ const VALUE_X: f32 = 86.0;
 /// from the one before.
 const SWATCH: f32 = 20.0;
 const SWATCH_STEP: f32 = 24.0;
-/// The preview icons on the Customize tab.
+/// The preview icon on the Customize tab.
 const PREVIEW: f32 = 48.0;
-/// Whether there is a Finder to show the folder style to (and preview for).
-const FINDER: bool = cfg!(target_os = "macos");
 /// How often a running folder walk's totals are shown, like the 250 ms
 /// timer `CFolderContentsInfo::SizeThreadProc` sets.
 const SIZE_REFRESH: Duration = Duration::from_millis(250);
@@ -127,10 +125,9 @@ enum Tab {
     Customize,
 }
 
-/// Finder's drawing of the chosen style on the Customize tab.
+/// Whether the emblem on the Customize tab names an SF Symbol this Mac has.
 struct Preview {
     style: FolderStyle,
-    texture: Option<egui::TextureHandle>,
     /// False when the emblem names an SF Symbol this Mac doesn't have.
     known_symbol: bool,
 }
@@ -606,13 +603,9 @@ impl Properties {
         if theme::push_button(ui, other, "Other...", true, false).clicked() && self.color_dialog.is_none() {
             self.color_dialog = Some(ColorDialog::new(self.color.map_or([255, 255, 255], FolderColor::rgb)));
         }
-        if let Some(color @ FolderColor::Custom(rgb)) = self.color {
+        if let Some(color @ FolderColor::Custom(_)) = self.color {
             let rect = Rect::from_min_size(pos2(other.right() + 8.0, other.center().y - SWATCH / 2.0), vec2(SWATCH, SWATCH));
             swatch(ui, rect, Some(color), true);
-            // Finder sees our own colors as its nearest one.
-            let text = if FINDER { format!("{}, Finder: {}", format_hex(rgb), color.tag().name()) } else { format_hex(rgb) };
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            ui.painter().text(pos2(rect.right() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, theme::color::text());
         }
         y + BUTTON.y + GROUP_BOTTOM
     }
@@ -629,22 +622,22 @@ impl Properties {
         edit.add(TextEdit::singleline(&mut self.emblem).id(egui::Id::new("folder emblem")).frame(egui::Frame::NONE).desired_width(f32::INFINITY));
         y += ROW_HEIGHT + 2.0;
 
+        // Only a mistake gets a line under the box.
         let style = self.chosen_style();
-        let hint = match &style.emblem {
-            Some(Emblem::Symbol(name)) if !self.preview(ui, &style).known_symbol => (format!("This Mac has no SF Symbol called \"{name}\"."), theme::color::error_text()),
-            _ => ("or the name of an SF Symbol, like star.fill.".to_owned(), theme::color::text()),
-        };
-        for (text, color) in [("An emoji (Control-Command-Space),".to_owned(), theme::color::text()), hint] {
+        if let Some(Emblem::Symbol(name)) = &style.emblem
+            && !self.preview(&style).known_symbol
+        {
             let row = Rect::from_min_max(pos2(value_x, y), pos2(page.right() - 12.0, y + ROW_HEIGHT - 4.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)), |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate());
+                let text = format!("This Mac has no SF Symbol called \"{name}\".");
+                ui.add(egui::Label::new(egui::RichText::new(text).color(theme::color::error_text())).truncate());
             });
-            y += ROW_HEIGHT - 4.0;
         }
+        y += ROW_HEIGHT - 4.0;
         y + GROUP_BOTTOM
     }
 
-    /// Macsplorer's Large Icons drawing of the chosen style, and Finder's.
+    /// Macsplorer's Large Icons drawing of the chosen style.
     fn preview_group(&mut self, ui: &mut Ui, page: Rect, mut y: f32, icons: &mut FileIcons) {
         etched_line(ui, page, y);
         y += GROUP_TOP;
@@ -655,32 +648,16 @@ impl Properties {
         entry.custom_icon = style.emblem.is_some();
         entry.folder_style = Some(style.clone()).filter(FolderStyle::is_customized);
         icons.paint_large(ui, ours, &entry, IconState::Normal);
-        if !FINDER {
-            return;
-        }
-        let theirs = ours.translate(vec2(PREVIEW + 48.0, 0.0));
-        if let Some(texture) = self.preview(ui, &style).texture.as_ref().map(egui::TextureHandle::id) {
-            ui.painter().image(texture, theirs, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
-        }
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        for (icon, caption) in [(ours, "Macsplorer"), (theirs, "Finder")] {
-            ui.painter().text(pos2(icon.center().x, icon.bottom() + 3.0), egui::Align2::CENTER_TOP, caption, font.clone(), theme::color::text());
-        }
     }
 
-    /// Finder's drawing of `style`, made again when the style changes.
-    fn preview(&mut self, ui: &Ui, style: &FolderStyle) -> &Preview {
+    /// Whether `style`'s emblem is known, checked again when the style changes.
+    fn preview(&mut self, style: &FolderStyle) -> &Preview {
         if self.preview.as_ref().is_none_or(|p| p.style != *style) {
-            let px = (PREVIEW * ui.ctx().pixels_per_point()).round() as usize;
             #[cfg(target_os = "macos")]
-            let (image, known_symbol) = (
-                native_icon::render_folder_preview(style, px),
-                !matches!(&style.emblem, Some(Emblem::Symbol(name)) if !native_icon::has_symbol(name)),
-            );
+            let known_symbol = !matches!(&style.emblem, Some(Emblem::Symbol(name)) if !native_icon::has_symbol(name));
             #[cfg(not(target_os = "macos"))]
-            let (image, known_symbol) = (None::<egui::ColorImage>, { let _ = px; true });
-            let texture = image.map(|img| ui.ctx().load_texture("folder-preview", img, egui::TextureOptions::LINEAR));
-            self.preview = Some(Preview { style: style.clone(), texture, known_symbol });
+            let known_symbol = true;
+            self.preview = Some(Preview { style: style.clone(), known_symbol });
         }
         self.preview.as_ref().expect("just set")
     }

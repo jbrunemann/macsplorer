@@ -154,20 +154,6 @@ fn oklab(rgb: [u8; 3]) -> [f32; 3] {
     ]
 }
 
-/// One pixel (straight RGBA) of Finder's Gray folder recolored to `color`.
-/// `body` is the gray of the folder's front: darker pixels get a darker
-/// `color`, lighter ones go toward white, so the shading stays.
-pub fn tint([r, g, b, a]: [u8; 4], body: u8, color: [u8; 3]) -> [u8; 4] {
-    let v = (r as f32 + g as f32 + b as f32) / 3.0;
-    let body = (body as f32).clamp(1.0, 254.0);
-    let [r, g, b] = color.map(|c| {
-        let c = c as f32;
-        let out = if v <= body { c * v / body } else { c + (255.0 - c) * (v - body) / (255.0 - body) };
-        out.round().clamp(0.0, 255.0) as u8
-    });
-    [r, g, b, a]
-}
-
 /// What Finder draws on the folder.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Emblem {
@@ -512,17 +498,6 @@ mod tests {
         assert_eq!(parse_hex("#00c8a"), None);
         assert_eq!(parse_hex("#00c8ag"), None);
         assert_eq!(parse_hex("#ééé"), None);
-    }
-
-    #[test]
-    fn tint_keeps_the_shading() {
-        let teal = [0, 128, 128];
-        // The body's own gray becomes the color, alpha stays.
-        assert_eq!(tint([120, 120, 120, 200], 120, teal), [0, 128, 128, 200]);
-        // Darker is darker, lighter goes toward white.
-        assert_eq!(tint([60, 60, 60, 255], 120, teal), [0, 64, 64, 255]);
-        assert_eq!(tint([255, 255, 255, 255], 120, teal), [255, 255, 255, 255]);
-        assert_eq!(tint([0, 0, 0, 255], 120, teal), [0, 0, 0, 255]);
     }
 
     #[cfg(target_os = "macos")]
