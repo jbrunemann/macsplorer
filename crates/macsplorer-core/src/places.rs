@@ -25,15 +25,16 @@ pub enum KnownFolder {
 }
 
 impl KnownFolder {
-    /// In Explorer's Quick access order.
+    /// In Explorer's Quick access order, with the home folder first (not from
+    /// Explorer).
     const ALL: [KnownFolder; 9] = [
+        KnownFolder::Home,
         KnownFolder::Desktop,
         KnownFolder::Downloads,
         KnownFolder::Documents,
         KnownFolder::Pictures,
         KnownFolder::Music,
         KnownFolder::Movies,
-        KnownFolder::Home,
         KnownFolder::Applications,
         KnownFolder::Trash,
     ];
@@ -90,7 +91,8 @@ pub fn known_folder(path: &Path) -> Option<KnownFolder> {
     KnownFolder::ALL.into_iter().find(|k| k.path().is_some_and(|p| p == path))
 }
 
-/// User folders that exist on this machine, in Explorer's Quick access order,
+/// User folders that exist on this machine, in Explorer's Quick access order
+/// after the home folder,
 /// with the symbolic links to folders directly in the home folder (the
 /// shortcuts people keep there) before the Trash. Not from Explorer.
 pub fn favorites() -> Vec<Place> {
