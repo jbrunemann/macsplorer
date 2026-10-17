@@ -87,10 +87,11 @@ impl IncrementalSearch {
     }
 }
 
-/// `CompareStringW` on the first characters with `NORM_IGNORECASE`, user locale.
+/// `CompareStringW` on the first characters with `NORM_IGNORECASE`, user
+/// locale. Both sides are folded first, so "é" typed finds a name stored
+/// decomposed.
 fn starts_with_ignore_case(name: &str, prefix: &str) -> bool {
-    let mut name = name.chars().flat_map(char::to_lowercase);
-    prefix.chars().flat_map(char::to_lowercase).all(|p| name.next() == Some(p))
+    crate::natural::fold(name).starts_with(&crate::natural::fold(prefix))
 }
 
 #[cfg(test)]
@@ -182,5 +183,16 @@ mod tests {
         assert_eq!(s.type_char('a', 0, &[], None), Outcome::NotFound);
         s.reset();
         assert_eq!(s.type_char('b', 0, &NAMES, Some(99)), Outcome::Found(2));
+    }
+
+    #[test]
+    fn typed_accents_find_decomposed_names() {
+        let names = ["cafe", "Cafe\u{301} Noir"];
+        let mut s = IncrementalSearch::default();
+        let mut out = Outcome::Ignored;
+        for (k, c) in "caf\u{e9}".chars().enumerate() {
+            out = s.type_char(c, 100 * k as u64, &names, None);
+        }
+        assert_eq!(out, Outcome::Found(1));
     }
 }

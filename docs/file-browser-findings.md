@@ -98,6 +98,10 @@ else                                                 -> StrCmpLogicalW (natural:
 
 Called from `CFSFolder::CompareIDs`, `CDrivesFolder::CompareIDs`, `CompareIDsAlphabetical`, `ILCompareRelIDs`, `CompareVariantsDirection` (column sorting) and `CDetailCategorizer::OnCompareCategory` (group headers). **Inferred:** every name-based ordering in Explorer is natural sort by default.
 
+**Not traced, from the API documentation:** `StrCmpLogicalW` and `StrCmpIW` compare letters with `CompareStringW` in the user locale, case-insensitively, so accented letters sort by the locale's rules ("Ä" with the A's in German, after Z in Swedish).
+
+**macsplorer** (`natural`): ICU4X collation (CLDR data) at secondary strength, which ignores case but not accents; the natural sort turns on CLDR's numeric ordering (`kn`), which reads digit runs as numbers. Names equal under that compare ordinally, to keep the order total. The language is `NSLocale.currentLocale.collatorIdentifier` on macOS (the first preferred language, or the List sort order in System Settings), `LC_COLLATE` on Linux. Digit runs compare as whole strings with the collation (Finder's `localizedStandardCompare:` works the same way), not chunk by chunk, so `a_1` sorts before `a1` because `_` sorts before digits; whether `StrCmpLogicalW` agrees there wasn't checked. Type-ahead and the search box match names in NFC, lowercase (`natural::fold`), so a name stored decomposed (HFS+, SMB, zip) is found by typing the composed letter.
+
 ### 2.3 Copy as path
 
 `CCopyAsPathMenu` (shell32; verb `copyaspath`, `CLSID_CopyAsPathMenu`) is a

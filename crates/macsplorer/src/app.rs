@@ -29,7 +29,7 @@ use macsplorer_core::marquee::{self, Marquee};
 use macsplorer_core::listing::{Entry, SortSpec, entry_at, format_byte_size, format_size, list_dir, list_dir_with, sort_entries};
 #[cfg(unix)]
 use macsplorer_core::listing::free_space;
-use macsplorer_core::natural::natural_cmp;
+use macsplorer_core::natural::{self, natural_cmp};
 use macsplorer_core::preferences::{Preferences, SortOrder, ViewMode};
 use macsplorer_core::places::{favorites, volumes};
 #[cfg(unix)]
@@ -1060,7 +1060,7 @@ impl Explorer {
     /// Indices into `entries` that pass the search filter, in display order.
     /// Cached, so a large folder isn't refiltered every frame.
     fn visible(&mut self) -> Rc<[usize]> {
-        let key = (self.entries_version, self.settings.show_extensions, self.search.trim().to_lowercase());
+        let key = (self.entries_version, self.settings.show_extensions, natural::fold(self.search.trim()));
         if let Some((k, rows)) = &self.visible_cache
             && *k == key
         {
@@ -1070,7 +1070,7 @@ impl Explorer {
         let rows: Rc<[usize]> = (0..self.entries.len())
             .filter(|&i| {
                 needle.is_empty()
-                    || self.entries[i].display_name(self.settings.show_extensions).to_lowercase().contains(needle)
+                    || natural::fold(self.entries[i].display_name(self.settings.show_extensions)).contains(needle.as_str())
             })
             .collect();
         self.visible_cache = Some((key, rows.clone()));
@@ -2805,7 +2805,7 @@ impl Explorer {
         ui.allocate_rect(rect, Sense::hover());
         let font = egui::TextStyle::Body.resolve(ui.style());
         let line_height = ui.fonts_mut(|f| f.row_height(&font));
-        let key = (self.entries_version, self.settings.show_extensions, self.search.trim().to_lowercase());
+        let key = (self.entries_version, self.settings.show_extensions, natural::fold(self.search.trim()));
         let widest = match &self.widest_name {
             Some((k, w)) if *k == key => *w,
             _ => {

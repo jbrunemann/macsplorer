@@ -12,10 +12,11 @@ use chrono::{DateTime, Local};
 #[cfg(unix)]
 use macsplorer_core::properties::{RelativeDay, relative_day};
 
-/// Reads the number separators. Call once at startup, before any thread
-/// starts (Linux's `setlocale` isn't thread-safe).
+/// Reads the number separators and the sort order. Call once at startup,
+/// before any thread starts (Linux's `setlocale` isn't thread-safe).
 #[cfg(unix)]
 pub fn install() {
+    macsplorer_core::natural::set_collation_locale(&imp::collation());
     let (group, decimal) = imp::separators();
     // Narrow no-break spaces (French and others) are missing from Tahoma.
     macsplorer_core::listing::set_number_format(&group.replace('\u{202f}', "\u{a0}"), &decimal);
@@ -81,6 +82,12 @@ mod imp {
         // SAFETY: the key is a valid static, and AnyObject fits any value.
         unsafe { url.getResourceValue_forKey_error(&mut value, NSURLLocalizedTypeDescriptionKey) }.ok()?;
         Some(value?.downcast::<NSString>().ok()?.to_string())
+    }
+
+    /// The language names sort in: the first preferred language, or the
+    /// List sort order chosen in System Settings > Language & Region.
+    pub fn collation() -> String {
+        NSLocale::currentLocale().collatorIdentifier().to_string()
     }
 
     pub fn separators() -> (String, String) {
@@ -166,6 +173,16 @@ mod imp {
         None
     }
 
+    /// `LC_COLLATE` from the environment, like "sv_SE.UTF-8".
+    pub fn collation() -> String {
+        // SAFETY: called at startup before other threads; the returned
+        // string stays valid until the next setlocale.
+        unsafe {
+            let name = libc::setlocale(libc::LC_COLLATE, c"".as_ptr());
+            if name.is_null() { String::new() } else { CStr::from_ptr(name).to_string_lossy().into_owned() }
+        }
+    }
+
     pub fn separators() -> (String, String) {
         // SAFETY: called at startup before other threads; "" means the
         // environment's locale. localeconv's strings stay valid until the
@@ -201,13 +218,14 @@ mod imp {
     }
 
     /// The C library has no long date format or words for today and
-    /// yesterday: the weekday and short date stand in, and the words stay
-    /// English.
+    /// yesterday: the weekday and short date stand in. Words stay English
+    /// like the rest of the app (`strftime`'s `%A` would be the locale's
+    /// language); the order and separators of the numbers are the locale's.
     pub fn long_date_time(when: SystemTime, relative: Option<RelativeDay>, with_time: bool) -> String {
         let day = match relative {
             Some(RelativeDay::Today) => "Today".to_owned(),
             Some(RelativeDay::Yesterday) => "Yesterday".to_owned(),
-            None => strftime(when, "%A"),
+            None => chrono::DateTime::<chrono::Local>::from(when).format("%A").to_string(),
         };
         let mut s = format!("{day}, {}", strftime(when, "%x"));
         if with_time {
@@ -217,6 +235,18 @@ mod imp {
     }
 
     pub fn short_date_time(when: SystemTime) -> String {
-        strftime(when, "%x %R")
+        strftime(when, &format!("%x {}", short_time_format()))
+    }
+
+    /// The locale's time without seconds: 12-hour where its time format
+    /// is ("3:04 PM" in en_US), else 24-hour ("15:04").
+    fn short_time_format() -> &'static str {
+        // SAFETY: nl_langinfo's string stays valid until the next setlocale,
+        // which only runs at startup.
+        let t_fmt = unsafe {
+            let p = libc::nl_langinfo(libc::T_FMT);
+            if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
+        };
+        if ["%r", "%I", "%l", "%p"].iter().any(|f| t_fmt.contains(f)) { "%-I:%M %p" } else { "%R" }
     }
 }
