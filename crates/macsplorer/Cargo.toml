@@ -10,7 +10,7 @@ eframe = "0.36.2"
 egui_extras = "0.36.2"
 egui-classic-menu = { version = "1.1.0", path = "../egui-classic-menu" }
 macsplorer-core = { version = "1.0.0", path = "../macsplorer-core" }
-update-check = { version = "1.4.1", path = "../update-check" }
+update-check = { version = "1.5.0", path = "../update-check" }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
