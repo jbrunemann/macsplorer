@@ -104,6 +104,7 @@ pub fn type_key(_path: &Path) -> Option<String> {
 
 /// Reaview's bundle identifier. Reaview steps through the images of a folder
 /// with ← / →, in the listing it is told with `--sort` and friends (see `open_args`).
+#[cfg(target_os = "macos")]
 const REAVIEW_ID: &str = "dev.reaview.ai";
 
 /// Whether the app bundle at `app` is Reaview.
