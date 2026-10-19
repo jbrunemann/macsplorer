@@ -160,6 +160,9 @@ enum Action {
     FilterDone,
     /// Go To Folder: the quick jump window.
     ShowGoTo,
+    /// The Folders pane menu's "Expand to current folder": the pane jumps to
+    /// the open folder, even when it doesn't follow by itself.
+    ShowInTree,
     /// `?` or F1: the keyboard shortcut list.
     ShowShortcuts,
     /// The keyboard was used to move around: draw focus rectangles from now on.
@@ -984,6 +987,15 @@ impl Explorer {
         }
     }
 
+    /// Brings the Folders pane back to the open folder: unfolds the way to
+    /// it, selects it and scrolls it to the middle. Unlike `sync_tree` it
+    /// ignores "Expand to open folder".
+    fn show_in_tree(&mut self) {
+        self.tree.take_open();
+        let loads = self.tree.reveal(self.history.current());
+        self.load(loads);
+    }
+
     fn current(&self) -> &Path {
         self.history.current()
     }
@@ -1655,6 +1667,7 @@ impl Explorer {
                     }
                 }
                 Action::ShowGoTo => self.show_goto(),
+                Action::ShowInTree => self.show_in_tree(),
                 Action::ShowShortcuts => {
                     self.shortcuts_dialog.get_or_insert_with(ShortcutsDialog::new);
                 }
@@ -2489,6 +2502,13 @@ impl Explorer {
         self.tree_page = ((viewport.height() / TREE_ROW_HEIGHT).floor() as usize).max(1);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
         let hidden = scrollbar::hidden(&mut ui);
+        // Empty space under the rows has the menu too; the rows sit on top of this and keep their own.
+        let background = ui.interact(viewport, ui.id().with("tree-background"), Sense::click());
+        egui::Popup::context_menu(&background).style(theme::menu_style).show(|ui| {
+            if ui.add(gutter_item(ui, TREE_SHOW_OPEN_LABEL, String::new())).clicked() {
+                actions.push(Action::ShowInTree);
+            }
+        });
         // Selections scroll into view in one jump, as in the tree view.
         let (drag, frame) = (self.drag.as_ref(), &mut self.drag_frame);
         let out = egui::ScrollArea::both().auto_shrink(false).animated(false).scroll_bar_visibility(hidden).show(&mut ui, |ui| {
@@ -4049,11 +4069,18 @@ fn tree_row(
             actions.push(Action::Eject(row.key.path.clone()));
         }
         ui.separator();
+        if ui.add(gutter_item(ui, TREE_SHOW_OPEN_LABEL, String::new())).clicked() {
+            actions.push(Action::ShowInTree);
+        }
         if ui.add(gutter_item(ui, "Properties", String::new())).clicked() {
             actions.push(Action::Properties(row.key.path.clone()));
         }
     });
 }
+
+/// The Folders pane menu's way back to the open folder, after Windows 10's
+/// navigation pane command of the same name.
+const TREE_SHOW_OPEN_LABEL: &str = "Expand to current folder";
 
 /// The keys the Folders pane handles, see [`tree_key_action`].
 const TREE_KEYS: [Key; 10] =

@@ -82,7 +82,7 @@ Click a folder's name to open it. Click the small **+** box (or double-click the
 
 As you move around, the tree follows you: it unfolds to and highlights the folder you're in. To turn that off, uncheck **View › Expand to open folder**.
 
-Right-click a folder in the tree for **Open**, **Properties**, and **Eject** for disks you can safely remove.
+Right-click a folder in the tree for **Open**, **Properties**, and **Eject** for disks you can safely remove. The menu also has **Expand to current folder**, which takes the tree back to the folder you're looking at: it unfolds the way there, selects the folder and scrolls it into the middle. Use it when you have scrolled or folded the tree away, or when **Expand to open folder** is off. It's in the menu for empty space in the pane too.
 
 To hide the pane and give the files more room, click **Folders** on the toolbar or the **×** at the top of the pane. Click **Folders** again to bring it back.
 
