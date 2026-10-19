@@ -1233,7 +1233,10 @@ impl Explorer {
         let is_folder = self.entries.iter().find(|e| e.path == path).map_or(path.is_dir(), Entry::is_folder);
         if is_folder {
             self.navigate(path);
-        } else if let Some(app) = open_with::chosen_app(&path) {
+        } else if let Some(app) = open_with::chosen_app(&path)
+            .or_else(|| open_with::default_app(&path).filter(|app| open_with::is_reaview(app)))
+        {
+            // Reaview is also told the sort, so it needs `open_with`'s arguments even as the default app.
             self.open_with(path, Some(app));
         } else if let Err(e) = platform::open_default(&path) {
             self.status = Some(format!("Couldn't open {}: {e}", self.shown(&path)));
@@ -1249,7 +1252,7 @@ impl Explorer {
             }
             return;
         };
-        if let Err(e) = Command::new("open").arg("-a").arg(&app).arg(&path).spawn() {
+        if let Err(e) = Command::new("open").args(open_with::open_args(&app, &path, self.sort, self.settings.show_hidden)).spawn() {
             self.status = Some(format!("Couldn't open {} with {}: {e}", self.shown(&path), open_with::app_name(&app)));
         }
     }

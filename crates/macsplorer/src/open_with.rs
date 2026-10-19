@@ -2,8 +2,11 @@
 //! submenu. Windows builds that submenu in shell32's
 //! `COpenWithMenu::QueryContextMenu` / `InitMenuPopup` (not traced yet).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use macsplorer_core::columns::Column;
+use macsplorer_core::listing::SortSpec;
 use macsplorer_core::preferences::Preferences;
 
 /// Whether this platform can list apps for a file. There is no Linux
@@ -23,7 +26,7 @@ pub fn apps_for(path: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     let ws = NSWorkspace::sharedWorkspace();
-    let default = chosen_app(path).or_else(|| ws.URLForApplicationToOpenURL(&url).and_then(|u| u.to_file_path()));
+    let default = chosen_app(path).or_else(|| default_app(path));
     let mut others: Vec<PathBuf> =
         ws.URLsForApplicationsToOpenURL(&url).iter().filter_map(|u| u.to_file_path()).collect();
     others.sort_by(|a, b| macsplorer_core::natural::natural_cmp(&app_name(a), &app_name(b)));
@@ -35,6 +38,21 @@ pub fn apps_for(path: &Path) -> Vec<PathBuf> {
         }
     }
     apps
+}
+
+/// The app macOS opens `path` with when the user has not chosen one here.
+#[cfg(target_os = "macos")]
+pub fn default_app(path: &Path) -> Option<PathBuf> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::NSURL;
+
+    let url = NSURL::from_file_path(path)?;
+    NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url).and_then(|u| u.to_file_path())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn default_app(_path: &Path) -> Option<PathBuf> {
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -65,6 +83,70 @@ pub fn type_key(path: &Path) -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 pub fn type_key(_path: &Path) -> Option<String> {
     None
+}
+
+/// Reaview's bundle identifier. Reaview steps through the images of a folder
+/// with ← / →, in the listing it is told with `--sort` and friends (see `open_args`).
+const REAVIEW_ID: &str = "dev.reaview.ai";
+
+/// Whether the app bundle at `app` is Reaview.
+#[cfg(target_os = "macos")]
+pub fn is_reaview(app: &Path) -> bool {
+    use objc2_foundation::{NSBundle, NSURL};
+
+    NSURL::from_directory_path(app)
+        .and_then(|url| NSBundle::bundleWithURL(&url))
+        .and_then(|bundle| bundle.bundleIdentifier())
+        .is_some_and(|id| id.to_string() == REAVIEW_ID)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_reaview(_app: &Path) -> bool {
+    false
+}
+
+/// The `open` arguments that open `path` with `app`. Reaview gets the listing
+/// this window shows, so its ← / → match it (see `reaview_args`). It reads
+/// them at launch only, so it is started as a new process each time.
+pub fn open_args(app: &Path, path: &Path, sort: SortSpec, show_hidden: bool) -> Vec<OsString> {
+    let reaview = is_reaview(app);
+    let mut args: Vec<OsString> = Vec::new();
+    if reaview {
+        args.push("-n".into());
+    }
+    args.extend(["-a".into(), app.into(), path.into()]);
+    if reaview {
+        args.extend(reaview_args(sort, show_hidden).into_iter().map(OsString::from));
+    }
+    args
+}
+
+/// Reaview's options for the folder's listing, after `--args`; empty when
+/// none apply. Name, Size and Modified have a counterpart there, ascending or
+/// descending; the other columns do not, so Reaview keeps its Finder name
+/// order. `--plain` is the `NoStrCmpLogical` name order (no natural numbers),
+/// `--hidden` lists dot files like "Hidden files and folders" does.
+fn reaview_args(sort: SortSpec, show_hidden: bool) -> Vec<&'static str> {
+    let mut args = Vec::new();
+    let key = match sort.column {
+        Column::Name => Some("name"),
+        Column::Size => Some("size"),
+        Column::Modified => Some("date"),
+        _ => None,
+    };
+    if let Some(key) = key {
+        args.extend(["--sort", key, if sort.ascending { "--asc" } else { "--desc" }]);
+    }
+    if !sort.natural {
+        args.push("--plain");
+    }
+    if show_hidden {
+        args.push("--hidden");
+    }
+    if !args.is_empty() {
+        args.insert(0, "--args");
+    }
+    args
 }
 
 /// The app the user chose for this kind of file, if it is still installed.
@@ -110,6 +192,60 @@ mod tests {
         assert_eq!(a.as_deref(), Some("public.jpeg"));
         assert_eq!(a, b);
         assert_eq!(type_key(Path::new("/no/such/file.jpg")), None);
+    }
+
+    fn sort(column: Column, ascending: bool) -> SortSpec {
+        SortSpec { column, ascending, ..SortSpec::default() }
+    }
+
+    /// An app bundle with just enough for `NSBundle` to read its identifier.
+    fn app_bundle(name: &str, id: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("macsplorer-open-args-{}-{name}", std::process::id()));
+        let app = dir.join(format!("{name}.app"));
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>\
+                 <key>CFBundleIdentifier</key><string>{id}</string></dict></plist>"
+            ),
+        )
+        .unwrap();
+        (dir, app)
+    }
+
+    #[test]
+    fn reaview_is_told_the_listing_in_a_new_process() {
+        let (dir, app) = app_bundle("Reaview", REAVIEW_ID);
+        let file = Path::new("/photos/a.jpg");
+        let args = |sort, hidden| {
+            open_args(&app, file, sort, hidden).iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>()
+        };
+        let a = app.to_string_lossy().into_owned();
+        assert_eq!(
+            args(sort(Column::Modified, false), false),
+            ["-n", "-a", &a, "/photos/a.jpg", "--args", "--sort", "date", "--desc"]
+        );
+        assert_eq!(
+            args(sort(Column::Size, true), false),
+            ["-n", "-a", &a, "/photos/a.jpg", "--args", "--sort", "size", "--asc"]
+        );
+        assert_eq!(args(sort(Column::Name, true), false)[5..], ["--sort", "name", "--asc"]);
+        // Plain name order and hidden files ride along.
+        let plain = SortSpec { natural: false, ..sort(Column::Name, true) };
+        assert_eq!(args(plain, true)[4..], ["--args", "--sort", "name", "--asc", "--plain", "--hidden"]);
+        // A column Reaview can't sort by: still a new process, and nothing else to say by default.
+        assert_eq!(args(sort(Column::Type, true), false), ["-n", "-a", &a, "/photos/a.jpg"]);
+        assert_eq!(args(sort(Column::Type, true), true)[4..], ["--args", "--hidden"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn other_apps_get_only_the_file() {
+        let (dir, app) = app_bundle("Other", "com.example.other");
+        let args = open_args(&app, Path::new("/photos/a.jpg"), SortSpec { natural: false, ..sort(Column::Size, false) }, true);
+        assert_eq!(args, [OsString::from("-a"), app.clone().into(), "/photos/a.jpg".into()]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
