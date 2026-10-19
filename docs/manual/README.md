@@ -492,3 +492,8 @@ Both need Git to be installed on your Mac. Macsplorer looks for it when it start
 
 **Which version do I have?**
 Choose **Help › About Macsplorer**. A small window shows the app icon, the version, the locale (the region that dates and numbers follow, and the language names are sorted by) and the font the text is set in. When the font comes from a file, its location is a link: click it and the window closes and the font's folder opens with the file selected. Press OK, Return or Escape to close the window.
+
+**Is there a newer version?**
+Open **Help › About Macsplorer** and press **Check for Updates**. Macsplorer asks the project's releases page on GitHub for the newest version and says either that you have the latest one or which version is available, with a link to its download page. Macsplorer never checks by itself: nothing is sent until you press the button. The check needs `curl`, which every Mac has.
+
+The address it asks is the `update_url` entry in `~/Library/Application Support/macsplorer/settings.json` (**Help › Open config file** opens it). If the GitHub page ever disappears, change it to the address of a file that says what the newest version is, for example `{"version": "1.5.0", "url": "https://example.org/macsplorer"}`. GitHub's own "latest release" format works as well.

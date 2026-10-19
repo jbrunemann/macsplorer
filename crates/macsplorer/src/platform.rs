@@ -104,6 +104,11 @@ pub fn open_default(path: &Path) -> io::Result<()> {
     Command::new(opener).arg(path).spawn().map(drop)
 }
 
+/// Opens a web address in the default browser without waiting for it.
+pub fn open_url(url: &str) -> io::Result<()> {
+    open_default(Path::new(url))
+}
+
 /// Opens a text file in the default text editor without waiting for it. On
 /// macOS `open -t` is the editor for plain text, whatever app owns `.json`.
 pub fn open_text(path: &Path) -> io::Result<()> {

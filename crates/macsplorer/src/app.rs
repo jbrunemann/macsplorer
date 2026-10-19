@@ -3384,6 +3384,11 @@ impl eframe::App for Explorer {
                 self.about_dialog = None;
                 self.reveal_in_view(path);
             }
+            Some(AboutOutcome::OpenUrl(url)) => {
+                if let Err(e) = platform::open_url(&url) {
+                    self.status = Some(format!("Couldn't open {url}: {e}"));
+                }
+            }
             Some(AboutOutcome::Open) | None => {}
         }
         self.show_conflict();
@@ -5488,6 +5493,14 @@ mod screenshot {
             },
             (AboutDialog::new(), false),
         );
+        // SHOT_UPDATE picks what the update line shows: available, current or error.
+        let release = update_check::Release { version: "1.5.0".into(), page: Some("https://github.com/jbrunemann/macsplorer/releases/tag/v1.5.0".into()) };
+        match std::env::var("SHOT_UPDATE").as_deref() {
+            Ok("available") => harness.state_mut().0.set_result(Ok(update_check::Status::Available(release))),
+            Ok("current") => harness.state_mut().0.set_result(Ok(update_check::Status::UpToDate { latest: "1.4.1".into() })),
+            Ok("error") => harness.state_mut().0.set_result(Err(update_check::Error::Fetch("The requested URL returned error: 403".into()))),
+            _ => {}
+        }
         for _ in 0..3 {
             harness.run();
         }

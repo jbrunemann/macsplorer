@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/macsplorer-core", "crates/macsplorer", "crates/egui-classic-menu", "tools/make-icon"]
+members = ["crates/macsplorer-core", "crates/macsplorer", "crates/egui-classic-menu", "crates/update-check", "tools/make-icon"]
 
 [workspace.package]
 edition = "2024"

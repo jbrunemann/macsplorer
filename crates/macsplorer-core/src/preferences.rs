@@ -17,6 +17,8 @@ use crate::folder_style::{format_hex, parse_hex};
 use crate::text_size;
 
 const FILE: &str = "settings.json";
+/// Where "Check for Updates" asks by default: GitHub's latest release.
+pub const DEFAULT_UPDATE_URL: &str = "https://api.github.com/repos/jbrunemann/macsplorer/releases/latest";
 /// The empty file older versions used to mean "dark mode is on".
 const LEGACY_DARK_MARKER: &str = "dark-mode";
 
@@ -67,6 +69,11 @@ pub struct Preferences {
     /// "Ghostty"), a command on Linux. Only set by editing the file; `None`
     /// means the system's.
     pub terminal: Option<String>,
+    /// Where "Check for Updates" asks for the newest release (the `update-check`
+    /// crate says what it may answer). Always written, so there is something
+    /// to edit if the default's host goes away; empty or missing reads as
+    /// [`DEFAULT_UPDATE_URL`].
+    pub update_url: String,
     /// Where git was found the last time, so the next launch doesn't have to
     /// search for it. Written by the app, and dropped when git is gone.
     pub git: Option<PathBuf>,
@@ -85,7 +92,7 @@ pub struct Preferences {
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16] }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, update_url: DEFAULT_UPDATE_URL.to_owned(), git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16] }
     }
 }
 
@@ -143,6 +150,7 @@ impl Preferences {
         if let Some(terminal) = &self.terminal {
             map.insert("terminal".into(), Value::from(terminal.as_str()));
         }
+        map.insert("update_url".into(), Value::from(self.update_url.as_str()));
         match &self.git {
             Some(git) => map.insert("git".into(), Value::from(git.to_string_lossy().as_ref())),
             None => map.remove("git"),
@@ -184,6 +192,7 @@ impl Preferences {
             columns: map.get("columns").and_then(ColumnSet::from_json),
             zoom: map.get("zoom").and_then(Value::as_f64).map_or(text_size::NORMAL, |z| text_size::snap(z as f32)),
             terminal: map.get("terminal").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(String::from),
+            update_url: map.get("update_url").and_then(Value::as_str).map(str::trim).filter(|u| !u.is_empty()).unwrap_or(DEFAULT_UPDATE_URL).to_owned(),
             git: map.get("git").and_then(Value::as_str).map(str::trim).filter(|g| !g.is_empty()).map(PathBuf::from),
             view: map.get("view").and_then(Value::as_str).and_then(ViewMode::from_key).unwrap_or_default(),
             sort: map.get("sort").and_then(read_sort),
@@ -295,6 +304,26 @@ mod tests {
     }
 
     #[test]
+    fn the_update_address_defaults_and_can_be_changed() {
+        let dir = temp("update-url");
+        assert_eq!(Preferences::load_from(&dir).update_url, DEFAULT_UPDATE_URL);
+        // Saving writes the default out, where it can be edited.
+        Preferences::default().save_to(&dir).unwrap();
+        let text = fs::read_to_string(dir.join(FILE)).unwrap();
+        assert!(text.contains(DEFAULT_UPDATE_URL), "{text}");
+        fs::write(dir.join(FILE), r#"{"update_url": " https://example.org/macsplorer.json "}"#).unwrap();
+        let mut prefs = Preferences::load_from(&dir);
+        assert_eq!(prefs.update_url, "https://example.org/macsplorer.json");
+        // Another setting changing doesn't put the default back.
+        prefs.dark = true;
+        prefs.save_to(&dir).unwrap();
+        assert_eq!(Preferences::load_from(&dir).update_url, "https://example.org/macsplorer.json");
+        fs::write(dir.join(FILE), r#"{"update_url": ""}"#).unwrap();
+        assert_eq!(Preferences::load_from(&dir).update_url, DEFAULT_UPDATE_URL);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_terminal_is_read_and_kept() {
         let dir = temp("terminal");
         fs::create_dir_all(&dir).unwrap();
@@ -324,7 +353,7 @@ mod tests {
         // Git being gone removes it from the file.
         Preferences { git: None, ..Preferences::load_from(&dir) }.save_to(&dir).unwrap();
         assert_eq!(Preferences::load_from(&dir).git, None);
-        assert!(!fs::read_to_string(dir.join(FILE)).unwrap().contains("git"));
+        assert!(!fs::read_to_string(dir.join(FILE)).unwrap().contains("\"git\""));
         fs::remove_dir_all(&dir).unwrap();
     }
 
