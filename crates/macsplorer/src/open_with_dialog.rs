@@ -37,6 +37,8 @@ pub struct OpenWithDialog {
     viewport: egui::ViewportId,
     file: PathBuf,
     apps: Vec<PathBuf>,
+    /// The first of `apps` is the file's default.
+    has_default: bool,
     selected: Option<usize>,
     always: bool,
     /// Scroll the selected row into view on the next frame. Only a keyboard
@@ -49,10 +51,10 @@ pub struct OpenWithDialog {
 
 impl OpenWithDialog {
     /// `apps` are the ones that can open `file`, the file's default first;
-    /// that one starts out selected.
-    pub fn new(file: PathBuf, apps: Vec<PathBuf>) -> Self {
-        let selected = (!apps.is_empty()).then_some(0);
-        Self { viewport: egui::ViewportId::from_hash_of(("open-with", &file)), file, apps, selected, always: false, reveal: false, picked: None }
+    /// that one starts out selected and is marked "(default)".
+    pub fn new(file: PathBuf, apps: open_with::Apps) -> Self {
+        let selected = (!apps.list.is_empty()).then_some(0);
+        Self { viewport: egui::ViewportId::from_hash_of(("open-with", &file)), file, apps: apps.list, has_default: apps.has_default, selected, always: false, reveal: false, picked: None }
     }
 
     pub fn file(&self) -> &std::path::Path {
@@ -195,7 +197,9 @@ impl OpenWithDialog {
                 if let Some(texture) = icons.menu_icon(&ctx, app) {
                     egui::Image::new((texture, icon.size())).paint_at(ui, icon);
                 }
-                let galley = ui.fonts_mut(|f| f.layout_no_wrap(open_with::app_name(app), font.clone(), theme::color::text()));
+                let name = open_with::app_name(app);
+                let name = if self.has_default && i == 0 { format!("{name} (default)") } else { name };
+                let galley = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), theme::color::text()));
                 let label = Rect::from_min_size(pos2(icon.right() + 5.0, row.center().y - 8.0), vec2(galley.size().x + 6.0, 16.0));
                 let on = selected == Some(i);
                 if on {
@@ -241,13 +245,13 @@ mod tests {
     use super::*;
 
     fn dialog() -> OpenWithDialog {
-        OpenWithDialog::new(PathBuf::from("/tmp/a.txt"), vec![PathBuf::from("/Applications/TextEdit.app"), PathBuf::from("/Applications/Zed.app")])
+        OpenWithDialog::new(PathBuf::from("/tmp/a.txt"), open_with::Apps { list: vec![PathBuf::from("/Applications/TextEdit.app"), PathBuf::from("/Applications/Zed.app")], has_default: true })
     }
 
     #[test]
     fn the_default_app_starts_selected() {
         assert_eq!(dialog().selected, Some(0));
-        assert_eq!(OpenWithDialog::new(PathBuf::from("/tmp/a"), Vec::new()).selected, None);
+        assert_eq!(OpenWithDialog::new(PathBuf::from("/tmp/a"), open_with::Apps::default()).selected, None);
     }
 
     #[test]

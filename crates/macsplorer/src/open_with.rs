@@ -14,16 +14,32 @@ use macsplorer_core::preferences::Preferences;
 /// so the menu is hidden there.
 pub const SUPPORTED: bool = cfg!(target_os = "macos");
 
+/// The apps that can open a file, and whether the first is the one it opens with.
+#[derive(Clone, Default)]
+pub struct Apps {
+    pub list: Vec<PathBuf>,
+    /// The first app in `list` is the file's default: the app the user chose
+    /// for its type, or else the system's.
+    pub has_default: bool,
+}
+
+impl Apps {
+    /// Whether `list[index]` is the app the file opens with.
+    pub fn is_default(&self, index: usize) -> bool {
+        self.has_default && index == 0
+    }
+}
+
 /// Apps that can open `path`: the one the user chose for this type of file,
 /// or else the system's default, first, then the rest by name.
 /// Copies of the same app in several places show up once.
 #[cfg(target_os = "macos")]
-pub fn apps_for(path: &Path) -> Vec<PathBuf> {
+pub fn apps_for(path: &Path) -> Apps {
     use objc2_app_kit::NSWorkspace;
     use objc2_foundation::NSURL;
 
     let Some(url) = NSURL::from_file_path(path) else {
-        return Vec::new();
+        return Apps::default();
     };
     let ws = NSWorkspace::sharedWorkspace();
     let default = chosen_app(path).or_else(|| default_app(path));
@@ -31,13 +47,14 @@ pub fn apps_for(path: &Path) -> Vec<PathBuf> {
         ws.URLsForApplicationsToOpenURL(&url).iter().filter_map(|u| u.to_file_path()).collect();
     others.sort_by(|a, b| macsplorer_core::natural::natural_cmp(&app_name(a), &app_name(b)));
 
+    let has_default = default.is_some();
     let mut apps: Vec<PathBuf> = Vec::new();
     for app in default.into_iter().chain(others) {
         if !apps.iter().any(|a| app_name(a) == app_name(&app)) {
             apps.push(app);
         }
     }
-    apps
+    Apps { list: apps, has_default }
 }
 
 /// The app macOS opens `path` with when the user has not chosen one here.
@@ -56,8 +73,8 @@ pub fn default_app(_path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn apps_for(_path: &Path) -> Vec<PathBuf> {
-    Vec::new()
+pub fn apps_for(_path: &Path) -> Apps {
+    Apps::default()
 }
 
 /// The file's type as the system knows it (a UTI such as `public.json`),
@@ -252,7 +269,7 @@ mod tests {
     fn text_files_open_with_textedit() {
         let file = std::env::temp_dir().join("macsplorer-open-with.txt");
         std::fs::write(&file, "hi").unwrap();
-        let names: Vec<String> = apps_for(&file).iter().map(|a| app_name(a)).collect();
+        let names: Vec<String> = apps_for(&file).list.iter().map(|a| app_name(a)).collect();
         std::fs::remove_file(&file).ok();
         assert!(names.iter().any(|n| n == "TextEdit"), "{names:?}");
         let mut unique = names.clone();

@@ -430,7 +430,7 @@ pub struct Explorer {
     navigating_from_tree: bool,
     icons: FileIcons,
     /// The "Open With" apps for the file whose context menu is open.
-    open_with: Option<(PathBuf, Vec<PathBuf>)>,
+    open_with: Option<(PathBuf, open_with::Apps)>,
     /// Open Properties dialogs, each in its own window.
     properties: Vec<Properties>,
     ctx: egui::Context,
@@ -3458,14 +3458,16 @@ fn delayed_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui)
 
 /// The "Open With" submenu: the file's apps, then "Choose Program...".
 /// The app list is looked up once per file and kept while the menu is open.
-fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
+fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, open_with::Apps)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
     delayed_menu_button(ui, "Open With", |ui| {
         if cache.as_ref().is_none_or(|(p, _)| p != path) {
             *cache = Some((path.to_path_buf(), open_with::apps_for(path)));
         }
-        let apps = cache.as_ref().map_or(&[][..], |(_, apps)| apps.as_slice());
-        for app in apps {
-            let name = open_with::app_name(app);
+        let apps = cache.as_ref().map(|(_, apps)| apps.clone()).unwrap_or_default();
+        for (i, app) in apps.list.iter().enumerate() {
+            // Bold marks the default, like the Open item at the top of the menu.
+            let name = RichText::new(open_with::app_name(app));
+            let name = if apps.is_default(i) { name.font(theme::bold(theme::FONT_SIZE)) } else { name };
             let button = match icons.menu_icon(ui.ctx(), app) {
                 Some(icon) => egui::Button::image_and_text(egui::Image::new((icon, egui::vec2(16.0, 16.0))), name),
                 None => egui::Button::new(name),
@@ -3474,7 +3476,7 @@ fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<Pat
                 actions.push(Action::OpenWith(path.to_path_buf(), Some(app.clone())));
             }
         }
-        if !apps.is_empty() {
+        if !apps.list.is_empty() {
             ui.separator();
         }
         if ui.add(gutter_item(ui, "Choose Program...", String::new())).clicked() {
@@ -3484,7 +3486,7 @@ fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<Pat
 }
 
 /// The context menu for an item.
-fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
+fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option<(PathBuf, open_with::Apps)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
     if ui.add(gutter_item(ui, RichText::new("Open").font(theme::bold(theme::FONT_SIZE)), String::new())).clicked() {
         actions.push(Action::Open(entry.path.clone()));
     }
