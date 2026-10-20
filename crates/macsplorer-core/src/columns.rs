@@ -192,6 +192,12 @@ impl ColumnSet {
         self.widths[column.index()] = width.max(0.0);
     }
 
+    /// Every column back to its default width. Which columns are shown, and
+    /// their order, stay. Not from Explorer.
+    pub fn reset_widths(&mut self) {
+        self.widths = Column::ALL.iter().map(|c| c.default_width()).collect();
+    }
+
     /// The shown columns' widths, left to right, for [`hit_test`].
     pub fn visible_widths(&self) -> Vec<f32> {
         self.visible().into_iter().map(|c| self.width(c)).collect()
@@ -403,6 +409,19 @@ mod tests {
 
     fn names(v: &[Column]) -> Vec<&'static str> {
         v.iter().map(|c| c.caption()).collect()
+    }
+
+    #[test]
+    fn reset_widths_keeps_the_shown_columns() {
+        let mut set = ColumnSet::default();
+        set.toggle(Column::Owner);
+        set.set_width(Column::Name, 410.0);
+        set.set_width(Column::Owner, 33.0);
+        let shown = set.visible();
+        set.reset_widths();
+        assert_eq!(set.width(Column::Name), Column::Name.default_width());
+        assert_eq!(set.width(Column::Owner), Column::Owner.default_width());
+        assert_eq!(set.visible(), shown);
     }
 
     #[test]

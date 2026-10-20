@@ -185,6 +185,8 @@ enum Action {
     ToggleColumn(Column),
     /// The header menu's "More...".
     ChooseColumns,
+    /// The header menu's "Reset Sorting and Widths".
+    ResetColumns,
     Back,
     Forward,
     HistoryJump(usize),
@@ -1722,6 +1724,19 @@ impl Explorer {
                     }
                 }
                 Action::ToggleColumn(column) => self.columns.toggle(column),
+                Action::ResetColumns => {
+                    let default = SortSpec::default();
+                    self.columns.reset_widths();
+                    if (self.sort.column, self.sort.ascending) != (default.column, default.ascending) {
+                        self.sort.column = default.column;
+                        self.sort.ascending = default.ascending;
+                        self.resort();
+                    }
+                    if self.persist {
+                        let sort = SortOrder { column: default.column, ascending: default.ascending };
+                        Preferences::update(|p| p.sort = Some(sort));
+                    }
+                }
                 Action::ChooseColumns => {
                     if self.column_dialog.is_none() {
                         self.column_dialog = Some(ColumnDialog::new(&self.columns));
@@ -3827,7 +3842,8 @@ fn cell_text(entry: &Entry, column: Column) -> String {
 }
 
 /// The column header's context menu (`CDefView::OnVisibleColumnMenu`):
-/// a check per column, then "More...".
+/// a check per column, then "More..." and, not from Explorer, "Reset Sorting
+/// and Widths".
 fn header_menu(ui: &mut Ui, columns: &ColumnSet, actions: &mut Vec<Action>) {
     let (items, more) = columns.menu();
     for item in items {
@@ -3837,12 +3853,14 @@ fn header_menu(ui: &mut Ui, columns: &ColumnSet, actions: &mut Vec<Action>) {
             ui.close();
         }
     }
-    if more {
-        ui.separator();
-        if ui.add(gutter_item(ui, "More...", String::new())).clicked() {
-            actions.push(Action::ChooseColumns);
-            ui.close();
-        }
+    ui.separator();
+    if more && ui.add(gutter_item(ui, "More...", String::new())).clicked() {
+        actions.push(Action::ChooseColumns);
+        ui.close();
+    }
+    if ui.add(gutter_item(ui, "Reset Sorting and Widths", String::new())).clicked() {
+        actions.push(Action::ResetColumns);
+        ui.close();
     }
 }
 
@@ -4308,6 +4326,22 @@ mod tests {
         assert_eq!(app.saved_columns, Some(stored));
         assert_eq!(app.settings.view, ViewMode::List);
         assert_eq!((app.sort.column, app.sort.ascending), (Column::Modified, false));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reset_columns_restores_sort_and_widths_but_not_the_shown_columns() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-reset-columns-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut app = Explorer::new(egui::Context::default(), dir.clone());
+        app.columns.set_visible(&[Column::Name, Column::Modified]);
+        app.columns.set_width(Column::Name, 410.0);
+        app.sort.column = Column::Modified;
+        app.sort.ascending = false;
+        app.apply(vec![Action::ResetColumns], &[]);
+        assert_eq!((app.sort.column, app.sort.ascending), (Column::Name, true));
+        assert_eq!(app.columns.width(Column::Name), Column::Name.default_width());
+        assert_eq!(app.columns.visible(), [Column::Name, Column::Modified]);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

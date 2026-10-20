@@ -140,7 +140,9 @@ The available columns are:
 | **Owner**, **Group** | Which user and group it belongs to. |
 | **Branch** | The Git branch of a folder that is a Git repository, with the branch symbol in front. Blank for everything else. |
 
-Choose **More...** at the bottom of that menu for the **Column Settings** window. There you can check and uncheck columns, put them in a different order with **Move Up** and **Move Down**, and type an exact width for the selected column.
+Choose **Reset Sorting and Widths** at the bottom of that menu to sort by name again and give every column its original width. The columns you have shown stay as they are.
+
+Choose **More...** above it for the **Column Settings** window. There you can check and uncheck columns, put them in a different order with **Move Up** and **Move Down**, and type an exact width for the selected column.
 
 <img src="images/column-settings.png" alt="The Column Settings window" width="352">
 
