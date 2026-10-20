@@ -88,6 +88,12 @@ impl Column {
         self == Column::Size
     }
 
+    /// The direction a first click on the heading sorts in: Size and Modified
+    /// start with the biggest and the newest. Not traced from Explorer.
+    pub fn first_sort_ascending(self) -> bool {
+        !matches!(self, Column::Size | Column::Modified)
+    }
+
     /// Listed in the header menu only while shown, otherwise only under
     /// "More..." (`SHCOLSTATE_SECONDARYUI`).
     pub fn secondary(self) -> bool {
@@ -381,6 +387,13 @@ mod tests {
     use super::*;
 
     const W: [f32; 3] = [100.0, 50.0, 20.0];
+
+    #[test]
+    fn size_and_modified_sort_descending_first() {
+        assert!(Column::Name.first_sort_ascending());
+        assert!(!Column::Size.first_sort_ascending());
+        assert!(!Column::Modified.first_sort_ascending());
+    }
 
     impl ColumnSet {
         fn widths(&self) -> Vec<f32> {

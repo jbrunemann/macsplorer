@@ -1713,7 +1713,7 @@ impl Explorer {
                         self.sort.ascending = !self.sort.ascending;
                     } else {
                         self.sort.column = column;
-                        self.sort.ascending = true;
+                        self.sort.ascending = column.first_sort_ascending();
                     }
                     self.resort();
                     if self.persist {

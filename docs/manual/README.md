@@ -118,7 +118,7 @@ Pick a view under **View**, or with the **Views** button at the right of the too
 
 A table with one row per item and columns for its name, size, the date it was last changed and its attributes. This is the view the app starts in.
 
-- **Sort** by clicking a column heading. Click it again to reverse the order. The small triangle shows which column is sorted and in which direction.
+- **Sort** by clicking a column heading. Click it again to reverse the order. Name and the other columns start from A to Z or oldest first; Size and Modified start with the biggest and the newest. The small triangle shows which column is sorted and in which direction.
 - **Resize a column** by dragging the line between two headings. Double-click the line to make the column just wide enough for its contents. Press Esc during the drag to cancel.
 
 **Choosing columns.** Right-click any column heading to turn columns on or off.
