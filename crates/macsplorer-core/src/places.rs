@@ -177,6 +177,107 @@ fn mounted_volumes() -> Vec<PathBuf> {
     parse_mounts(&mounts).into_iter().filter(|p| is_user_mount(p)).collect()
 }
 
+/// What sort of drive a volume is, which picks its icon in the Folders pane.
+/// My Computer in Windows 2000 sorted its drives the same way, by the drive
+/// type Windows reports (`GetDriveType`: fixed, removable, CD-ROM, remote).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DriveKind {
+    /// A disk built into the computer.
+    #[default]
+    Fixed,
+    /// A USB stick, an external disk, a memory card or a mounted disk image.
+    Removable,
+    /// A CD, DVD or similar (ISO 9660, UDF).
+    Optical,
+    /// A share on another computer.
+    Network,
+}
+
+/// What the system says about a mounted volume.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+struct VolumeFacts {
+    /// The file system's name as the kernel gives it (`apfs`, `cd9660`, `smbfs`).
+    fs_type: String,
+    /// On this computer, not a share.
+    local: bool,
+    /// Outside the computer's case: a USB drive, a card, a disk image.
+    external: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn classify(facts: &VolumeFacts) -> DriveKind {
+    const OPTICAL: [&str; 4] = ["cd9660", "udf", "cddafs", "iso9660"];
+    const NETWORK: [&str; 10] = ["smbfs", "nfs", "nfs4", "afpfs", "webdav", "cifs", "smb3", "davfs", "9p", "fuse.sshfs"];
+    if !facts.local || NETWORK.contains(&facts.fs_type.as_str()) {
+        DriveKind::Network
+    } else if OPTICAL.contains(&facts.fs_type.as_str()) {
+        DriveKind::Optical
+    } else if facts.external {
+        DriveKind::Removable
+    } else {
+        DriveKind::Fixed
+    }
+}
+
+/// The kind of drive mounted at `path`. The boot volume and anything the
+/// system can't tell about count as a fixed disk.
+pub fn drive_kind(path: &Path) -> DriveKind {
+    #[cfg(target_os = "macos")]
+    {
+        mac_facts(path).map_or(DriveKind::Fixed, |f| classify(&f))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+        parse_mount_table(&mounts)
+            .into_iter()
+            .rev()
+            .find(|(mount, _)| mount == path)
+            .map_or(DriveKind::Fixed, |(mount, fs_type)| {
+                let external = mount.starts_with("/media") || mount.starts_with("/run/media");
+                classify(&VolumeFacts { fs_type, local: true, external })
+            })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = path;
+        DriveKind::Fixed
+    }
+}
+
+/// File system type from `statfs`, and Finder's own view of whether the
+/// volume is local and internal (`NSURLVolumeIs…Key`).
+#[cfg(target_os = "macos")]
+fn mac_facts(path: &Path) -> Option<VolumeFacts> {
+    use objc2_foundation::{NSArray, NSNumber, NSString, NSURLVolumeIsEjectableKey, NSURLVolumeIsInternalKey, NSURLVolumeIsLocalKey, NSURLVolumeIsRemovableKey, NSURL};
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statfs is plain old data, so all-zero is a valid value.
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: valid NUL-terminated path and a statfs buffer to fill.
+    if unsafe { libc::statfs(cpath.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    // SAFETY: the kernel NUL-terminates f_fstypename.
+    let fs_type = unsafe { CStr::from_ptr(st.f_fstypename.as_ptr()) }.to_string_lossy().into_owned();
+
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?));
+    // SAFETY: these are Foundation's own key constants.
+    let keys = unsafe { NSArray::from_slice(&[NSURLVolumeIsLocalKey, NSURLVolumeIsInternalKey, NSURLVolumeIsRemovableKey, NSURLVolumeIsEjectableKey]) };
+    let values = url.resourceValuesForKeys_error(&keys).ok()?;
+    // SAFETY: as above.
+    let flag = |key: &objc2_foundation::NSURLResourceKey| values.objectForKey(key).and_then(|v| v.downcast::<NSNumber>().ok()).map(|n| n.boolValue());
+    let (local, internal, removable, ejectable) = unsafe { (flag(NSURLVolumeIsLocalKey), flag(NSURLVolumeIsInternalKey), flag(NSURLVolumeIsRemovableKey), flag(NSURLVolumeIsEjectableKey)) };
+    Some(VolumeFacts {
+        fs_type,
+        local: local.unwrap_or(true),
+        // A disk image reports itself as external too.
+        external: removable.unwrap_or(false) || (!internal.unwrap_or(true) && ejectable.unwrap_or(true)),
+    })
+}
+
 /// True if `path` is a mounted volume that can be ejected (disk images, USB
 /// drives, network shares), never the boot volume.
 #[cfg(unix)]
@@ -195,7 +296,19 @@ pub fn is_ejectable(path: &Path) -> bool {
 /// and other odd bytes in paths are written as octal escapes (`\040`).
 #[cfg(any(target_os = "linux", test))]
 fn parse_mounts(text: &str) -> Vec<PathBuf> {
-    text.lines().filter_map(|line| line.split_whitespace().nth(1)).map(|p| PathBuf::from(unescape_mount(p))).collect()
+    parse_mount_table(text).into_iter().map(|(path, _)| path).collect()
+}
+
+/// Mount points with their file system types, in file order.
+#[cfg(any(target_os = "linux", test))]
+fn parse_mount_table(text: &str) -> Vec<(PathBuf, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let path = PathBuf::from(unescape_mount(fields.nth(1)?));
+            Some((path, fields.next()?.to_owned()))
+        })
+        .collect()
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -261,6 +374,26 @@ mod mount_tests {
     }
 
     #[test]
+    fn mount_table_has_file_system_types() {
+        let text = "/dev/sdb1 /run/media/me/My\\040Disk vfat rw 0 0\n/dev/sr0 /media/me/DISC iso9660 ro 0 0\n";
+        let table = parse_mount_table(text);
+        assert_eq!(table[0], (PathBuf::from("/run/media/me/My Disk"), "vfat".to_owned()));
+        assert_eq!(table[1].1, "iso9660");
+    }
+
+    #[test]
+    fn drive_kinds() {
+        let facts = |fs: &str, local, external| VolumeFacts { fs_type: fs.into(), local, external };
+        assert_eq!(classify(&facts("apfs", true, false)), DriveKind::Fixed);
+        assert_eq!(classify(&facts("exfat", true, true)), DriveKind::Removable);
+        assert_eq!(classify(&facts("cd9660", true, true)), DriveKind::Optical);
+        assert_eq!(classify(&facts("udf", true, false)), DriveKind::Optical);
+        assert_eq!(classify(&facts("smbfs", true, false)), DriveKind::Network);
+        assert_eq!(classify(&facts("apfs", false, true)), DriveKind::Network);
+        assert_eq!(classify(&facts("fuse.sshfs", true, false)), DriveKind::Network);
+    }
+
+    #[test]
     fn octal_escapes_stay_in_range() {
         assert_eq!(unescape_mount("a\\040b\\134c"), "a b\\c");
         // Not an escape: too short, not octal, or beyond one byte.
@@ -319,6 +452,11 @@ mod tests {
         for v in volumes().iter().skip(1) {
             assert!(is_ejectable(&v.path) || v.path.parent() != Some(Path::new("/Volumes")));
         }
+    }
+
+    #[test]
+    fn the_boot_volume_is_a_fixed_disk() {
+        assert_eq!(drive_kind(Path::new("/")), DriveKind::Fixed);
     }
 
     #[test]

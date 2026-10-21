@@ -836,6 +836,13 @@ pub enum Icon {
     FolderOpen,
     App,
     Drive,
+    /// A USB stick, external disk or disk image: the drive with its slot,
+    /// as My Computer drew Win2000's removable disks.
+    RemovableDrive,
+    /// A CD or DVD: a disc over the drive.
+    OpticalDrive,
+    /// A share on another computer: the drive with its cable.
+    NetworkDrive,
     /// Explorer's My Computer: a monitor on a base.
     Computer,
 }
@@ -929,11 +936,36 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
             p.rect_stroke(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
         }
         Icon::Drive => {
-            let body = Rect::from_min_max(at(1.0, 5.0), at(15.0, 12.0));
-            p.rect_filled(body, 0.0, Color32::from_rgb(0xC0, 0xC0, 0xC0));
-            p.rect_filled(Rect::from_min_max(at(1.0, 10.0), at(15.0, 12.0)), 0.0, shadow());
-            p.rect_stroke(body, 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
+            drive_body(p, r, 5.0, 12.0);
             p.rect_filled(Rect::from_min_max(at(11.0, 7.0), at(13.0, 8.5)), 0.0, Color32::from_rgb(0x20, 0xC0, 0x20));
+        }
+        Icon::RemovableDrive => {
+            drive_body(p, r, 4.0, 13.0);
+            // The slot, and the button beside it.
+            p.rect_filled(Rect::from_min_max(at(3.0, 6.0), at(10.0, 7.0)), 0.0, Color32::BLACK);
+            p.rect_filled(Rect::from_min_max(at(3.0, 8.5), at(5.0, 10.0)), 0.0, dark());
+            p.rect_filled(Rect::from_min_max(at(11.0, 8.0), at(13.0, 9.5)), 0.0, Color32::from_rgb(0x20, 0xC0, 0x20));
+        }
+        Icon::OpticalDrive => {
+            // The disc comes out of the drive: its lower half is behind the front.
+            let disc = at(8.0, 5.5);
+            p.circle_filled(disc, 4.5 * s, Color32::from_rgb(0xE8, 0xE8, 0xF4));
+            p.circle_stroke(disc, 4.5 * s, Stroke::new(1.0, dark()));
+            p.circle_filled(disc, 1.4 * s, PAPER);
+            p.circle_stroke(disc, 1.4 * s, Stroke::new(1.0, shadow()));
+            drive_body(p, r, 8.0, 14.0);
+            p.rect_filled(Rect::from_min_max(at(3.0, 10.0), at(9.0, 11.0)), 0.0, dark());
+            p.rect_filled(Rect::from_min_max(at(11.0, 10.0), at(13.0, 11.5)), 0.0, Color32::from_rgb(0x20, 0xC0, 0x20));
+        }
+        Icon::NetworkDrive => {
+            drive_body(p, r, 2.0, 9.0);
+            p.rect_filled(Rect::from_min_max(at(11.0, 4.0), at(13.0, 5.5)), 0.0, Color32::from_rgb(0x20, 0xC0, 0x20));
+            // The cable running off the bottom to the sides.
+            let cable = Color32::from_rgb(0x00, 0x80, 0x80);
+            p.rect_filled(Rect::from_min_max(at(7.5, 9.0), at(8.5, 12.0)), 0.0, cable);
+            p.rect_filled(Rect::from_min_max(at(2.0, 12.0), at(14.0, 13.0)), 0.0, cable);
+            p.rect_filled(Rect::from_min_max(at(2.0, 12.0), at(3.0, 14.0)), 0.0, cable);
+            p.rect_filled(Rect::from_min_max(at(13.0, 12.0), at(14.0, 14.0)), 0.0, cable);
         }
         Icon::Computer => {
             for (y, row) in COMPUTER.iter().enumerate() {
@@ -944,6 +976,17 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
             }
         }
     }
+}
+
+/// The front of a drive, from row `top` to `bottom` of the 16×16 icon: gray
+/// with a shaded lower edge.
+fn drive_body(p: &Painter, r: Rect, top: f32, bottom: f32) {
+    let s = r.width() / 16.0;
+    let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s);
+    let body = Rect::from_min_max(at(1.0, top), at(15.0, bottom));
+    p.rect_filled(body, 0.0, Color32::from_rgb(0xC0, 0xC0, 0xC0));
+    p.rect_filled(Rect::from_min_max(at(1.0, bottom - 2.0), at(15.0, bottom)), 0.0, shadow());
+    p.rect_stroke(body, 0.0, Stroke::new(1.0, dark()), egui::StrokeKind::Inside);
 }
 
 /// My Computer's icon, one character per pixel of the 16×16 art: a monitor with

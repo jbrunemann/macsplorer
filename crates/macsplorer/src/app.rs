@@ -33,7 +33,7 @@ use macsplorer_core::listing::free_space;
 use macsplorer_core::natural;
 use macsplorer_core::preferences::{Preferences, SortOrder, ViewMode};
 use macsplorer_core::goto::{Candidate, Source as GotoSource};
-use macsplorer_core::places::{favorites, volumes};
+use macsplorer_core::places::{drive_kind, favorites, volumes, DriveKind};
 #[cfg(unix)]
 use macsplorer_core::places::{computer_name, is_ejectable};
 #[cfg(unix)]
@@ -284,6 +284,8 @@ pub struct Explorer {
     free_space: Option<u64>,
     /// Shown in the status bar's right pane, where Explorer says "My Computer".
     computer_name: String,
+    /// What kind of drive each Locations root is, for its icon in the tree.
+    drives: HashMap<PathBuf, DriveKind>,
     /// The details view lists folders on a worker thread so a huge or slow
     /// folder never freezes the window. Results for anything but the latest
     /// request (`list_request`) are dropped.
@@ -513,6 +515,7 @@ impl Explorer {
             search_needs_focus: false,
             status: None,
             tree: FolderTree::new(tree_roots()),
+            drives: drive_kinds(),
             load_tx,
             load_rx,
             eject_tx,
@@ -581,6 +584,13 @@ impl Explorer {
         }
     }
 
+    /// The removable disk the open folder is on: the mounted volume holding it,
+    /// if that can be ejected.
+    #[cfg(unix)]
+    fn open_disk(&self) -> Option<PathBuf> {
+        self.drives.keys().filter(|v| is_ejectable(v) && self.current().starts_with(v)).max_by_key(|v| v.as_os_str().len()).cloned()
+    }
+
     /// Unmounts and ejects a volume off the UI thread; `poll_ejects` reports.
     #[cfg(unix)]
     fn eject(&mut self, volume: PathBuf) {
@@ -604,6 +614,7 @@ impl Explorer {
                         self.navigate(target);
                     }
                     self.tree.set_roots(tree_roots());
+                    self.drives = drive_kinds();
                     let loads = self.tree.refresh();
                     self.load(loads);
                     self.reload();
@@ -1766,6 +1777,7 @@ impl Explorer {
                     self.icons.clear_native();
                     self.icons.set_favorite_emblems(favorite_emblems());
                     self.tree.set_roots(tree_roots());
+                    self.drives = drive_kinds();
                     let loads = self.tree.refresh();
                     self.load(loads);
                     self.reload();
@@ -2121,6 +2133,14 @@ impl Explorer {
                 ui.separator();
                 if ui.add(gutter_item(ui, "Properties", platform::shortcut(false, "I"))).clicked() {
                     actions.push(Action::ItemProperties(self.properties_target(self.focus == Pane::List)));
+                }
+                // Ejects the disk the open folder is on, when it is one that can go.
+                #[cfg(unix)]
+                {
+                    let disk = self.open_disk();
+                    if ui.add_enabled(disk.is_some(), gutter_item(ui, "Eject", String::new())).clicked() {
+                        actions.extend(disk.map(Action::Eject));
+                    }
                 }
                 ui.separator();
                 if ui.add(gutter_item(ui, "Close", String::new())).clicked() {
@@ -2542,7 +2562,8 @@ impl Explorer {
                         computer_row(ui, &self.computer_name);
                     }
                 }
-                tree_row(ui, &mut self.icons, row, guide, scroll, focused, cue, (drag, &mut *frame), actions);
+                let kind = self.drives.get(&row.key.path).copied().unwrap_or_default();
+                tree_row(ui, &mut self.icons, row, kind, guide, scroll, focused, cue, (drag, &mut *frame), actions);
             }
             if drag.is_some() {
                 let content = ui.min_rect().union(ui.max_rect().with_max_y(ui.max_rect().top()));
@@ -3955,6 +3976,7 @@ fn tree_row(
     ui: &mut Ui,
     icons: &mut FileIcons,
     row: &Row,
+    kind: DriveKind,
     guide: &Guide,
     scroll: Option<Scroll>,
     focused: bool,
@@ -4010,7 +4032,13 @@ fn tree_row(
         return;
     }
     if row.depth == 0 && row.section == Section::Locations {
-        theme::paint_icon(p, icon_rect, Icon::Drive, true);
+        let icon = match kind {
+            DriveKind::Fixed => Icon::Drive,
+            DriveKind::Removable => Icon::RemovableDrive,
+            DriveKind::Optical => Icon::OpticalDrive,
+            DriveKind::Network => Icon::NetworkDrive,
+        };
+        theme::paint_icon(p, icon_rect, icon, true);
     } else {
         icons.paint_tree_folder(ui, icon_rect, &row.key.path);
     }
@@ -4146,6 +4174,11 @@ fn tree_key_action(rows: &[Row], key: Key, page: usize) -> Option<Action> {
 /// The emblems the favorites carry (set in Properties or Finder), by path.
 fn favorite_emblems() -> HashMap<PathBuf, macsplorer_core::folder_style::Emblem> {
     favorites().into_iter().filter_map(|p| macsplorer_core::folder_style::read(&p.path).emblem.map(|e| (p.path, e))).collect()
+}
+
+/// The kind of each mounted volume, by path.
+fn drive_kinds() -> HashMap<PathBuf, DriveKind> {
+    volumes().into_iter().map(|v| (v.path.clone(), drive_kind(&v.path))).collect()
 }
 
 fn tree_roots() -> Vec<Root> {
@@ -4867,6 +4900,25 @@ mod screenshot {
         let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
         fs::create_dir_all(&out).unwrap();
         image.save(out.join(format!("{name}.png"))).unwrap();
+    }
+
+    /// The Folders pane's drive icons, one per kind of drive.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn drive_icons() {
+        shoot("drive-icons", egui::vec2(300.0, 300.0), |app| {
+            let drives = [
+                ("USB Stick", "/usr", DriveKind::Removable),
+                ("Install DVD", "/etc", DriveKind::Optical),
+                ("Team Share", "/var", DriveKind::Network),
+                // Last, because the open folder is under it and so it unfolds.
+                ("Macintosh HD", "/", DriveKind::Fixed),
+            ];
+            let roots = drives.iter().map(|&(label, path, _)| Root { label: label.into(), path: path.into(), section: Section::Locations }).collect();
+            app.tree.set_roots(roots);
+            app.drives = drives.iter().map(|&(_, path, kind)| (PathBuf::from(path), kind)).collect();
+            app.settings.show_folders = true;
+        });
     }
 
     #[test]

@@ -2078,6 +2078,7 @@ dependencies = [
  "icu_normalizer",
  "libc",
  "notify",
+ "objc2-foundation 0.3.2",
  "serde_json",
 ]
 

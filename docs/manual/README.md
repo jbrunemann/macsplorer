@@ -76,13 +76,13 @@ The summary and the **Branch** column need Git to be installed. Without it they 
 The tree on the left has two sections:
 
 - **Favorites**: your home folder, Desktop, Downloads, Documents, Pictures, Music, Movies, Applications and the Trash. Shortcuts (symbolic links) to folders that you keep directly in your home folder are listed too, just above the Trash.
-- **Locations**: your Mac, shown by its own name with a little monitor icon (it is only a label, nothing opens from it), then your Mac's disk, plus any USB sticks, external drives or network disks you have connected.
+- **Locations**: your Mac, shown by its own name with a little monitor icon (it is only a label, nothing opens from it), then your Mac's disk, plus any USB sticks, external drives or network disks you have connected. As in Windows 2000's My Computer, each kind of drive has its own icon: a gray drive for the Mac's own disk, the same with a slot for USB sticks, external drives and mounted disk images, a disc over a drive for CDs and DVDs, and a drive with a cable for disks on the network.
 
 Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds, + and − do the same without moving, Home and End jump to the first and last folder, and Page Up and Page Down move a pageful at a time. Typing the first letters of a folder's name jumps to it, among the folders you can see. When you move with the keys, the folder opens on the right half a second after you stop, so you can run through the tree quickly without waiting for every folder on the way.
 
 As you move around, the tree follows you: it unfolds to and highlights the folder you're in. To turn that off, uncheck **View › Expand to open folder**.
 
-Right-click a folder in the tree for **Open**, **Properties**, and **Eject** for disks you can safely remove. The menu also has **Expand to current folder**, which takes the tree back to the folder you're looking at: it unfolds the way there, selects the folder and scrolls it into the middle. Use it when you have scrolled or folded the tree away, or when **Expand to open folder** is off. It's in the menu for empty space in the pane too.
+Right-click a folder in the tree for **Open**, **Properties**, and **Eject** for disks you can safely remove. **File › Eject** does the same for the disk the open folder is on, and is dimmed when that disk can't be ejected (your Mac's own disk). The menu also has **Expand to current folder**, which takes the tree back to the folder you're looking at: it unfolds the way there, selects the folder and scrolls it into the middle. Use it when you have scrolled or folded the tree away, or when **Expand to open folder** is off. It's in the menu for empty space in the pane too.
 
 To hide the pane and give the files more room, click **Folders** on the toolbar or the **×** at the top of the pane. Click **Folders** again to bring it back.
 
