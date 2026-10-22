@@ -33,7 +33,7 @@ Macsplorer is a file browser for your Mac. It looks and works like the Windows 2
 
 **More windows.** Choose **File › New Window** (⌘E, or ⌘N) to open a second window, for example to copy files from one folder to another. Each new window opens on the folder you're in and appears slightly offset from the one before.
 
-**Closing.** Click the red dot in the top left corner or the **×** in the top right corner, choose **File › Close**, or press ⌘Q.
+**Closing.** Click the folder icon in the top left corner (it turns into a red dot when you point at it) or the **×** in the top right corner, choose **File › Close**, or press ⌘Q.
 
 ## 2. The window at a glance
 
@@ -41,7 +41,7 @@ From top to bottom:
 
 | Part | What it does |
 |---|---|
-| **Title bar** | Shows the name of the folder you're in. Drag it to move the window. The red dot at the far left closes the window, as on other Mac windows. The buttons on the right minimize, maximize and close the window, and double-clicking the bar also maximizes it. |
+| **Title bar** | Shows the name of the folder you're in. Drag it to move the window. The folder icon at the far left turns into a red dot when you point at it, and clicking it closes the window, as on other Mac windows. The buttons on the right minimize, maximize and close the window, and double-clicking the bar also maximizes it. |
 | **Menu bar** | File, Edit, View and Help. |
 | **Toolbar** | Back, Forward, Up, Folders, Refresh, Undo and Views. Hold the pointer over a button to see what it does and its shortcut. |
 | **Address bar** | The path to the current folder. You can click any part of it. |
