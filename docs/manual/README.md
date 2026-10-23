@@ -163,6 +163,7 @@ Small icons with names, arranged in columns that run from top to bottom. When th
 ### What the icons tell you
 
 - **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them.
+- **A zipper** marks zip and tar archives: on a folder in Large Icons, on a paper page in the List and Details views. They open in Macsplorer as a folder (see [Archives](#archives-zip-and-tar-files)). While you're inside one, the address bar shows the folder with the zipper.
 - **Paper pages** are files. A colored mark on the page shows the kind of file, for example a spreadsheet, a picture, a PDF or a program's source code. A plain page with gray lines is a file of a kind Macsplorer doesn't know.
 - **Apps**, and anything you have given a custom icon in Finder, show their real icon.
 
@@ -172,7 +173,7 @@ With **View › Special files in color** turned on (it is at first), some names 
 
 - **Green**: programs and scripts that can be run.
 - **Turquoise**: links (aliases) that point to another file or folder.
-- **Red**: archives such as `.zip` files and disk images, and links whose original has gone missing.
+- **Red**: archives such as `.zip` files and disk images, and links whose original has gone missing. Only the ones with a [zipper](#what-the-icons-tell-you) on their icon open in Macsplorer; the others, such as `.rar` or `.dmg`, open in their own app.
 
 ## 5. Selecting files
 
@@ -214,7 +215,7 @@ Right-click an empty spot in the list for **Paste**, **Move Here**, **Refresh**,
 
 ### Archives (zip and tar files)
 
-Like Windows' compressed folders, an archive opens as a folder: double-click a `.zip`, `.tar`, `.tar.gz` (or `.tgz`), `.tar.bz2`, `.tar.xz` or `.tar.zst` file and you see what's inside it, with folders you can go into. The address bar shows the way in, for example `~/Downloads/photos.zip/2026`, and **Up** or **Back** takes you out again. Other kinds of archive (`.7z`, `.rar`, `.cab`) still open in their own app. To open a zip in Archive Utility instead, use **Open With**.
+Like Windows' compressed folders, an archive opens as a folder: double-click a `.zip`, `.tar`, `.tar.gz` (or `.tgz`), `.tar.bz2`, `.tar.xz` or `.tar.zst` file and you see what's inside it, with folders you can go into. The address bar shows the way in, for example `~/Downloads/photos.zip/2026`, with the archive's name in red (when [colored names](#colored-names) are on), and **Up** or **Back** takes you out again. Their icon has a zipper. Other kinds of archive (`.7z`, `.rar`, `.cab`) keep their page icon and still open in their own app. To open a zip in Archive Utility instead, use **Open With**.
 
 <img src="images/archive-folder.png" alt="Inside a zip file" width="900">
 
@@ -238,7 +239,7 @@ Start renaming in any of these ways:
 
 - select the item and press **F2**,
 - right-click it and choose **Rename**,
-- or click the name of an item that's already selected, then wait a moment.
+- or click the name of an item that's already selected, then wait a moment. If you'd rather not have this, turn off **View › Click to rename**.
 
 The name turns into a text box. Only the part before the extension is selected, so you can type a new name straight away without losing the `.txt` or `.pdf` at the end.
 
@@ -398,6 +399,7 @@ All of these are in the **View** menu.
 | **Expand to open folder** | Lets the Folders pane follow you to the folder you're in. |
 | **Natural number sorting** | Sorts numbers in names by their value, so "File 2" comes before "File 10". Turn it off to sort letter by letter. |
 | **Mix folders and files** | Sorts folders in between the files instead of putting them all at the top. |
+| **Click to rename** | Clicking the name of a selected item, then waiting a moment, starts [renaming](#7-renaming) it. Turn it off if that happens when you don't want it; **F2** and **Rename** still work. Macsplorer remembers this choice. |
 | **Refresh** | Reloads the list. |
 
 <img src="images/hidden-items.png" alt="Hidden files shown faded" width="900">

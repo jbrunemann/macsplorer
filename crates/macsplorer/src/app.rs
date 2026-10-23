@@ -163,6 +163,9 @@ struct Settings {
     /// Executables, links and archives get colored names
     /// ([`macsplorer_core::highlight`]).
     color_names: bool,
+    /// Clicking the selected item's name, then waiting, renames it
+    /// ([`slow_click`]); remembered in `settings.json`.
+    click_rename: bool,
 }
 
 struct RenameState {
@@ -537,7 +540,7 @@ impl Explorer {
             git_request: 0,
             git_applied: 0,
             sort: SortSpec::default(),
-            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: true, color_names: true },
+            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: true, color_names: true, click_rename: true },
             selection: BTreeSet::new(),
             anchor: None,
             focus_item: None,
@@ -1931,6 +1934,7 @@ impl Explorer {
         }
         self.saved_window = prefs.window;
         self.extract_show = prefs.extract_show;
+        self.settings.click_rename = prefs.click_rename;
         self.persist = true;
         // What earlier runs extracted to open, once it is a day old.
         thread::spawn(archive::clean_staging);
@@ -2011,7 +2015,11 @@ impl Explorer {
                         view_focused: self.focus == Pane::List,
                         modifiers: toggle || extend,
                     };
-                    self.slow_click.click(path, click, now_ms(&self.ctx));
+                    if self.settings.click_rename {
+                        self.slow_click.click(path, click, now_ms(&self.ctx));
+                    } else {
+                        self.slow_click.cancel();
+                    }
                     self.focus = Pane::List;
                     self.click(index, toggle, extend, visible);
                 }
@@ -2616,6 +2624,13 @@ impl Explorer {
                     self.sort.folders_first = !self.settings.mix_folders;
                     self.resort();
                 }
+                if egui_classic_menu::checkbox(ui, &mut self.settings.click_rename, "Click to rename").changed() {
+                    self.slow_click.cancel();
+                    if self.persist {
+                        let on = self.settings.click_rename;
+                        Preferences::update(|p| p.click_rename = on);
+                    }
+                }
                 if changed {
                     self.rename = None;
                     self.reload();
@@ -2866,7 +2881,9 @@ impl Explorer {
 
     fn address_contents(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (icon, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
-        theme::paint_icon(ui.painter(), icon, Icon::Folder, true);
+        // Anywhere inside an archive, the folder with the zipper.
+        let zipped = archive::split(self.current()).is_some();
+        theme::paint_icon(ui.painter(), icon, if zipped { Icon::CompressedFolder } else { Icon::Folder }, true);
         if self.address_edit.is_some() {
             self.edit_address(ui, actions);
             return;
@@ -2884,14 +2901,41 @@ impl Explorer {
         // (see `address_bar`). When it is too long the front is cut off and the
         // end, the open folder, stays.
         let shown = self.address_text();
+        let chars: Vec<char> = shown.chars().collect();
+        // Inside an archive the archive's name is in its list color, so the
+        // odd step in the path stands out (not from Explorer).
+        let archive = archive::split(self.current()).filter(|_| self.settings.color_names).map(|(file, _)| {
+            let end = self.shown(&file).chars().count();
+            let len = file.file_name().map_or(0, |n| n.to_string_lossy().chars().count());
+            end - len..end
+        }).filter(|r| r.end <= chars.len());
         let font = egui::TextStyle::Body.resolve(ui.style());
         let width = ui.available_width();
-        let fit = |text: &str| ui.painter().layout_no_wrap(text.to_owned(), font.clone(), theme::color::text());
-        let mut galley = fit(&shown);
+        // The path from char `cut` on, after "…" when the front is cut off.
+        let fit = |cut: usize| {
+            let mut job = egui::text::LayoutJob::default();
+            if cut > 0 {
+                job.append("…", 0.0, egui::TextFormat::simple(font.clone(), theme::color::text()));
+            }
+            let mut add = |range: std::ops::Range<usize>, color| {
+                let text: String = chars[range].iter().collect();
+                job.append(&text, 0.0, egui::TextFormat::simple(font.clone(), color));
+            };
+            match archive.clone().filter(|r| r.end > cut) {
+                Some(r) => {
+                    let start = r.start.max(cut);
+                    add(cut..start, theme::color::text());
+                    add(start..r.end, theme::color::archive());
+                    add(r.end..chars.len(), theme::color::text());
+                }
+                None => add(cut..chars.len(), theme::color::text()),
+            }
+            ui.painter().layout_job(job)
+        };
+        let mut galley = fit(0);
         if galley.size().x > width {
-            let chars: Vec<char> = shown.chars().collect();
-            let cut = (1..chars.len()).find(|&i| fit(&format!("…{}", chars[i..].iter().collect::<String>())).size().x <= width).unwrap_or(chars.len() - 1);
-            galley = fit(&format!("…{}", chars[cut..].iter().collect::<String>()));
+            let cut = (1..chars.len()).find(|&i| fit(i).size().x <= width).unwrap_or(chars.len() - 1);
+            galley = fit(cut);
         }
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ui.available_height().max(16.0)), Sense::hover());
         ui.painter().with_clip_rect(rect).galley(egui::pos2(rect.left() + 2.0, rect.center().y - galley.size().y / 2.0), galley, theme::color::text());

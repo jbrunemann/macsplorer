@@ -91,11 +91,14 @@ pub struct Preferences {
     /// Extract All's "Show extracted files when complete", on until turned
     /// off (Windows keeps it as `ExtractionWizard\ShowFiles`).
     pub extract_show: bool,
+    /// Clicking the name of the only selected item, then waiting, renames
+    /// it (View > Click to rename); on until turned off.
+    pub click_rename: bool,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, update_url: DEFAULT_UPDATE_URL.to_owned(), git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16], extract_show: true }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, update_url: DEFAULT_UPDATE_URL.to_owned(), git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16], extract_show: true, click_rename: true }
     }
 }
 
@@ -180,6 +183,7 @@ impl Preferences {
             map.insert("custom_colors".into(), Value::Array(boxes));
         }
         map.insert("extract_show".into(), Value::Bool(self.extract_show));
+        map.insert("click_rename".into(), Value::Bool(self.click_rename));
         let text = serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
         // Replace the file in one step, so another window reading it never
         // sees half of it.
@@ -204,6 +208,7 @@ impl Preferences {
             associations: map.get("associations").map(Associations::from_json).unwrap_or_default(),
             custom_colors: read_custom_colors(map.get("custom_colors")),
             extract_show: map.get("extract_show").and_then(Value::as_bool).unwrap_or(true),
+            click_rename: map.get("click_rename").and_then(Value::as_bool).unwrap_or(true),
         }
     }
 }
@@ -262,6 +267,15 @@ mod tests {
         assert!(Preferences::load_from(&dir).dark);
         Preferences { dark: false, ..Default::default() }.save_to(&dir).unwrap();
         assert!(!Preferences::load_from(&dir).dark);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn click_rename_is_on_until_turned_off() {
+        let dir = temp("click-rename");
+        assert!(Preferences::load_from(&dir).click_rename);
+        Preferences { click_rename: false, ..Default::default() }.save_to(&dir).unwrap();
+        assert!(!Preferences::load_from(&dir).click_rename);
         fs::remove_dir_all(&dir).unwrap();
     }
 

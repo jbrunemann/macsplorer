@@ -4,6 +4,8 @@
 //!   use the icon macOS shows, rendered once and cached as a texture;
 //! - folders use the Windows 2000 yellow folder; the ones Finder gives a
 //!   sidebar glyph (Music, Pictures, ...) carry that SF Symbol as an emblem;
+//! - zip and tar files, which open as folders, have a zipper: on the folder
+//!   when large, on the page in the List and Details views;
 //! - files are the Windows 2000 dog-eared page; recognized types carry
 //!   VSCodium's Seti glyph as a colored emblem, the way Windows 2000 put
 //!   an application's emblem on its documents;
@@ -19,6 +21,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Rect, Shape, TextureHandle, TextureOptions, Ui};
 use egui::epaint::ColorMode;
 use egui::layers::ShapeIdx;
+use macsplorer_core::archive;
 use macsplorer_core::folder_style::Emblem;
 use macsplorer_core::listing::{Entry, is_hidden_name};
 use macsplorer_core::places::known_folder;
@@ -181,19 +184,23 @@ impl FileIcons {
             return;
         }
         // An app in an archive isn't on disk for macOS to draw.
-        let wants_native = (entry.kind == RenameKind::Package && !macsplorer_core::archive::is_inside(&entry.path)) || entry.custom_icon;
+        let wants_native = (entry.kind == RenameKind::Package && !archive::is_inside(&entry.path)) || entry.custom_icon;
         if wants_native && self.paint_native(ui, rect, entry, state) {
             return;
         }
-        blended(ui, state, || self.paint_vector(ui, rect, entry));
+        blended(ui, state, || self.paint_vector(ui, rect, entry, large));
     }
 
-    fn paint_vector(&mut self, ui: &Ui, rect: Rect, entry: &Entry) {
+    fn paint_vector(&mut self, ui: &Ui, rect: Rect, entry: &Entry, large: bool) {
         match entry.kind {
             RenameKind::Folder => self.paint_folder(ui, rect, &entry.path, None, None),
             RenameKind::Package => {
                 let icon = if entry.extension() == Some("app") { Icon::App } else { Icon::Folder };
                 theme::paint_icon(ui.painter(), rect, icon, true);
+            }
+            // An archive inside an archive is just a file there (`archive::split`).
+            RenameKind::File if archive::format_of(&entry.name).is_some_and(archive::Format::browsable) && !archive::is_inside(&entry.path) => {
+                theme::paint_icon(ui.painter(), rect, if large { Icon::CompressedFolder } else { Icon::CompressedFile }, true);
             }
             RenameKind::File => match self.seti.as_ref().and_then(|s| s.specific_icon_for(&entry.name, true)) {
                 Some(g) => {

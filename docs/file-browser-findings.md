@@ -86,7 +86,7 @@ The trigger is in the ListView, not Explorer. Code path: `CLVMouseManager::Handl
 
 Unverified: whether Windows 2000's comctl32 had exactly these conditions; the binary read here is v6.10 from build 10240.
 
-**macsplorer** (`slow_click`): the same conditions, minus the activate styles (there is no single-click mode). Keyboard focus means the item view was the active pane. A click on any other item, a marquee, a click on empty space, moving focus to the tree, or navigating also drops the pending rename. The delay is `slow_click::DELAY_MS` (500 ms), and egui's double-click interval is set to the same value, as on Windows.
+**macsplorer** (`slow_click`): the same conditions, minus the activate styles (there is no single-click mode). Keyboard focus means the item view was the active pane. A click on any other item, a marquee, a click on empty space, moving focus to the tree, or navigating also drops the pending rename. The delay is `slow_click::DELAY_MS` (500 ms), and egui's double-click interval is set to the same value, as on Windows. View > Click to rename turns it off and is kept in `settings.json`. Not from Windows: Win2000 had no switch for it.
 
 ### 2.2 Name sorting
 

@@ -201,7 +201,7 @@ What Macsplorer does (`macsplorer_core::archive`, `app.rs` `run_archive_job`, `e
 | Copy and drag out (`CArchiveItemDataObject`) | Copy extracts to a scratch folder and puts those files on the pasteboard, so Finder can paste them too. A drop on a folder in the window extracts and copies, always a copy. A drag that leaves the window extracts at once, up to 64 MB, and hands AppKit the files. |
 | Index cache keyed by path and time (§2.9) | Cached by path, size and modification time, eight archives at a time. The folder holding the archive is watched, so a changed archive reloads. |
 | CAB: flat list with Path, Extract as default, unsafe names skipped (§3) | The unsafe-name rule applies to every format: absolute paths are made relative, and names with `..` are never listed or extracted. **Not done:** CAB itself. |
-| CAB and zip icons (§3.3) | Archives keep their page icon. A cabinet icon drawn from memory was tried and dropped. |
+| CAB and zip icons (§3.3) | Zip and tar files, which open as folders, have a zipper: the yellow folder with a zipper down its front when large (`theme::Icon::CompressedFolder`, after XP's Compressed (zipped) Folder icon, from memory), the paper page with one in the List and Details views (`Icon::CompressedFile`, not from Windows). The address bar shows the zipper folder anywhere inside an archive, and the archive's name in its red; Win10's zipfldr.dll art wasn't used. Other archives keep their page icon, so the icon says what opens in Macsplorer. A cabinet icon drawn from memory was tried and dropped. |
 | `.app` | Show Package Contents (`file-browser-findings.md` §3). Bundles are real folders and need none of the above. |
 
 ## 5. UI text, from memory

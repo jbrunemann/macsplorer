@@ -129,6 +129,8 @@ pub mod color {
     pub const FOLDER: Color32 = Color32::from_rgb(0xF5, 0xD4, 0x6B);
     pub const FOLDER_DARK: Color32 = Color32::from_rgb(0x9C, 0x7A, 0x1E);
     pub const FOLDER_LIGHT: Color32 = Color32::from_rgb(0xFF, 0xF1, 0xB8);
+    pub const ZIPPER_DARK: Color32 = Color32::from_rgb(0x40, 0x40, 0x40);
+    pub const ZIPPER_LIGHT: Color32 = Color32::from_rgb(0xC0, 0xC0, 0xC0);
     pub const ARROW: Color32 = Color32::from_rgb(0x2E, 0x8B, 0x2E);
     pub const ARROW_DARK: Color32 = Color32::from_rgb(0x14, 0x50, 0x14);
     /// The sheet of a document icon and its outline stay a white page.
@@ -844,6 +846,13 @@ pub enum Icon {
     Go,
     Folder,
     FolderOpen,
+    /// A zip or tar file Macsplorer opens as a folder: the folder with a
+    /// zipper down its front, as XP drew its Compressed (zipped) Folders, so
+    /// it stands apart from archives that open in another app.
+    CompressedFolder,
+    /// The same on the paper page, for the small icons of the List and
+    /// Details views (not from Windows).
+    CompressedFile,
     App,
     Drive,
     /// A USB stick, external disk or disk image: the drive with its slot,
@@ -940,6 +949,14 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
             }
         }
         Icon::Folder | Icon::FolderOpen => folder(p, r, enabled),
+        Icon::CompressedFolder => {
+            folder(p, r, enabled);
+            zipper(p, r, enabled, 6.0, 13.0);
+        }
+        Icon::CompressedFile => {
+            paint_page(p, r, false);
+            zipper(p, r, enabled, 2.0, 15.0);
+        }
         Icon::App => {
             p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 14.0)), 0.0, PAPER);
             p.rect_filled(Rect::from_min_max(at(1.0, 2.0), at(15.0, 5.0)), 0.0, active_caption());
@@ -1129,6 +1146,29 @@ fn undo_arrow(p: &Painter, r: Rect, shift: Vec2, color: Color32) {
         .collect();
     p.add(PathShape::line(arc, PathStroke::new(1.6 * s, color)));
     p.add(egui::Shape::convex_polygon(vec![at(0.5, 8.0), at(7.0, 8.5), at(3.0, 13.5)], color, Stroke::NONE));
+}
+
+/// The zipper on [`Icon::CompressedFolder`] and [`Icon::CompressedFile`]:
+/// a silver pull with a hole from row `top`, then teeth alternating dark and
+/// light down to row `bottom`, inside the folder's body or the page.
+fn zipper(p: &Painter, r: Rect, enabled: bool, top: f32, bottom: f32) {
+    let s = r.width() / 16.0;
+    let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s);
+    let (dark, light) = if enabled { (ZIPPER_DARK, ZIPPER_LIGHT) } else { (shadow(), highlight()) };
+    let px = |x: f32, y: f32, c: Color32| p.rect_filled(Rect::from_min_max(at(x, y), at(x + 1.0, y + 1.0)), 0.0, c);
+    let mut y = top + 3.0;
+    let mut even = true;
+    while y < bottom {
+        let (left, right) = if even { (dark, light) } else { (light, dark) };
+        px(7.0, y, left);
+        px(8.0, y, right);
+        even = !even;
+        y += 1.0;
+    }
+    let pull = Rect::from_min_max(at(6.5, top), at(9.5, top + 3.0));
+    p.rect_filled(pull, 0.0, light);
+    p.rect_stroke(pull, 0.0, Stroke::new(1.0, dark), egui::StrokeKind::Inside);
+    px(7.5, top + 1.0, dark);
 }
 
 fn folder(p: &Painter, r: Rect, enabled: bool) {
