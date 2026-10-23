@@ -99,15 +99,16 @@ enum ArchiveJob {
     Then(Vec<PathBuf>, AfterExtract),
     /// Copy the items into a folder: a drop.
     Transfer(Vec<PathBuf>, PathBuf),
-    /// Extract All into `dest`, and go there afterwards with `show`.
-    ExtractAll { archive: PathBuf, dest: PathBuf, show: bool },
+    /// Extract `items` (paths inside the archive, none for all of it) into
+    /// `dest`, and go there afterwards with `show`.
+    Extract { archive: PathBuf, items: Vec<String>, dest: PathBuf, show: bool },
 }
 
 impl ArchiveJob {
     fn archive(&self) -> Option<PathBuf> {
         match self {
             ArchiveJob::Then(paths, _) | ArchiveJob::Transfer(paths, _) => archive::group(paths).map(|(a, _)| a),
-            ArchiveJob::ExtractAll { archive, .. } => Some(archive.clone()),
+            ArchiveJob::Extract { archive, .. } => Some(archive.clone()),
         }
     }
 }
@@ -283,6 +284,8 @@ enum Action {
     ItemProperties(PathBuf),
     /// Extract All for the archive file.
     ExtractAll(PathBuf),
+    /// Extract the items selected inside an archive.
+    ExtractSelected,
 }
 
 /// What this window's Cut or Copy remembered. Where the system pasteboard
@@ -928,7 +931,8 @@ impl Explorer {
                 Some(group) => group,
                 None => return,
             },
-            ArchiveJob::ExtractAll { archive, .. } => (archive.clone(), vec![String::new()]),
+            ArchiveJob::Extract { archive, items, .. } if items.is_empty() => (archive.clone(), vec![String::new()]),
+            ArchiveJob::Extract { archive, items, .. } => (archive.clone(), items.clone()),
         };
         let password = self.passwords.get(&archive).cloned();
         self.status = Some("Extracting...".into());
@@ -951,7 +955,7 @@ impl Explorer {
                     }
                     Ok(out)
                 }),
-                ArchiveJob::Transfer(_, dest) | ArchiveJob::ExtractAll { dest, .. } => (|| {
+                ArchiveJob::Transfer(_, dest) | ArchiveJob::Extract { dest, .. } => (|| {
                     let scratch = archive::scratch_folder()?;
                     let staged = archive::extract(&archive, &inner, &scratch, password, &progress);
                     let staged = staged.inspect_err(|_| {
@@ -1017,7 +1021,7 @@ impl Explorer {
                     }
                     ArchiveJob::Then(_, AfterExtract::Copy) => self.put_on_clipboard(paths, false),
                     ArchiveJob::Transfer(..) => {}
-                    ArchiveJob::ExtractAll { dest, show, .. } => {
+                    ArchiveJob::Extract { dest, show, .. } => {
                         if show {
                             self.navigate(dest);
                         }
@@ -1038,9 +1042,21 @@ impl Explorer {
     }
 
     fn show_extract_all(&mut self, archive: PathBuf) {
+        self.show_extract(archive, Vec::new());
+    }
+
+    /// Extract for the items selected in the open archive.
+    fn show_extract_selected(&mut self) {
+        let paths: Vec<PathBuf> = self.selection.iter().filter(|p| archive::is_inside(p)).cloned().collect();
+        if let Some((archive, items)) = archive::group(&paths) {
+            self.show_extract(archive, items);
+        }
+    }
+
+    fn show_extract(&mut self, archive: PathBuf, items: Vec<String>) {
         if self.extract_dialog.is_none() {
             let dest = archive::default_destination(&archive);
-            self.extract_dialog = Some(ExtractDialog::new(archive, &dest, self.home.as_ref(), self.extract_show));
+            self.extract_dialog = Some(ExtractDialog::new(archive, items, &dest, self.home.as_ref(), self.extract_show));
         }
     }
 
@@ -1079,7 +1095,7 @@ impl Explorer {
                     dialog.error = Some(error.into());
                     return;
                 }
-                let archive = dialog.archive.clone();
+                let (archive, items) = (dialog.archive.clone(), dialog.items.clone());
                 self.extract_dialog = None;
                 if show != self.extract_show {
                     self.extract_show = show;
@@ -1087,7 +1103,7 @@ impl Explorer {
                         Preferences::update(|p| p.extract_show = show);
                     }
                 }
-                self.run_archive_job(ArchiveJob::ExtractAll { archive, dest, show });
+                self.run_archive_job(ArchiveJob::Extract { archive, items, dest, show });
             }
         }
     }
@@ -2187,6 +2203,7 @@ impl Explorer {
                     thread::spawn(move || platform::reveal(&p));
                 }
                 Action::ExtractAll(archive) => self.show_extract_all(archive),
+                Action::ExtractSelected => self.show_extract_selected(),
                 Action::OpenConfig => {
                     let opened = Preferences::file_path().and_then(|file| platform::open_text(&file));
                     if let Err(e) = opened {
@@ -2532,6 +2549,10 @@ impl Explorer {
                 let archive = self.extract_all_target();
                 if ui.add_enabled(archive.is_some(), gutter_item(ui, "Extract All...", String::new())).clicked() {
                     actions.extend(archive.map(Action::ExtractAll));
+                }
+                let selected = self.archive_open.is_some() && self.selection.iter().any(|p| archive::is_inside(p));
+                if ui.add_enabled(selected, gutter_item(ui, "Extract...", String::new())).clicked() {
+                    actions.push(Action::ExtractSelected);
                 }
                 ui.separator();
                 if ui.add(gutter_item(ui, "Properties", platform::shortcut(false, "I"))).clicked() {
@@ -4021,6 +4042,9 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
     if is_archive && ui.add(gutter_item(ui, "Extract All...", String::new())).clicked() {
         actions.push(Action::ExtractAll(entry.path.clone()));
     }
+    if inside && ui.add(gutter_item(ui, "Extract...", String::new())).clicked() {
+        actions.push(Action::ExtractSelected);
+    }
     if ui.add(gutter_item(ui, platform::REVEAL_LABEL, String::new())).clicked() {
         actions.push(Action::RevealInFinder(entry.path.clone()));
     }
@@ -5398,7 +5422,7 @@ mod archives {
         let (mut app, dir, zip) = explorer("all", None);
         // In a temporary folder, as this one is, Extract All suggests Documents.
         assert_eq!(archive::default_destination(&zip).file_name(), Some("a".as_ref()));
-        app.run_archive_job(ArchiveJob::ExtractAll { archive: zip.clone(), dest: dir.join("a"), show: true });
+        app.run_archive_job(ArchiveJob::Extract { archive: zip.clone(), items: Vec::new(), dest: dir.join("a"), show: true });
         wait(&mut app);
         app.finish_listing();
         assert_eq!(fs::read(dir.join("a/top.txt")).unwrap(), b"top");
@@ -5409,9 +5433,28 @@ mod archives {
     }
 
     #[test]
+    fn extract_takes_out_only_the_selected_items() {
+        let (mut app, dir, zip) = explorer("some", None);
+        app.apply(vec![Action::Navigate(zip.clone())], &[]);
+        app.finish_listing();
+        app.selection = BTreeSet::from([zip.join("top.txt"), zip.join("docs/readme.txt")]);
+        app.apply(vec![Action::ExtractSelected], &[]);
+        let dialog = app.extract_dialog.as_ref().expect("the Extract window opens");
+        assert_eq!(dialog.items, ["docs/readme.txt", "top.txt"]);
+        app.extract_dialog = None;
+        let dest = dir.join("b");
+        app.run_archive_job(ArchiveJob::Extract { archive: zip.clone(), items: vec!["top.txt".into(), "docs/readme.txt".into()], dest: dest.clone(), show: false });
+        wait(&mut app);
+        assert_eq!(fs::read(dest.join("top.txt")).unwrap(), b"top");
+        assert_eq!(fs::read(dest.join("readme.txt")).unwrap(), b"read me");
+        assert!(!dest.join("docs").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn an_encrypted_zip_asks_for_the_password_and_runs_again_with_it() {
         let (mut app, dir, zip) = explorer("password", Some("sesame"));
-        let job = ArchiveJob::ExtractAll { archive: zip.clone(), dest: dir.join("a"), show: false };
+        let job = ArchiveJob::Extract { archive: zip.clone(), items: Vec::new(), dest: dir.join("a"), show: false };
         app.run_archive_job(job.clone());
         wait(&mut app);
         assert!(app.password_dialog.is_some());
@@ -5613,7 +5656,7 @@ mod screenshot {
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
     fn extract_dialog() {
-        let dialog = crate::extract_dialog::ExtractDialog::new(PathBuf::from("/Users/me/Downloads/macsplorer-1.6.0.zip"), Path::new("/Users/me/Downloads/macsplorer-1.6.0"), Some(&Home::new(PathBuf::from("/Users/me"))), true);
+        let dialog = crate::extract_dialog::ExtractDialog::new(PathBuf::from("/Users/me/Downloads/macsplorer-1.6.0.zip"), Vec::new(), Path::new("/Users/me/Downloads/macsplorer-1.6.0"), Some(&Home::new(PathBuf::from("/Users/me"))), true);
         shoot_dialog("extract-all", crate::extract_dialog::SIZE, dialog, |ui, d| {
             d.ui(ui);
         });

@@ -1,4 +1,4 @@
-//! Extract All: where to put everything in an archive, after `zipfldr.dll`'s
+//! Extract All (and Extract, for the items selected in an archive): where to put them, after `zipfldr.dll`'s
 //! `CZipWiz` (`docs/archive-findings.md` §2.8), as the one page Windows 7
 //! made of XP's wizard. The folder is typed (a leading `~` is the home
 //! folder); "Show extracted files when complete" goes there afterwards.
@@ -16,7 +16,6 @@ use crate::theme::{self, Bevel};
 pub const SIZE: egui::Vec2 = vec2(460.0, 214.0);
 const FRAME: f32 = 4.0;
 const BUTTON: egui::Vec2 = vec2(75.0, 23.0);
-const TITLE: &str = "Extract All";
 
 pub enum Outcome {
     Keep,
@@ -28,6 +27,8 @@ pub enum Outcome {
 pub struct ExtractDialog {
     viewport: egui::ViewportId,
     pub archive: PathBuf,
+    /// The paths inside the archive to extract; empty for all of it.
+    pub items: Vec<String>,
     folder: String,
     show: bool,
     /// Why the folder typed can't be used, shown above the buttons.
@@ -35,13 +36,17 @@ pub struct ExtractDialog {
 }
 
 impl ExtractDialog {
-    pub fn new(archive: PathBuf, folder: &Path, home: Option<&Home>, show: bool) -> Self {
-        Self { viewport: egui::ViewportId::from_hash_of("extract"), archive, folder: home::abbreviate(folder, home), show, error: None }
+    pub fn new(archive: PathBuf, items: Vec<String>, folder: &Path, home: Option<&Home>, show: bool) -> Self {
+        Self { viewport: egui::ViewportId::from_hash_of("extract"), archive, items, folder: home::abbreviate(folder, home), show, error: None }
+    }
+
+    fn title(&self) -> &'static str {
+        if self.items.is_empty() { "Extract All" } else { "Extract" }
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
         let builder = egui::ViewportBuilder::default()
-            .with_title(TITLE)
+            .with_title(self.title())
             .with_inner_size(SIZE)
             .with_resizable(false)
             .with_minimize_button(false)
@@ -58,7 +63,7 @@ impl ExtractDialog {
         theme::bevel(p, outer, Bevel::Raised);
         let inner = outer.shrink(FRAME);
         let mut caption = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
-        theme::dialog_title_bar(&mut caption, TITLE);
+        theme::dialog_title_bar(&mut caption, self.title());
 
         let font = egui::TextStyle::Body.resolve(ui.style());
         let left = inner.left() + 11.0;

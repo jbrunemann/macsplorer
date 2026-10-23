@@ -201,6 +201,7 @@ The status bar shows how many items you have selected and how much space they ta
 | **Show Package Contents** | For apps, other packages and zip and tar archives: shows the files inside them as a folder instead of opening them. **Back** returns to where you were. |
 | **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons, and the one the file opens with now (the one you chose, or else the Mac's default) is in bold and comes first. **Choose Program...** opens a list where you pick an app (the current one is marked "(default)"), or use **Other...** for any app on your Mac. Tick **Always use this program to open these files** and double-clicking that kind of file (all `.jpg` and `.jpeg` files, say) opens it with that app from then on, in Macsplorer only. Finder isn't affected. |
 | **Extract All...** | For `.zip` and `.tar` archives: copies everything in the archive into a folder. See [Archives](#archives-zip-and-tar-files). |
+| **Extract...** | Inside an archive: copies the selected items into a folder. |
 | **Show in Finder** | Opens a Finder window with the item selected. |
 | **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |
 | **Eject** | For disks and drives: safely disconnects them. |
@@ -223,6 +224,7 @@ What's inside an archive can be looked at and copied, but not changed: **Rename*
 
 - **Open a file** by double-clicking it. Macsplorer takes a copy out of the archive and opens that, so changes you make to it don't go back into the archive. An app inside an archive is taken out whole before it starts.
 - **Copy** files and paste them somewhere else, or **drag** them to a folder, to Finder or to another app. Dragging out of the window works for up to 64 MB at a time; for more, use Copy and Paste or Extract All.
+- **Extract...** (in the **File** menu or the menu for an item inside the archive) copies just the items you selected, one or many, into a folder. It asks for the folder the same way Extract All does, and folders come out with everything in them.
 - **Extract All...** (in the **File** menu, in the menu for the archive, or by right-clicking an empty spot inside it) copies everything into a folder. It suggests a folder next to the archive with the archive's name (or one in your Documents folder when the archive is in a temporary folder). Type another place if you like; `~` stands for your home folder. With **Show extracted files when complete** ticked, Macsplorer goes to that folder afterwards; Macsplorer remembers whether you ticked it.
 
 <img src="images/extract-all.png" alt="The Extract All window" width="460">
