@@ -163,7 +163,7 @@ Small icons with names, arranged in columns that run from top to bottom. When th
 ### What the icons tell you
 
 - **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them.
-- **A zipper** marks zip and tar archives: on a folder in Large Icons, on a paper page in the List and Details views. They open in Macsplorer as a folder (see [Archives](#archives-zip-and-tar-files)). While you're inside one, the address bar shows the folder with the zipper.
+- **A zipper** marks zip and tar archives: on a folder in Large Icons, on a paper page in the List and Details views. Show Package Contents opens them as a folder (see [Archives](#archives-zip-and-tar-files)). While you're inside one, the address bar shows the folder with the zipper.
 - **Paper pages** are files. A colored mark on the page shows the kind of file, for example a spreadsheet, a picture, a PDF or a program's source code. A plain page with gray lines is a file of a kind Macsplorer doesn't know.
 - **Apps**, and anything you have given a custom icon in Finder, show their real icon.
 
@@ -173,7 +173,7 @@ With **View › Special files in color** turned on (it is at first), some names 
 
 - **Green**: programs and scripts that can be run.
 - **Turquoise**: links (aliases) that point to another file or folder.
-- **Red**: archives such as `.zip` files and disk images, and links whose original has gone missing. Only the ones with a [zipper](#what-the-icons-tell-you) on their icon open in Macsplorer; the others, such as `.rar` or `.dmg`, open in their own app.
+- **Red**: archives such as `.zip` files and disk images, and links whose original has gone missing. Only the ones with a [zipper](#what-the-icons-tell-you) on their icon can be looked into with Show Package Contents; the others, such as `.rar` or `.dmg`, can't.
 
 ## 5. Selecting files
 
@@ -198,7 +198,7 @@ The status bar shows how many items you have selected and how much space they ta
 | Choice | What it does |
 |---|---|
 | **Open** | Same as a double-click. |
-| **Show Package Contents** | For apps and other packages: shows the files inside them as a folder instead of opening them. **Back** returns to where you were. |
+| **Show Package Contents** | For apps, other packages and zip and tar archives: shows the files inside them as a folder instead of opening them. **Back** returns to where you were. |
 | **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons, and the one the file opens with now (the one you chose, or else the Mac's default) is in bold and comes first. **Choose Program...** opens a list where you pick an app (the current one is marked "(default)"), or use **Other...** for any app on your Mac. Tick **Always use this program to open these files** and double-clicking that kind of file (all `.jpg` and `.jpeg` files, say) opens it with that app from then on, in Macsplorer only. Finder isn't affected. |
 | **Extract All...** | For `.zip` and `.tar` archives: copies everything in the archive into a folder. See [Archives](#archives-zip-and-tar-files). |
 | **Show in Finder** | Opens a Finder window with the item selected. |
@@ -215,7 +215,7 @@ Right-click an empty spot in the list for **Paste**, **Move Here**, **Refresh**,
 
 ### Archives (zip and tar files)
 
-Like Windows' compressed folders, an archive opens as a folder: double-click a `.zip`, `.tar`, `.tar.gz` (or `.tgz`), `.tar.bz2`, `.tar.xz` or `.tar.zst` file and you see what's inside it, with folders you can go into. The address bar shows the way in, for example `~/Downloads/photos.zip/2026`, with the archive's name in red (when [colored names](#colored-names) are on), and **Up** or **Back** takes you out again. Their icon has a zipper. Other kinds of archive (`.7z`, `.rar`, `.cab`) keep their page icon and still open in their own app. To open a zip in Archive Utility instead, use **Open With**.
+An archive is handled like an app: double-clicking it opens it with its program (Archive Utility, say), and **Show Package Contents** in its menu shows what's inside as a folder, like Windows' compressed folders. This works for `.zip`, `.tar`, `.tar.gz` (or `.tgz`), `.tar.bz2`, `.tar.xz` and `.tar.zst` files, with folders you can go into. Typing the archive's path in the address bar does the same. The address bar shows the way in, for example `~/Downloads/photos.zip/2026`, with the archive's name in red (when [colored names](#colored-names) are on), and **Up** or **Back** takes you out again. Their icon has a zipper. Other kinds of archive (`.7z`, `.rar`, `.cab`) keep their page icon and still open in their own app.
 
 <img src="images/archive-folder.png" alt="Inside a zip file" width="900">
 

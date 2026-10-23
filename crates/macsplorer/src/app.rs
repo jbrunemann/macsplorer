@@ -1623,8 +1623,9 @@ impl Explorer {
             return;
         }
         let is_folder = self.entries.iter().find(|e| e.path == path).map_or(path.is_dir(), Entry::is_folder);
-        // Like Explorer's zip folders, an archive opens as a folder.
-        if is_folder || archive::is_browsable(&path) {
+        // An archive opens like an app: with its program. Show Package
+        // Contents is the way in.
+        if is_folder {
             self.navigate(path);
         } else if let Some(app) = open_with::chosen_app(&path)
             .or_else(|| open_with::default_app(&path).filter(|app| open_with::is_reaview(app)))
@@ -4008,14 +4009,16 @@ fn item_menu(ui: &mut Ui, entry: &Entry, can_paste: bool, open_with: &mut Option
         actions.push(Action::Open(entry.path.clone()));
     }
     // After Finder's -[TBaseBrowserViewController cmdShowPackageContents:]:
-    // the package opens as a folder in the same window.
-    if entry.kind == RenameKind::Package && ui.add(gutter_item(ui, "Show Package Contents", String::new())).clicked() {
+    // the package opens as a folder in the same window. An archive gets the
+    // same entry, as it opens with its program like an app does.
+    let is_archive = !inside && entry.kind == RenameKind::File && archive::format_of(&entry.name).is_some_and(archive::Format::browsable);
+    if (entry.kind == RenameKind::Package || is_archive) && ui.add(gutter_item(ui, "Show Package Contents", String::new())).clicked() {
         actions.push(Action::Navigate(entry.path.clone()));
     }
     if open_with::SUPPORTED && entry.kind == RenameKind::File {
         open_with_menu(ui, &entry.path, open_with, icons, actions);
     }
-    if !inside && entry.kind == RenameKind::File && archive::format_of(&entry.name).is_some_and(archive::Format::browsable) && ui.add(gutter_item(ui, "Extract All...", String::new())).clicked() {
+    if is_archive && ui.add(gutter_item(ui, "Extract All...", String::new())).clicked() {
         actions.push(Action::ExtractAll(entry.path.clone()));
     }
     if ui.add(gutter_item(ui, platform::REVEAL_LABEL, String::new())).clicked() {
@@ -5324,9 +5327,9 @@ mod archives {
     }
 
     #[test]
-    fn a_zip_opens_as_a_folder_and_up_leaves_it() {
+    fn a_zip_shows_its_contents_as_a_folder_and_up_leaves_it() {
         let (mut app, dir, zip) = explorer("browse", None);
-        app.open(zip.clone());
+        app.apply(vec![Action::Navigate(zip.clone())], &[]);
         app.finish_listing();
         assert_eq!(app.current(), zip);
         assert_eq!(app.archive_open.as_deref(), Some(zip.as_path()));
