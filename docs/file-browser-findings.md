@@ -8,6 +8,7 @@ Targets (all in `analysis/`, PDBs from the Microsoft symbol server, names recove
 | `shell32.dll` | 10.0.10240.21161 | 38,591 |
 | `Windows.Storage.dll` | 10.0.10240.21161 | 50,733 |
 | `comctl32.dll` (v6, WinSxS) | 6.10 (th1.251008-0227) | 12,862 symbols |
+| `zipfldr.dll`, `cabview.dll` | 10.0.10240.20747, .21072 | see `archive-findings.md` |
 
 Method: Ghidra 12.1.4 pseudocode through REA (by address; Ghidra headless did not load the PDBs) plus `llvm-objdump` with PDB names. Static only, nothing executed.
 **Observed** = read from code. **Inferred** = my interpretation. Section 3 is design advice for macsplorer, not Windows behavior.

@@ -12,6 +12,13 @@ notify = "8.2.0"
 icu_collator = "2.3.1"
 icu_normalizer = "2.3.0"
 icu_locale_core = "2.3.0"
+# Archives, all pure Rust so the Linux cross-check needs no C toolchain.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64", "bzip2", "lzma", "xz", "aes-crypto"] }
+tar = "0.4.46"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+bzip2 = "0.6"
+lzma-rust2 = { version = "0.16", default-features = false, features = ["std", "xz"] }
+ruzstd = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSURL", "NSString", "NSArray", "NSDictionary", "NSError", "NSValue"] }

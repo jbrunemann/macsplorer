@@ -199,6 +199,7 @@ The status bar shows how many items you have selected and how much space they ta
 | **Open** | Same as a double-click. |
 | **Show Package Contents** | For apps and other packages: shows the files inside them as a folder instead of opening them. **Back** returns to where you were. |
 | **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons, and the one the file opens with now (the one you chose, or else the Mac's default) is in bold and comes first. **Choose Program...** opens a list where you pick an app (the current one is marked "(default)"), or use **Other...** for any app on your Mac. Tick **Always use this program to open these files** and double-clicking that kind of file (all `.jpg` and `.jpeg` files, say) opens it with that app from then on, in Macsplorer only. Finder isn't affected. |
+| **Extract All...** | For `.zip` and `.tar` archives: copies everything in the archive into a folder. See [Archives](#archives-zip-and-tar-files). |
 | **Show in Finder** | Opens a Finder window with the item selected. |
 | **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |
 | **Eject** | For disks and drives: safely disconnects them. |
@@ -210,6 +211,26 @@ The status bar shows how many items you have selected and how much space they ta
 <img src="images/open-with-menu.png" alt="The Open With list" width="900">
 
 Right-click an empty spot in the list for **Paste**, **Move Here**, **Refresh**, **New**, and **Properties** of the folder you're in. **New › Folder** makes a folder called New Folder (or New Folder (2) and so on if that name is taken) and lets you type its name right away.
+
+### Archives (zip and tar files)
+
+Like Windows' compressed folders, an archive opens as a folder: double-click a `.zip`, `.tar`, `.tar.gz` (or `.tgz`), `.tar.bz2`, `.tar.xz` or `.tar.zst` file and you see what's inside it, with folders you can go into. The address bar shows the way in, for example `~/Downloads/photos.zip/2026`, and **Up** or **Back** takes you out again. Other kinds of archive (`.7z`, `.rar`, `.cab`) still open in their own app. To open a zip in Archive Utility instead, use **Open With**.
+
+<img src="images/archive-folder.png" alt="Inside a zip file" width="900">
+
+What's inside an archive can be looked at and copied, but not changed: **Rename**, **Delete**, **Cut**, **Paste** and **New Folder** aren't available there. To change the files, extract them first.
+
+- **Open a file** by double-clicking it. Macsplorer takes a copy out of the archive and opens that, so changes you make to it don't go back into the archive. An app inside an archive is taken out whole before it starts.
+- **Copy** files and paste them somewhere else, or **drag** them to a folder, to Finder or to another app. Dragging out of the window works for up to 64 MB at a time; for more, use Copy and Paste or Extract All.
+- **Extract All...** (in the **File** menu, in the menu for the archive, or by right-clicking an empty spot inside it) copies everything into a folder. It suggests a folder next to the archive with the archive's name (or one in your Documents folder when the archive is in a temporary folder). Type another place if you like; `~` stands for your home folder. With **Show extracted files when complete** ticked, Macsplorer goes to that folder afterwards; Macsplorer remembers whether you ticked it.
+
+<img src="images/extract-all.png" alt="The Extract All window" width="460">
+
+A **password-protected zip** asks for its password the first time you open, copy or extract something from it, and remembers it until you close the window. If the password is wrong, it asks again.
+
+<img src="images/password-needed.png" alt="Asking for a zip file's password" width="380">
+
+Files that came from the internet stay marked that way when they come out of the archive, so your Mac checks an app from a downloaded zip before it opens, just as it does when you unzip it in Finder. The copies Macsplorer makes to open files are kept in its cache folder and removed a day later.
 
 ## 7. Renaming
 

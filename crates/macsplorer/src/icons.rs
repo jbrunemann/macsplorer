@@ -180,7 +180,8 @@ impl FileIcons {
             blended(ui, state, || self.paint_folder(ui, rect, &entry.path, fill, emblem));
             return;
         }
-        let wants_native = entry.kind == RenameKind::Package || entry.custom_icon;
+        // An app in an archive isn't on disk for macOS to draw.
+        let wants_native = (entry.kind == RenameKind::Package && !macsplorer_core::archive::is_inside(&entry.path)) || entry.custom_icon;
         if wants_native && self.paint_native(ui, rect, entry, state) {
             return;
         }

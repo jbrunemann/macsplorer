@@ -15,6 +15,7 @@ update-check = { version = "1.5.0", path = "../update-check" }
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs", "aes-crypto"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

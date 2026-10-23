@@ -88,11 +88,14 @@ pub struct Preferences {
     pub associations: Associations,
     /// The Color dialog's 16 custom color boxes, empty ones `None`.
     pub custom_colors: [Option<[u8; 3]>; 16],
+    /// Extract All's "Show extracted files when complete", on until turned
+    /// off (Windows keeps it as `ExtractionWizard\ShowFiles`).
+    pub extract_show: bool,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, update_url: DEFAULT_UPDATE_URL.to_owned(), git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16] }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, update_url: DEFAULT_UPDATE_URL.to_owned(), git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16], extract_show: true }
     }
 }
 
@@ -176,6 +179,7 @@ impl Preferences {
             let boxes = self.custom_colors.iter().map(|c| c.map_or(Value::Null, |rgb| Value::from(format_hex(rgb)))).collect();
             map.insert("custom_colors".into(), Value::Array(boxes));
         }
+        map.insert("extract_show".into(), Value::Bool(self.extract_show));
         let text = serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
         // Replace the file in one step, so another window reading it never
         // sees half of it.
@@ -199,6 +203,7 @@ impl Preferences {
             window: map.get("window").and_then(read_window),
             associations: map.get("associations").map(Associations::from_json).unwrap_or_default(),
             custom_colors: read_custom_colors(map.get("custom_colors")),
+            extract_show: map.get("extract_show").and_then(Value::as_bool).unwrap_or(true),
         }
     }
 }

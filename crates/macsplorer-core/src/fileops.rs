@@ -120,11 +120,18 @@ impl Progress {
         ProgressView { done, total, item: self.current.lock().map_or(None, |c| c.clone()) }
     }
 
-    fn add(&self, units: u64) {
+    /// Starts over with `total` units of work: the next step of an operation
+    /// that has one bar (an extraction, then the move into place).
+    pub(crate) fn begin(&self, total: u64) {
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    pub(crate) fn add(&self, units: u64) {
         self.done.fetch_add(units, Ordering::Relaxed);
     }
 
-    fn set_item(&self, src: &Path, dir: &Path) {
+    pub(crate) fn set_item(&self, src: &Path, dir: &Path) {
         if let Ok(mut current) = self.current.lock() {
             *current = Some((src.to_path_buf(), dir.to_path_buf()));
         }
@@ -185,7 +192,7 @@ pub fn transfer_with(sources: &[PathBuf], dest: &Path, moving: bool, trash: &imp
         };
         total += units;
     }
-    progress.total.store(total.max(1), Ordering::Relaxed);
+    progress.begin(total.max(1));
     let mut run = Run { moving, trash, ask, progress, all: false, copies: Vec::new(), moved: Vec::new(), replaced: Vec::new() };
     for src in sources {
         match run.place(src, dest) {
