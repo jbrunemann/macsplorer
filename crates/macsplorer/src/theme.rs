@@ -995,12 +995,17 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
             p.rect_filled(Rect::from_min_max(at(13.0, 12.0), at(14.0, 14.0)), 0.0, cable);
         }
         Icon::Computer => {
+            // One mesh of plain quads instead of 1×1 `rect_filled`s: the tessellator
+            // feathers the edges of a filled rectangle by one pixel, which at one device
+            // pixel per point (Linux, usually) leaves nothing of a one-point square.
+            let mut mesh = egui::Mesh::default();
             for (y, row) in COMPUTER.iter().enumerate() {
                 for (x, ch) in row.bytes().enumerate() {
                     let Some(color) = computer_pixel(ch) else { continue };
-                    p.rect_filled(Rect::from_min_max(at(x as f32, y as f32), at(x as f32 + 1.0, y as f32 + 1.0)), 0.0, color);
+                    mesh.add_colored_rect(Rect::from_min_max(at(x as f32, y as f32), at(x as f32 + 1.0, y as f32 + 1.0)), color);
                 }
             }
+            p.add(egui::Shape::mesh(mesh));
         }
     }
 }
