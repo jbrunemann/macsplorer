@@ -1,6 +1,6 @@
 [package]
-name = "localsend-client"
-description = "The sending side of the LocalSend protocol v2: find LocalSend devices on the local network and send them files"
+name = "localsend"
+description = "The LocalSend protocol v2: find LocalSend devices on the local network, send them files and receive theirs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,7 @@ socket2 = { version = "0.6.5", features = ["all"] }
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"], optional = true }
 ring = { version = "0.17.14", optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12", "ring"], optional = true }
 
 [features]
 default = ["tls"]
@@ -21,5 +22,5 @@ default = ["tls"]
 # one leaves it out.
 # Protocol 2.2 receivers also ask the sender for a certificate (mutual TLS),
 # so `Me` makes a self-signed one (rcgen) and its SHA-256 (ring) is our
-# fingerprint.
-tls = ["ureq/rustls", "dep:rcgen", "dep:ring"]
+# fingerprint. The receiver serves HTTPS with it (rustls).
+tls = ["ureq/rustls", "dep:rcgen", "dep:ring", "dep:rustls"]

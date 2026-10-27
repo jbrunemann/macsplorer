@@ -186,7 +186,7 @@ pub fn sweep_hosts(interfaces: &[Interface]) -> Vec<Ipv4Addr> {
 
 /// The multicast socket: the shared port, the group joined on each
 /// interface.
-fn listener(interfaces: &[Interface]) -> io::Result<UdpSocket> {
+pub(crate) fn listener(interfaces: &[Interface]) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(SockProtocol::UDP))?;
     socket.set_reuse_address(true)?;
     #[cfg(unix)]
@@ -217,7 +217,7 @@ fn listen(socket: &UdpSocket, stop: &AtomicBool, report: &dyn Fn(Device)) {
 }
 
 /// Sends the announcement out of every interface, at [`ANNOUNCE_AT_MS`].
-fn announce(message: &[u8], interfaces: &[Interface], stop: &AtomicBool) {
+pub(crate) fn announce(message: &[u8], interfaces: &[Interface], stop: &AtomicBool) {
     let sockets: Vec<UdpSocket> = interfaces.iter().filter_map(|i| sender(i.ip).ok()).collect();
     let group = SocketAddr::V4(SocketAddrV4::new(MULTICAST, PORT));
     let mut waited = 0;
@@ -233,7 +233,7 @@ fn announce(message: &[u8], interfaces: &[Interface], stop: &AtomicBool) {
     }
 }
 
-fn sender(ip: Ipv4Addr) -> io::Result<UdpSocket> {
+pub(crate) fn sender(ip: Ipv4Addr) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(SockProtocol::UDP))?;
     socket.set_multicast_if_v4(&ip)?;
     socket.set_multicast_ttl_v4(1)?;

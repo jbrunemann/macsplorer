@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::protocol::{FileInfo, PrepareResponse, PrepareUpload};
+use crate::protocol::{FileInfo, FileMetadata, PrepareResponse, PrepareUpload};
 use crate::{Device, Me, mime};
 
 /// How long to wait for a device to take the connection.
@@ -59,6 +59,7 @@ pub struct Outgoing {
     /// The name the device saves it under, `/`-separated.
     pub name: String,
     pub size: u64,
+    pub modified: Option<std::time::SystemTime>,
 }
 
 /// The files that sending `paths` sends, in order: files as themselves,
@@ -71,7 +72,7 @@ pub fn plan(paths: &[PathBuf]) -> io::Result<Vec<Outgoing>> {
         if meta.is_dir() {
             walk(path, &name, 0, &mut out)?;
         } else if meta.is_file() {
-            out.push(Outgoing { path: path.clone(), name, size: meta.len() });
+            out.push(Outgoing { path: path.clone(), name, size: meta.len(), modified: meta.modified().ok() });
         }
     }
     Ok(out)
@@ -90,7 +91,7 @@ fn walk(dir: &Path, prefix: &str, depth: usize, out: &mut Vec<Outgoing>) -> io::
         if meta.is_dir() {
             walk(&path, &name, depth + 1, out)?;
         } else if meta.is_file() {
-            out.push(Outgoing { path, name, size: meta.len() });
+            out.push(Outgoing { path, name, size: meta.len(), modified: meta.modified().ok() });
         }
     }
     Ok(())
@@ -269,7 +270,8 @@ fn upload(agent: &ureq::Agent, base: &str, session: &str, id: &str, token: &str,
 }
 
 fn file_info(i: usize, f: &Outgoing) -> FileInfo {
-    FileInfo { id: i.to_string(), file_name: f.name.clone(), size: f.size, file_type: mime::of(&f.name).into(), sha256: None, preview: None, metadata: None }
+    let metadata = f.modified.and_then(crate::time::format).map(|t| FileMetadata { modified: Some(t), accessed: None });
+    FileInfo { id: i.to_string(), file_name: f.name.clone(), size: f.size, file_type: mime::of(&f.name).into(), sha256: None, preview: None, metadata }
 }
 
 fn network(e: ureq::Error) -> SendError {
@@ -317,7 +319,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("localsend-client-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("localsend-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

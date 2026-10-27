@@ -1,6 +1,6 @@
 //! Windows 2000's "Copying..." and "Moving..." dialog for a paste, in its
-//! own borderless window (also "Sending..." for a LocalSend transfer, see
-//! `network`): the flying-paper animation, the item and where it
+//! own borderless window (also "Sending..." and "Receiving..." for a
+//! LocalSend transfer, see `network`): the flying-paper animation, the item and where it
 //! goes, the progress bar, the time left and Cancel. When it shows and
 //! closes is traced (`macsplorer_core::copy_progress`); the layout and
 //! wording are Windows 2000's from memory, and the animation is drawn with
@@ -64,12 +64,14 @@ impl Tracked for Progress {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Copy,
     Move,
     /// To a device on the network: the paper flies to a computer.
     Send,
+    /// From a device: the paper flies from a computer into a folder.
+    Receive,
 }
 
 pub struct ProgressDialog {
@@ -85,8 +87,12 @@ pub struct ProgressDialog {
 
 impl ProgressDialog {
     pub fn new(id: u64, progress: Arc<dyn Tracked>, kind: Kind) -> Self {
-        let viewport = egui::ViewportId::from_hash_of(("progress", kind == Kind::Send, id));
+        let viewport = egui::ViewportId::from_hash_of(("progress", kind, id));
         Self { id, progress, kind, clock: DialogClock::default(), finished: false, viewport }
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.kind
     }
 
     pub fn size() -> egui::Vec2 {
@@ -134,6 +140,7 @@ fn title(kind: Kind) -> &'static str {
         Kind::Copy => "Copying...",
         Kind::Move => "Moving...",
         Kind::Send => "Sending...",
+        Kind::Receive => "Receiving...",
     }
 }
 
@@ -205,15 +212,20 @@ fn progress_bar(ui: &Ui, rect: Rect, fraction: f32) {
     }
 }
 
-/// Paper flying from the folder on the left to the one on the right, or to
-/// a computer for a send.
+/// Paper flying from the folder on the left to the one on the right, or
+/// between a computer and a folder for a send or a receive.
 fn animation(ui: &Ui, area: Rect, kind: Kind, now: f64) {
     let p = ui.painter();
     let folder = vec2(32.0, 32.0);
     let from = Rect::from_min_size(pos2(area.left() + 4.0, area.bottom() - folder.y - 2.0), folder);
     let to = Rect::from_min_size(pos2(area.right() - folder.x - 4.0, area.bottom() - folder.y - 2.0), folder);
-    theme::paint_icon(p, from, Icon::FolderOpen, true);
-    theme::paint_icon(p, to, if kind == Kind::Send { Icon::Computer } else { Icon::Folder }, true);
+    let (from_icon, to_icon) = match kind {
+        Kind::Copy | Kind::Move => (Icon::FolderOpen, Icon::Folder),
+        Kind::Send => (Icon::FolderOpen, Icon::Computer),
+        Kind::Receive => (Icon::Computer, Icon::FolderOpen),
+    };
+    theme::paint_icon(p, from, from_icon, true);
+    theme::paint_icon(p, to, to_icon, true);
     // The same 15 frames a second as the AVI, so the flight steps like it.
     let t = (((now / FRAME_TIME).floor() * FRAME_TIME) % FLIGHT / FLIGHT) as f32;
     let start = from.center() + vec2(0.0, -8.0);

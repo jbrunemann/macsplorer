@@ -48,7 +48,7 @@ From top to bottom:
 | **Search box** | To the right of the address bar. Shows only the items whose name contains what you type. Press **/** to go there. |
 | **Folders pane** | On the left: your favorite places, your disks, and all the folders on them as a tree. |
 | **File list** | On the right: the contents of the current folder. |
-| **Status bar** | At the bottom: how many items there are, how big they are, how much free space the disk has, and your computer's name. Inside a Git repository it also shows the branch and the state of the repository (see [Git repositories](#git-repositories)). Drag the ridged corner at its right end to make the window bigger or smaller. |
+| **Status bar** | At the bottom: how many items there are, how big they are, how much free space the disk has, and your computer's name (click it to receive files from nearby devices, see [Receiving files from a phone or computer nearby](#receiving-files-from-a-phone-or-computer-nearby)). Inside a Git repository it also shows the branch and the state of the repository (see [Git repositories](#git-repositories)). Drag the ridged corner at its right end to make the window bigger or smaller. |
 
 ### Git repositories
 
@@ -77,7 +77,7 @@ The tree on the left has three sections:
 
 - **Favorites**: your home folder, Desktop, Downloads, Documents, Pictures, Music, Movies, Applications and the Trash. Shortcuts (symbolic links) to folders that you keep directly in your home folder are listed too, just above the Trash.
 - **Locations**: your Mac, shown by its own name with a little monitor icon (it is only a label, nothing opens from it), then your Mac's disk, plus any USB sticks, external drives or network disks you have connected.
-- **Network**: **Network Neighborhood**, the phones, tablets and computers nearby that you can send files to. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).
+- **Network**: **Network Neighborhood**, the phones, tablets and computers nearby that you can send files to. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby) and [Receiving files from a phone or computer nearby](#receiving-files-from-a-phone-or-computer-nearby).
 
 Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds, + and − do the same without moving, Home and End jump to the first and last folder, and Page Up and Page Down move a pageful at a time. Typing the first letters of a folder's name jumps to it, among the folders you can see. When you move with the keys, the folder opens on the right half a second after you stop, so you can run through the tree quickly without waiting for every folder on the way.
 
@@ -299,9 +299,29 @@ To send, do one of these:
 
 The other device asks whether to accept the files, and the "Sending..." window waits until someone answers there. Once they accept, it shows how far it has got; **Cancel** stops it. A folder arrives as a folder with everything in it. The status bar says when the files have arrived, or why they didn't: declined, a device that is busy with another transfer, or one that asks for a PIN (not supported yet; switch the PIN off in LocalSend's settings on that device).
 
-Sending can't be undone: the files are on the other device. Receiving files from other devices isn't there yet.
+Sending can't be undone: the files are on the other device.
 
-The first time, your Mac may ask whether Macsplorer may find devices on your local network. Choose **Allow**; if you said no, switch Macsplorer on in **System Settings › Privacy & Security › Local Network**. While Macsplorer is looking, it shows up by your Mac's name in LocalSend's list on other devices, but it can't receive files yet, so sending to it from there fails.
+The first time, your Mac may ask whether Macsplorer may find devices on your local network. Choose **Allow**; if you said no, switch Macsplorer on in **System Settings › Privacy & Security › Local Network**.
+
+### Receiving files from a phone or computer nearby
+
+Macsplorer can also take files that a phone, tablet or computer sends with LocalSend. This is off until you turn it on: right-click **Network Neighborhood** and choose **Receive Files**, or click your computer's name at the right end of the status bar and choose it there. Macsplorer remembers it, in every window, until you turn it off the same way.
+
+While it is on, other devices list your Mac in LocalSend under the name in the status bar, and a hand under the computer there and under Network Neighborhood's icon shows that your Mac is open to them, the way Windows showed a shared folder. Point at the computer to see the name the others see.
+
+<img src="images/receiving.png" alt="The status bar's computer with the sharing hand, and its menu with Receive Files checked" width="560">
+
+When someone sends you files, Macsplorer asks first. It shows who is sending, from what kind of device and network address, and which files, with their sizes:
+
+<img src="images/receive-offer.png" alt="Receive Files asking whether to take eight files from a phone" width="420">
+
+Click **Accept** to take them, or **Decline**. Pressing Return or Esc declines, so a key meant for something else never lets files in. If nobody answers within two minutes, the files are declined; if the sender gives up first, the question goes away by itself.
+
+Accepted files go into your **Downloads** folder; **Open Downloads** in the same menus takes you there. A file never replaces one that is already there: it gets a number instead, such as "photo (1).jpg". A folder arrives as a new folder with everything in it, "Photos (1)" if there already is a "Photos". The "Receiving..." window shows how far it has got, and **Cancel** stops it; files that arrived before you cancelled are kept. The status bar says how many files arrived.
+
+Like files from a web browser, received files are marked as downloaded, so the first time you open an app or a script that came this way, your Mac checks it and asks whether you want to open it.
+
+Only one Macsplorer window takes files for your Mac at a time; if you close it, another open window takes over within a few seconds. If LocalSend itself is open on the same Mac, both can receive; Macsplorer then uses another port, and a few devices may not find it until you close LocalSend. The first time, your Mac may ask whether Macsplorer may accept incoming network connections: choose **Allow**.
 
 ### Between windows and Finder
 
@@ -513,6 +533,9 @@ Check that the search box is empty, then turn on **View › Hidden files and fol
 
 **The Git summary or the Branch column is missing.**
 Both need Git to be installed on your Mac. Macsplorer looks for it when it starts, so if you install Git while Macsplorer is open, close and reopen it. If you have Git and they still don't show, [Git repositories](#git-repositories) explains when they appear. After changes made by other programs, press ⌘R to bring the summary up to date.
+
+**My phone can't find my Mac in LocalSend.**
+Check that **Receive Files** is on: the computer at the right end of the status bar has a hand under it. Then refresh the list in LocalSend on the phone. Both have to be on the same network, as for sending.
 
 **My phone doesn't show up in Network Neighborhood.**
 Check that LocalSend is open on it and that both are on the same network (guest Wi-Fi networks often keep devices apart). Then right-click Network Neighborhood and choose **Search Again**. If your Mac asked about finding devices on your local network and you said no, see [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).

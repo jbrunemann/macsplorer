@@ -81,11 +81,14 @@ pub struct Preferences {
     pub associations: Associations,
     /// The Color dialog's 16 custom color boxes, empty ones `None`.
     pub custom_colors: [Option<[u8; 3]>; 16],
+    /// Network Neighborhood's Receive Files: nearby LocalSend devices can
+    /// send files to this computer. Off until the user turns it on.
+    pub receive: bool,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16] }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16], receive: false }
     }
 }
 
@@ -151,6 +154,7 @@ impl Preferences {
             map.insert("columns".into(), columns.to_json());
         }
         map.insert("view".into(), Value::from(self.view.key()));
+        map.insert("receive".into(), Value::Bool(self.receive));
         if let Some(sort) = self.sort {
             map.insert("sort".into(), serde_json::json!({ "column": sort.column.key(), "ascending": sort.ascending }));
         }
@@ -190,6 +194,7 @@ impl Preferences {
             window: map.get("window").and_then(read_window),
             associations: map.get("associations").map(Associations::from_json).unwrap_or_default(),
             custom_colors: read_custom_colors(map.get("custom_colors")),
+            receive: map.get("receive").and_then(Value::as_bool).unwrap_or(false),
         }
     }
 }
@@ -222,7 +227,8 @@ fn read_map(text: &str) -> Map<String, Value> {
     }
 }
 
-fn config_dir() -> Option<PathBuf> {
+/// Where `settings.json` lives, and other files that outlast a run.
+pub fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("macsplorer"))
 }
 
@@ -339,6 +345,15 @@ mod tests {
         assert_eq!(Preferences::load_from(&dir).zoom, 2.0);
         fs::write(dir.join(FILE), r#"{"zoom": "big"}"#).unwrap();
         assert_eq!(Preferences::load_from(&dir).zoom, 1.0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn receiving_is_off_until_turned_on() {
+        let dir = temp("receive");
+        assert!(!Preferences::load_from(&dir).receive);
+        Preferences { receive: true, ..Default::default() }.save_to(&dir).unwrap();
+        assert!(Preferences::load_from(&dir).receive);
         fs::remove_dir_all(&dir).unwrap();
     }
 

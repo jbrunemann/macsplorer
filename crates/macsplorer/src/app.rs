@@ -1839,7 +1839,9 @@ impl Explorer {
                         NetAction::SendSelection(_) => self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect(),
                         _ => Vec::new(),
                     };
-                    self.network.apply(action, selection);
+                    if let Some(folder) = self.network.apply(action, selection) {
+                        self.navigate(folder);
+                    }
                 }
                 Action::SetDark(dark) => {
                     theme::set_dark(&self.ctx, dark);
@@ -3238,7 +3240,7 @@ impl Explorer {
         bars.end(ui, &out);
     }
 
-    fn status_bar(&self, ui: &mut Ui, visible: &[usize]) {
+    fn status_bar(&self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
         let selected: Vec<&Entry> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).collect();
         let (objects, bytes) = if selected.is_empty() {
             let n = visible.len();
@@ -3299,6 +3301,18 @@ impl Explorer {
         p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
         let icon = egui::Rect::from_min_size(egui::pos2(right.left() + 4.0, right.center().y - 8.0), egui::vec2(16.0, 16.0));
         theme::paint_icon(p, icon, Icon::Computer, true);
+        // The computer, shared while it takes files from nearby devices; a
+        // click gives Receive Files.
+        if self.network.receiving() {
+            theme::paint_shared(p, icon);
+        }
+        // Not over the size grip, which resizes the window.
+        let hit = if grip { right.shrink(2.0).with_max_x(right.right() - 2.0 - theme::GRIP_WIDTH) } else { right.shrink(2.0) };
+        let pane = ui.interact(hit, egui::Id::new("status-computer"), Sense::click()).on_hover_text(self.network.computer_tooltip());
+        let mut net = Vec::new();
+        egui::Popup::menu(&pane).style(theme::menu_style).show(|ui| self.network.computer_menu(ui, &mut net));
+        actions.extend(net.into_iter().map(Action::Network));
+        let p = ui.painter();
         let name_clip = if grip { right.shrink(2.0).with_max_x(right.right() - 2.0 - theme::GRIP_WIDTH) } else { right.shrink(2.0) };
         p.with_clip_rect(name_clip).text(
             egui::pos2(icon.right() + 4.0, right.center().y),
@@ -3353,7 +3367,7 @@ impl eframe::App for Explorer {
         });
         egui::Panel::bottom("status").frame(plain).show_separator_line(false).show(ui, |ui| {
             ui.add_space(2.0);
-            self.status_bar(ui, &visible);
+            self.status_bar(ui, &visible, &mut actions);
         });
         if self.settings.show_folders {
             egui::Panel::left("folders")
@@ -5887,7 +5901,7 @@ mod screenshot {
 
     fn fake_network(app: &mut Explorer, selected: Option<&str>) {
         use crate::network::tests::device;
-        use localsend_client::DeviceType;
+        use localsend::DeviceType;
         let devices = [device("Mystic Blackberry", DeviceType::Desktop, 20), device("Jan's Pixel", DeviceType::Mobile, 31)];
         app.network.fake(devices, true, selected.map(str::to_owned));
         // Collapse the disk so the Network section is in sight.
@@ -5902,6 +5916,59 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn network_neighborhood() {
         shoot("network-neighborhood", egui::vec2(900.0, 640.0), |app| fake_network(app, Some("fp-31")));
+    }
+
+    /// Receive Files on: the sharing hand under Network Neighborhood and the
+    /// status bar's computer, whose menu is open.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn receiving() {
+        shoot_driven(
+            "receiving",
+            egui::vec2(900.0, 640.0),
+            |app| {
+                fake_network(app, None);
+                app.network.fake_receiving();
+            },
+            |h| {
+                let pos = egui::pos2(830.0, 630.0);
+                h.hover_at(pos);
+                h.run();
+                for pressed in [true, false] {
+                    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+                    h.run();
+                }
+                h.run();
+            },
+        );
+    }
+
+    /// The Receiving... dialog part way through.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn receive_progress() {
+        use crate::progress_dialog::{Kind, Snapshot};
+        let view = Snapshot { done: 63, total: 100, lines: ["IMG_20241017_183205.jpg".into(), "From 'Jan's Pixel' to 'Downloads'".into()] };
+        let mut harness = Harness::builder().with_size(crate::progress_dialog::ProgressDialog::size()).with_pixels_per_point(2.0).wgpu().build_ui_state(
+            |ui, ready: &mut bool| {
+                if !*ready {
+                    theme::install(ui.ctx());
+                    theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                    *ready = true;
+                    return;
+                }
+                let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                crate::progress_dialog::draw(&mut window, "Receiving...", Kind::Receive, &view, "4 Seconds Remaining", 0.55, true);
+            },
+            false,
+        );
+        for _ in 0..3 {
+            harness.run();
+        }
+        let image = harness.render().expect("render");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        fs::create_dir_all(&out).unwrap();
+        image.save(out.join("receive-progress.png")).unwrap();
     }
 
     /// Send To in an item's context menu, listing the devices.

@@ -186,7 +186,7 @@ mod tests {
     fn prepare_upload_is_camel_case_without_empty_options() {
         let file = FileInfo { id: "1".into(), file_name: "a b.png".into(), size: 3, file_type: "image/png".into(), sha256: None, preview: None, metadata: None };
         let body = PrepareUpload {
-            info: crate::Me { alias: "Mac".into(), device_model: None, device_type: DeviceType::Desktop, fingerprint: "f".into(), identity: None }.info(),
+            info: crate::Me::with_identity("Mac", None, None).info(),
             files: [("1".to_owned(), file)].into(),
         };
         let json = serde_json::to_value(&body).unwrap();
@@ -194,7 +194,8 @@ mod tests {
         assert_eq!(json["files"]["1"]["fileType"], "image/png");
         assert!(json["files"]["1"].get("sha256").is_none());
         assert_eq!(json["info"]["deviceType"], "desktop");
-        assert_eq!(json["info"]["protocol"], "https");
+        assert_eq!(json["info"]["protocol"], "http");
+        assert_eq!(json["info"]["port"], 53317);
         assert_eq!(json["info"]["version"], "2.0");
     }
 

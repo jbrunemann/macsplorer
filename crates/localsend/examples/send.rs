@@ -1,19 +1,19 @@
 //! Sends files to the first device whose alias contains the text given:
-//! `cargo run -p localsend-client --example send <alias> <file>...`.
+//! `cargo run -p localsend --example send <alias> <file>...`.
 
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
-use localsend_client::Me;
-use localsend_client::discovery::{Options, Scan};
-use localsend_client::send::{Progress, send};
+use localsend::Me;
+use localsend::discovery::{Options, Scan};
+use localsend::send::{Progress, send};
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let wanted = args.next().expect("alias");
     let paths: Vec<PathBuf> = args.map(PathBuf::from).collect();
-    let me = Me::new("localsend-client send", None);
+    let me = Me::new("localsend send", None);
     let (tx, rx) = channel();
     let _scan = Scan::start(me.clone(), Options::default(), move |d| {
         let _ = tx.send(d);

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use localsend_client::send::{Progress, SendError, send};
-use localsend_client::{Device, DeviceInfo, Me, Protocol};
+use localsend::send::{Progress, SendError, send};
+use localsend::{Device, DeviceInfo, Me, Protocol};
 
 /// A request as the receiver saw it.
 struct Seen {

@@ -54,7 +54,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
-  <key>NSLocalNetworkUsageDescription</key><string>Macsplorer looks for LocalSend devices on your network so you can send them files.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Macsplorer looks for LocalSend devices on your network so you can send them files, and, with Receive Files on, so they can send files to you.</string>
 </dict>
 </plist>
 PLIST

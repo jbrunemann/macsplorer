@@ -2161,12 +2161,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
-name = "localsend-client"
+name = "localsend"
 version = "1.4.0"
 dependencies = [
  "libc",
  "rcgen",
  "ring",
+ "rustls",
  "serde",
  "serde_json",
  "socket2",
@@ -2201,7 +2202,7 @@ dependencies = [
  "fontdb",
  "image",
  "libc",
- "localsend-client",
+ "localsend",
  "macsplorer-core",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",

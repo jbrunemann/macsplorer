@@ -943,6 +943,45 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
     }
 }
 
+/// The sharing hand under an icon, as Windows marked shared folders and
+/// printers: an open hand, palm up, in a blue cuff, holding the item out,
+/// over the icon's bottom. Drawn for Macsplorer in that manner, not copied
+/// from Windows. Here it marks a computer that takes files (`network`).
+pub fn paint_shared(p: &Painter, r: Rect) {
+    pixels(p, r.min, r.width() / 16.0, &SHARED, shared_pixel);
+}
+
+/// `K` outline, `w` the hand, `g` its shade, `B` the cuff.
+const SHARED: [&str; 16] = [
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "  KK      KKK   ",
+    " KwwK    KwwwK  ",
+    "KBKwwKKKKwwwwK  ",
+    "KBKwwwwwwwwwK   ",
+    "KBKgwwwwwwggK   ",
+    "KKKKKKKKKKKK    ",
+];
+
+fn shared_pixel(ch: u8) -> Option<Color32> {
+    let (r, g, b) = match ch {
+        b'K' => (0x00, 0x00, 0x00),
+        b'w' => (0xFF, 0xFF, 0xFF),
+        b'g' => (0xC0, 0xC0, 0xC0),
+        b'B' => (0x00, 0x00, 0xFF),
+        _ => return None,
+    };
+    Some(Color32::from_rgb(r, g, b))
+}
+
 /// 16×16 pixel art with its top left at `min`, `s` points a pixel.
 fn pixels(p: &Painter, min: Pos2, s: f32, art: &[&str; 16], color: fn(u8) -> Option<Color32>) {
     let at = |x: f32, y: f32| pos2(min.x + x * s, min.y + y * s);
