@@ -74,6 +74,8 @@ pub enum NetAction {
     Toggle,
     /// "Search Again": forget the devices and scan anew.
     Rescan,
+    /// A device's menu: tell it about this computer, by the device's key.
+    Introduce(String),
     /// Stop asking addresses, from the search note's menu.
     CancelSearch,
     /// Make sure a scan runs, for the Send To menu.
@@ -96,6 +98,9 @@ const IDENTITY_FILE: &str = "localsend-identity.pem";
 /// A send's outcome, tagged with its dialog.
 type SendDone = (u64, String, Result<Sent, SendError>);
 
+/// The outcome of telling a device about this computer, with its name.
+type Introduced = (String, Result<(), SendError>);
+
 pub struct Network {
     me: Me,
     devices: Devices,
@@ -117,6 +122,8 @@ pub struct Network {
     send_count: u64,
     done_tx: Sender<SendDone>,
     done_rx: Receiver<SendDone>,
+    introduced_tx: Sender<Introduced>,
+    introduced_rx: Receiver<Introduced>,
     /// A message for the status bar, taken by the app.
     status: Option<Status>,
     /// Tests: never touch the network.
@@ -139,6 +146,7 @@ impl Network {
     pub fn new(ctx: egui::Context, alias: &str) -> Self {
         let (found_tx, found_rx) = channel();
         let (done_tx, done_rx) = channel();
+        let (introduced_tx, introduced_rx) = channel();
         let alias = alias.strip_suffix(".local").unwrap_or(alias);
         let me = Me::with_identity(alias, Some("Macsplorer".into()), identity());
         let (msg_tx, msg_rx) = channel();
@@ -158,6 +166,8 @@ impl Network {
             send_count: 0,
             done_tx,
             done_rx,
+            introduced_tx,
+            introduced_rx,
             status: None,
             offline: false,
             logo: load_logo(&ctx),
@@ -257,6 +267,12 @@ impl Network {
                 Closed::Expired => format!("The files {} offered weren't accepted in time", view.from),
             }));
             self.offer = None;
+        }
+        while let Ok((alias, result)) = self.introduced_rx.try_recv() {
+            self.status = Some(match result {
+                Ok(()) => Status::note(format!("{alias} can now find this computer")),
+                Err(e) => Status::error(format!("Couldn't tell {alias} about this computer: {e}")),
+            });
         }
         while let Ok((id, alias, result)) = self.done_rx.try_recv() {
             for d in &mut self.dialogs {
@@ -385,6 +401,7 @@ impl Network {
                 self.expanded = true;
                 self.ensure_scan();
             }
+            NetAction::Introduce(key) => self.introduce(&key),
             NetAction::CancelSearch => {
                 if let Some(scan) = &self.scan {
                     scan.cancel_sweep();
@@ -474,6 +491,20 @@ impl Network {
         });
     }
 
+    /// Tells the device `key` about this computer on a worker thread, so it
+    /// lists it, as it would after hearing our announcement.
+    fn introduce(&mut self, key: &str) {
+        let Some(device) = self.devices.get(key).cloned() else { return };
+        self.status = Some(Status::note(format!("Telling {} about this computer...", device.alias())));
+        let (me, tx, ctx) = (self.me.clone(), self.introduced_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let result = send::introduce(&me, &device);
+            if tx.send((device.alias().to_owned(), result)).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
     // ---- drawing --------------------------------------------------------
 
     /// The Network section of the Folders pane: its heading, Network
@@ -523,6 +554,7 @@ impl Network {
             }
             return;
         }
+        let receiving = self.receiving();
         let count = self.devices.len() + usize::from(sweep.is_some());
         for (i, device) in self.devices.iter().enumerate() {
             let key = device.key();
@@ -540,6 +572,14 @@ impl Network {
                 let send = egui_classic_menu::item(ui, RichText::new("Send Selected Items").font(theme::bold(theme::FONT_SIZE)), None);
                 if ui.add_enabled(can_send, send).clicked() {
                     actions.push(NetAction::SendSelection(key.clone()));
+                }
+                let visible = egui_classic_menu::item(ui, "Let Device Find This Computer", None);
+                let resp = ui.add_enabled(receiving, visible);
+                if receiving && resp.clicked() {
+                    actions.push(NetAction::Introduce(key.clone()));
+                    ui.close();
+                } else if !receiving {
+                    let _ = resp.on_disabled_hover_text("Turn on Receive Files first: the device could not send anything to this computer otherwise.");
                 }
             });
         }

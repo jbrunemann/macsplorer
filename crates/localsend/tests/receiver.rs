@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use localsend::receive::{Closed, End, Event, Offer, Options, Received, Receiver};
-use localsend::send::{Progress, SendError, Sent, send};
+use localsend::send::{Progress, SendError, Sent, introduce, send};
 use localsend::{Device, Me};
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -235,4 +235,26 @@ fn the_sender_cancelling_ends_the_transfer() {
     post.join().unwrap();
     let got = done(&rx);
     assert_eq!((got.end, got.missing), (End::CancelledBySender, 1));
+}
+
+#[test]
+fn introducing_a_side_puts_it_on_the_receivers_list() {
+    let (r, rx, _) = receiver("introduce", &Me::new("Phone", None));
+    let me = Me::new("Mac", None);
+    introduce(&me, &device(&r)).unwrap();
+    let seen = loop {
+        if let Event::Device(d) = rx.recv_timeout(WAIT).expect("a device") {
+            break d;
+        }
+    };
+    assert_eq!(seen.alias(), "Mac");
+    assert_eq!(seen.info.fingerprint, me.fingerprint);
+}
+
+#[test]
+fn introducing_to_nothing_fails() {
+    let (r, _rx, _) = receiver("introduce-none", &Me::new("Phone", None));
+    let gone = device(&r);
+    drop(r);
+    assert!(introduce(&Me::new("Mac", None), &gone).is_err());
 }

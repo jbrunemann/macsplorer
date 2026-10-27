@@ -274,6 +274,19 @@ fn file_info(i: usize, f: &Outgoing) -> FileInfo {
     FileInfo { id: i.to_string(), file_name: f.name.clone(), size: f.size, file_type: mime::of(&f.name).into(), sha256: None, preview: None, metadata }
 }
 
+/// Tells a device about this side with `POST /register`, which puts this
+/// side on the device's list of nearby devices. What the device would learn
+/// from our multicast announcement, for networks where that doesn't arrive.
+/// The device can only send files here while a receiver is serving.
+pub fn introduce(me: &Me, device: &Device) -> Result<(), SendError> {
+    let agent = agent(me, Some(CONNECT_TIMEOUT * 2));
+    let response = agent.post(format!("{}/register", device.base_url())).send_json(me.info()).map_err(network)?;
+    match response.status().as_u16() {
+        200..=299 => Ok(()),
+        s => Err(SendError::Status(s)),
+    }
+}
+
 fn network(e: ureq::Error) -> SendError {
     SendError::Network(match e {
         ureq::Error::Io(e) => e.to_string(),

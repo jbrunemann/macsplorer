@@ -347,6 +347,8 @@ Accepted files go into your **Downloads** folder; **Open Downloads** in the same
 
 Like files from a web browser, received files are marked as downloaded, so the first time you open an app or a script that came this way, your Mac checks it and asks whether you want to open it.
 
+If a phone still doesn't list your Mac (some networks pass nothing between devices that the phone didn't ask for), right-click the phone in Network Neighborhood and choose **Let Device Find This Computer**. Macsplorer then tells the phone about your Mac directly, so it appears in LocalSend's list. This only works while Receive Files is on, and the item is gray until then.
+
 Only one Macsplorer window takes files for your Mac at a time; if you close it, another open window takes over within a few seconds. If LocalSend itself is open on the same Mac, both can receive; Macsplorer then uses another port, and a few devices may not find it until you close LocalSend. The first time, your Mac may ask whether Macsplorer may accept incoming network connections: choose **Allow**.
 
 ### Between windows and Finder
