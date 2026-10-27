@@ -15,5 +15,5 @@ fn main() {
         println!("{:<24} {:?} {} ({})", d.alias(), d.device_type(), d.addr(), d.protocol.scheme());
     });
     std::thread::sleep(Duration::from_secs(seconds));
-    println!("sweep still running: {}", scan.sweeping());
+    println!("sweep still running: {}, at {:?}", scan.sweeping(), scan.progress());
 }

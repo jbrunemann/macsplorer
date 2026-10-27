@@ -78,6 +78,25 @@ impl Default for Options {
 pub struct Scan {
     stop: Arc<AtomicBool>,
     sweeping: Arc<AtomicUsize>,
+    /// The addresses of the sweep and how many were taken so far.
+    sweep: Option<(Arc<Vec<Ipv4Addr>>, Arc<AtomicUsize>)>,
+}
+
+/// How far the sweep has got through its addresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SweepProgress {
+    /// Addresses asked so far.
+    pub done: usize,
+    pub total: usize,
+    /// The address being asked now.
+    pub at: Ipv4Addr,
+}
+
+impl SweepProgress {
+    /// Percent done, 0 to 100.
+    pub fn percent(&self) -> usize {
+        self.done * 100 / self.total.max(1)
+    }
 }
 
 impl Scan {
@@ -106,9 +125,11 @@ impl Scan {
             let message = serde_json::to_vec(&Announcement { info: me.info(), announce: true }).unwrap_or_default();
             thread::spawn(move || announce(&message, &interfaces, &stop));
         }
+        let mut sweep = None;
         if options.sweep {
             let hosts: Arc<Vec<Ipv4Addr>> = Arc::new(sweep_hosts(&interfaces, &options.first));
             let next = Arc::new(AtomicUsize::new(0));
+            sweep = Some((hosts.clone(), next.clone()));
             let agent = crate::send::agent(&me, Some(INFO_TIMEOUT));
             sweeping.store(SWEEP_THREADS, Ordering::Relaxed);
             for _ in 0..SWEEP_THREADS {
@@ -125,12 +146,22 @@ impl Scan {
                 });
             }
         }
-        Scan { stop, sweeping }
+        Scan { stop, sweeping, sweep }
     }
 
     /// Whether the sweep is still going through the addresses.
     pub fn sweeping(&self) -> bool {
         self.sweeping.load(Ordering::Relaxed) > 0
+    }
+
+    /// How far the sweep has got, while it is going.
+    pub fn progress(&self) -> Option<SweepProgress> {
+        let (hosts, next) = self.sweep.as_ref()?;
+        if !self.sweeping() || hosts.is_empty() {
+            return None;
+        }
+        let done = next.load(Ordering::Relaxed).min(hosts.len());
+        Some(SweepProgress { done, total: hosts.len(), at: hosts[done.min(hosts.len() - 1)] })
     }
 }
 
@@ -389,6 +420,14 @@ mod tests {
         // A /32 has no broadcast of its own; its "directed" address is itself.
         let host = Interface { ip: Ipv4Addr::new(10, 0, 0, 1), mask: Ipv4Addr::BROADCAST };
         assert_eq!(broadcasts(&host).len(), 2);
+    }
+
+    #[test]
+    fn progress_is_a_share_of_the_addresses() {
+        let at = Ipv4Addr::new(10, 0, 0, 1);
+        assert_eq!(SweepProgress { done: 0, total: 200, at }.percent(), 0);
+        assert_eq!(SweepProgress { done: 50, total: 200, at }.percent(), 25);
+        assert_eq!(SweepProgress { done: 200, total: 200, at }.percent(), 100);
     }
 
     #[test]

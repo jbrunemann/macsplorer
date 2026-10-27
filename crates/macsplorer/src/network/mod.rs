@@ -45,7 +45,7 @@ use std::thread;
 use eframe::egui;
 use egui::{RichText, Sense, Ui};
 
-use localsend::discovery::{Options, Scan, local_ipv4};
+use localsend::discovery::{Options, Scan, SweepProgress, local_ipv4};
 use localsend::receive::{self, Closed, End, Event, Offer, Received};
 use localsend::send::{self, Progress, SendError, Sent, Stage};
 use localsend::{Device, DeviceType, Devices, Me};
@@ -271,7 +271,7 @@ impl Network {
             self.scan = None;
         }
         if self.searching() {
-            self.ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            self.ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
     }
 
@@ -431,6 +431,12 @@ impl Network {
         }
     }
 
+    /// What the search says while it goes: the part of the network being
+    /// asked and how far along it is.
+    fn searching_text(&self) -> String {
+        self.scan.as_ref().and_then(Scan::progress).map_or_else(|| "Searching...".to_owned(), |p| progress_text(&p))
+    }
+
     /// Whether a scan is young enough that an empty list means "not yet".
     fn searching(&self) -> bool {
         self.scan.as_ref().is_some_and(|s| s.sweeping() || self.now() - self.scan_started < SEARCH_SECONDS)
@@ -494,16 +500,19 @@ impl Network {
         if !self.expanded {
             return;
         }
+        // While the sweep goes on, a last row says which part of the network
+        // it is at, whether or not devices were found already.
+        let sweep = self.scan.as_ref().and_then(Scan::progress).map(|p| progress_text(&p));
         if self.devices.is_empty() {
-            let text = if self.searching() { "Searching..." } else { "No LocalSend devices found" };
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TREE_ROW_HEIGHT), Sense::hover());
-            let leaf = Guide { ancestors: vec![false], has_next: false, has_prev: true };
-            paint_branch(ui, rect, 1, &leaf, false, false);
-            let x = ui.max_rect().left() + 2.0 + 2.0 * TREE_INDENT;
-            ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, text, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
+            let text = match sweep {
+                Some(text) => text,
+                None if self.searching() => "Searching...".to_owned(),
+                None => "No LocalSend devices found".to_owned(),
+            };
+            note_row(ui, &text);
             return;
         }
-        let count = self.devices.len();
+        let count = self.devices.len() + usize::from(sweep.is_some());
         for (i, device) in self.devices.iter().enumerate() {
             let key = device.key();
             let guide = Guide { ancestors: vec![false], has_next: i + 1 < count, has_prev: true };
@@ -523,6 +532,9 @@ impl Network {
                 }
             });
         }
+        if let Some(text) = sweep {
+            note_row(ui, &text);
+        }
     }
 
     /// The Send To submenu's items: a device each, or a note while there
@@ -532,7 +544,7 @@ impl Network {
             actions.push(NetAction::Scan);
         }
         if self.devices.is_empty() {
-            let text = if self.scan.is_none() || self.searching() { "Searching..." } else { "No LocalSend devices found" };
+            let text = if self.scan.is_none() || self.searching() { self.searching_text() } else { "No LocalSend devices found".to_owned() };
             ui.add_enabled(false, egui::Button::new(text));
             return;
         }
@@ -645,6 +657,22 @@ fn offer_detail(offer: &Offer) -> String {
 }
 
 /// A device's tooltip and status bar text.
+/// The last row of Network Neighborhood: a gray note under the devices.
+fn note_row(ui: &mut Ui, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TREE_ROW_HEIGHT), Sense::hover());
+    let leaf = Guide { ancestors: vec![false], has_next: false, has_prev: true };
+    paint_branch(ui, rect, 1, &leaf, false, false);
+    let x = ui.max_rect().left() + 2.0 + 2.0 * TREE_INDENT;
+    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, text, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
+}
+
+/// Which part of the network the sweep is asking, and how far along it is:
+/// "Searching 10.11.46.x (38%)", the /24 the address is in.
+fn progress_text(p: &SweepProgress) -> String {
+    let [a, b, c, _] = p.at.octets();
+    format!("Searching {a}.{b}.{c}.x ({}%)", p.percent())
+}
+
 fn describe(d: &Device) -> String {
     let kind = match d.device_type() {
         DeviceType::Mobile => "phone or tablet",
@@ -719,6 +747,7 @@ pub mod tests {
     use eframe::egui;
     use egui_kittest::Harness;
 
+    use localsend::discovery::SweepProgress;
     use localsend::{Device, DeviceInfo, DeviceType, Protocol};
 
     /// A device as a scan would report it.
@@ -734,6 +763,13 @@ pub mod tests {
             download: Some(false),
         };
         Device::new(info, IpAddr::V4(Ipv4Addr::new(192, 168, 1, last)), 53317, Protocol::Https)
+    }
+
+    #[test]
+    fn the_search_names_the_part_of_the_network_it_is_at() {
+        let at = Ipv4Addr::new(10, 11, 46, 85);
+        assert_eq!(super::progress_text(&SweepProgress { done: 76, total: 200, at }), "Searching 10.11.46.x (38%)");
+        assert_eq!(super::progress_text(&SweepProgress { done: 0, total: 254, at }), "Searching 10.11.46.x (0%)");
     }
 
     /// The Receive Files question, for a phone offering photos.
