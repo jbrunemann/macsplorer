@@ -285,7 +285,7 @@ On Linux, files dragged from another file manager such as Nautilus go into the f
 
 Macsplorer can send files to phones, tablets and computers on the same Wi-Fi or network that run [LocalSend](https://localsend.org), a free app for Android, iPhone, iPad, Windows, Mac and Linux. Nothing has to be set up: open LocalSend on the other device and leave it open.
 
-In the Folders pane, click the **+** next to **Network Neighborhood** under **Network**. Macsplorer looks for LocalSend on your network, which takes a few seconds, and lists every device it finds by the name LocalSend gives it, with the LocalSend logo. Point at a device to see what kind of device it is and its network address. Click **−** to stop looking; right-click Network Neighborhood and choose **Search Again** if a device you just started doesn't show up.
+In the Folders pane, click the **+** next to **Network Neighborhood** under **Network**. Macsplorer looks for LocalSend on your network, which takes a few seconds, and lists every device it finds by the name LocalSend gives it, with the LocalSend logo. Point at a device to see what kind of device it is and its network address. Click **−** to stop looking; right-click Network Neighborhood and choose **Search Again** if a device you just started doesn't show up. On a big network (a phone in another range than your Mac) the search can take a minute or more the first time; Macsplorer remembers where it found devices and looks there first the next time.
 
 <img src="images/network-neighborhood.png" alt="Network Neighborhood with a phone and a computer found" width="560">
 

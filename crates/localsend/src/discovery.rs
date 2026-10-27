@@ -7,10 +7,15 @@
 //!   with a `POST /register` to us (which fails: nothing is served here)
 //!   or, as their fallback, with a multicast answer that the scan hears.
 //!   The announcement also puts this side on the other devices' lists, as
-//!   any LocalSend app is, although nothing can be sent to it yet.
+//!   any LocalSend app is, although nothing can be sent to it yet. It goes
+//!   out as a UDP broadcast too ([`broadcasts`]), for networks that drop
+//!   multicast between clients but pass broadcast: LocalSend binds its
+//!   port on every address, so it takes the datagram all the same.
 //! - **Sweep.** For networks where multicast doesn't get through, every
-//!   address of the private IPv4 networks we are on (their /24 at most)
-//!   gets a `GET /info` on [`PORT`]. That route only describes the device,
+//!   address of the private IPv4 networks we are on (up to a /16, by the
+//!   interface's netmask) gets a `GET /info` on [`PORT`], the /24 around us
+//!   first, then the others by distance. [`Options::first`] puts addresses
+//!   known from an earlier scan, and their /24s, ahead of that. That route only describes the device,
 //!   unlike the spec's legacy `POST /register` sweep, so the sweep doesn't
 //!   add this side to anyone's list.
 //!
@@ -21,6 +26,7 @@
 //! port on every address; if that is taken too, only the sweep finds
 //! devices.
 
+use std::collections::HashSet;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream, UdpSocket};
 use std::sync::Arc;
@@ -41,21 +47,29 @@ const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 /// How long the sweep's `/info` request may take on an open port.
 const INFO_TIMEOUT: Duration = Duration::from_secs(2);
 /// Addresses the sweep tries at once.
-const SWEEP_THREADS: usize = 64;
+const SWEEP_THREADS: usize = 128;
+/// The biggest network the sweep covers, as a netmask (/16, 65534
+/// addresses). Bigger ones are cut down to this around our address.
+const SWEEP_MASK: u32 = 0xFFFF_0000;
 /// How often the listener looks whether the scan was stopped.
 const POLL: Duration = Duration::from_millis(250);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
     /// Announce this side on the multicast group to get answers.
     pub announce: bool,
     /// Ask every address nearby with `GET /info`.
     pub sweep: bool,
+    /// Addresses where devices were found before. The sweep asks them
+    /// first, then the rest of their /24s, before it goes through the
+    /// network by distance. Those outside the networks we are on are
+    /// left out.
+    pub first: Vec<Ipv4Addr>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { announce: true, sweep: true }
+        Self { announce: true, sweep: true, first: Vec::new() }
     }
 }
 
@@ -93,7 +107,7 @@ impl Scan {
             thread::spawn(move || announce(&message, &interfaces, &stop));
         }
         if options.sweep {
-            let hosts: Arc<Vec<Ipv4Addr>> = Arc::new(sweep_hosts(&interfaces));
+            let hosts: Arc<Vec<Ipv4Addr>> = Arc::new(sweep_hosts(&interfaces, &options.first));
             let next = Arc::new(AtomicUsize::new(0));
             let agent = crate::send::agent(&me, Some(INFO_TIMEOUT));
             sweeping.store(SWEEP_THREADS, Ordering::Relaxed);
@@ -164,21 +178,42 @@ pub fn local_ipv4() -> Vec<Interface> {
     out
 }
 
-/// The addresses to sweep: the hosts of each private network we are on,
-/// limited to the /24 around our address on bigger ones (as LocalSend's own
-/// sweep does). Our own addresses stay in, for a LocalSend app on this
-/// computer; this side serves nothing there.
-pub fn sweep_hosts(interfaces: &[Interface]) -> Vec<Ipv4Addr> {
+/// The addresses to sweep: the hosts of each private network we are on, by
+/// its netmask, cut down to the /16 around our address on bigger ones. Two
+/// devices can share a /16 and sit in different /24s (a DHCP server that
+/// hands out several ranges), which LocalSend's own sweep, limited to our
+/// /24, never finds. The order is the point of a big sweep: the addresses in
+/// `first` (where devices were found before) go ahead, then the /24s they are
+/// in, then the /24 we are in, then the other /24s by their distance from it.
+/// Our own addresses stay in, for a LocalSend app on this computer; this side
+/// serves nothing there.
+pub fn sweep_hosts(interfaces: &[Interface], first: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
+    let nets: Vec<(u32, u32, u32)> = interfaces
+        .iter()
+        .filter(|i| i.ip.is_private())
+        .map(|i| {
+            let mask = u32::from(i.mask).max(SWEEP_MASK);
+            let net = u32::from(i.ip) & mask;
+            (net, net | !mask, u32::from(i.ip) >> 8)
+        })
+        .collect();
+    let is_host = |h: u32| nets.iter().any(|&(net, broadcast, _)| h > net && h < broadcast);
+    let known: Vec<u32> = first.iter().map(|&ip| u32::from(ip)).filter(|&h| is_host(h)).collect();
+    let known_blocks: HashSet<u32> = known.iter().map(|h| h >> 8).collect();
+
     let mut out = Vec::new();
-    for i in interfaces.iter().filter(|i| i.ip.is_private()) {
-        let mask = u32::from(i.mask).max(0xFFFF_FF00);
-        let net = u32::from(i.ip) & mask;
-        let broadcast = net | !mask;
-        for host in net + 1..broadcast {
-            let ip = Ipv4Addr::from(host);
-            if !out.contains(&ip) {
-                out.push(ip);
-            }
+    let mut seen = HashSet::new();
+    let mut push = |host: u32| {
+        if seen.insert(host) {
+            out.push(Ipv4Addr::from(host));
+        }
+    };
+    known.iter().for_each(|&h| push(h));
+    for &(net, broadcast, home) in &nets {
+        let mut blocks: Vec<u32> = (net >> 8..=broadcast >> 8).collect();
+        blocks.sort_by_key(|b| (!known_blocks.contains(b), b.abs_diff(home)));
+        for block in blocks {
+            (block << 8..=(block << 8) | 0xFF).filter(|h| *h > net && *h < broadcast).for_each(&mut push);
         }
     }
     out
@@ -216,9 +251,24 @@ fn listen(socket: &UdpSocket, stop: &AtomicBool, report: &dyn Fn(Device)) {
     }
 }
 
-/// Sends the announcement out of every interface, at [`ANNOUNCE_AT_MS`].
+/// Where an announcement goes besides the multicast group: the broadcast
+/// address of the interface's network, and the limited broadcast
+/// (`255.255.255.255`), which the system sends out of the interface the
+/// socket is bound to. Both reach the whole network, whatever its /24s.
+pub fn broadcasts(i: &Interface) -> Vec<SocketAddr> {
+    let directed = Ipv4Addr::from(u32::from(i.ip) | !u32::from(i.mask));
+    let mut out = vec![directed];
+    if directed != Ipv4Addr::BROADCAST {
+        out.push(Ipv4Addr::BROADCAST);
+    }
+    out.into_iter().map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, PORT))).collect()
+}
+
+/// Sends the announcement out of every interface, at [`ANNOUNCE_AT_MS`], to
+/// the multicast group and as a broadcast.
 pub(crate) fn announce(message: &[u8], interfaces: &[Interface], stop: &AtomicBool) {
-    let sockets: Vec<UdpSocket> = interfaces.iter().filter_map(|i| sender(i.ip).ok()).collect();
+    let sockets: Vec<(UdpSocket, Vec<SocketAddr>)> =
+        interfaces.iter().filter_map(|i| Some((sender(i.ip).ok()?, broadcasts(i)))).collect();
     let group = SocketAddr::V4(SocketAddrV4::new(MULTICAST, PORT));
     let mut waited = 0;
     for at in ANNOUNCE_AT_MS {
@@ -227,8 +277,11 @@ pub(crate) fn announce(message: &[u8], interfaces: &[Interface], stop: &AtomicBo
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        for s in &sockets {
+        for (s, broadcast) in &sockets {
             let _ = s.send_to(message, group);
+            for to in broadcast {
+                let _ = s.send_to(message, to);
+            }
         }
     }
 }
@@ -238,6 +291,7 @@ pub(crate) fn sender(ip: Ipv4Addr) -> io::Result<UdpSocket> {
     socket.set_multicast_if_v4(&ip)?;
     socket.set_multicast_ttl_v4(1)?;
     socket.set_multicast_loop_v4(true)?;
+    socket.set_broadcast(true)?;
     socket.bind(&SocketAddr::V4(SocketAddrV4::new(ip, 0)).into())?;
     Ok(socket.into())
 }
@@ -263,28 +317,83 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sweep_covers_the_private_slash_24s_but_not_us() {
+    fn the_sweep_covers_the_private_networks_but_not_public_ones() {
         let ifaces = [
             Interface { ip: Ipv4Addr::new(192, 168, 1, 10), mask: Ipv4Addr::new(255, 255, 255, 0) },
-            // A /16 is cut down to the /24 around us.
-            Interface { ip: Ipv4Addr::new(10, 0, 7, 5), mask: Ipv4Addr::new(255, 255, 0, 0) },
             // A public address isn't swept.
             Interface { ip: Ipv4Addr::new(8, 8, 8, 8), mask: Ipv4Addr::new(255, 255, 255, 0) },
         ];
-        let hosts = sweep_hosts(&ifaces);
-        assert_eq!(hosts.len(), 254 + 254);
+        let hosts = sweep_hosts(&ifaces, &[]);
+        assert_eq!(hosts.len(), 254);
         assert!(hosts.contains(&Ipv4Addr::new(192, 168, 1, 1)));
         assert!(hosts.contains(&Ipv4Addr::new(192, 168, 1, 254)));
         assert!(hosts.contains(&Ipv4Addr::new(192, 168, 1, 10)));
+        assert!(!hosts.contains(&Ipv4Addr::new(192, 168, 1, 0)));
         assert!(!hosts.contains(&Ipv4Addr::new(192, 168, 1, 255)));
-        assert!(hosts.contains(&Ipv4Addr::new(10, 0, 7, 1)));
-        assert!(!hosts.contains(&Ipv4Addr::new(10, 0, 8, 1)));
         assert!(!hosts.iter().any(|h| h.octets()[0] == 8));
+    }
+
+    #[test]
+    fn a_slash_16_is_swept_whole_with_our_slash_24_first() {
+        // The Mac and the phone of docs: same /16, different /24s.
+        let ifaces = [Interface { ip: Ipv4Addr::new(10, 11, 19, 114), mask: Ipv4Addr::new(255, 255, 0, 0) }];
+        let hosts = sweep_hosts(&ifaces, &[]);
+        assert_eq!(hosts.len(), 65534);
+        assert!(hosts.contains(&Ipv4Addr::new(10, 11, 46, 85)));
+        assert!(hosts.contains(&Ipv4Addr::new(10, 11, 46, 255)));
+        assert!(!hosts.contains(&Ipv4Addr::new(10, 11, 0, 0)));
+        assert!(!hosts.contains(&Ipv4Addr::new(10, 12, 0, 1)));
+        assert!(hosts[..256].iter().all(|h| h.octets()[2] == 19));
+        let next = hosts[256].octets()[2];
+        assert!(next == 18 || next == 20, "{next}");
+    }
+
+    #[test]
+    fn known_addresses_and_their_slash_24s_come_first() {
+        let ifaces = [Interface { ip: Ipv4Addr::new(10, 11, 19, 114), mask: Ipv4Addr::new(255, 255, 0, 0) }];
+        let phone = Ipv4Addr::new(10, 11, 46, 85);
+        let elsewhere = Ipv4Addr::new(192, 168, 0, 5);
+        let hosts = sweep_hosts(&ifaces, &[phone, elsewhere]);
+        assert_eq!(hosts.len(), 65534);
+        assert_eq!(hosts[0], phone);
+        // Then the rest of the phone's /24, ahead of our own.
+        assert!(hosts[1..256].iter().all(|h| h.octets()[2] == 46));
+        assert!(hosts[256..512].iter().all(|h| h.octets()[2] == 19));
+        // An address from another network isn't swept.
+        assert!(!hosts.contains(&elsewhere));
+    }
+
+    #[test]
+    fn a_bigger_network_is_cut_down_to_the_slash_16_around_us() {
+        let ifaces = [Interface { ip: Ipv4Addr::new(10, 3, 7, 5), mask: Ipv4Addr::new(255, 0, 0, 0) }];
+        let hosts = sweep_hosts(&ifaces, &[]);
+        assert_eq!(hosts.len(), 65534);
+        assert!(hosts.iter().all(|h| h.octets()[..2] == [10, 3]));
+    }
+
+    #[test]
+    fn two_interfaces_on_one_network_do_not_repeat_hosts() {
+        let mask = Ipv4Addr::new(255, 255, 255, 0);
+        let ifaces = [
+            Interface { ip: Ipv4Addr::new(192, 168, 1, 10), mask },
+            Interface { ip: Ipv4Addr::new(192, 168, 1, 11), mask },
+        ];
+        assert_eq!(sweep_hosts(&ifaces, &[]).len(), 254);
+    }
+
+    #[test]
+    fn announcements_go_to_the_networks_broadcast_and_the_limited_one() {
+        let i = Interface { ip: Ipv4Addr::new(10, 11, 19, 114), mask: Ipv4Addr::new(255, 255, 0, 0) };
+        let to: Vec<String> = broadcasts(&i).iter().map(|a| a.to_string()).collect();
+        assert_eq!(to, ["10.11.255.255:53317", "255.255.255.255:53317"]);
+        // A /32 has no broadcast of its own; its "directed" address is itself.
+        let host = Interface { ip: Ipv4Addr::new(10, 0, 0, 1), mask: Ipv4Addr::BROADCAST };
+        assert_eq!(broadcasts(&host).len(), 2);
     }
 
     #[test]
     fn a_small_network_is_swept_whole() {
         let ifaces = [Interface { ip: Ipv4Addr::new(172, 16, 0, 2), mask: Ipv4Addr::new(255, 255, 255, 252) }];
-        assert_eq!(sweep_hosts(&ifaces), [Ipv4Addr::new(172, 16, 0, 1), Ipv4Addr::new(172, 16, 0, 2)]);
+        assert_eq!(sweep_hosts(&ifaces, &[]), [Ipv4Addr::new(172, 16, 0, 1), Ipv4Addr::new(172, 16, 0, 2)]);
     }
 }

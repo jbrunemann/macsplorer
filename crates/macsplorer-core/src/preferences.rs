@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::io;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -17,6 +18,8 @@ use crate::folder_style::{format_hex, parse_hex};
 use crate::text_size;
 
 const FILE: &str = "settings.json";
+/// How many addresses of nearby devices are kept.
+const MAX_DEVICES: usize = 8;
 /// The empty file older versions used to mean "dark mode is on".
 const LEGACY_DARK_MARKER: &str = "dark-mode";
 
@@ -84,11 +87,15 @@ pub struct Preferences {
     /// Network Neighborhood's Receive Files: nearby LocalSend devices can
     /// send files to this computer. Off until the user turns it on.
     pub receive: bool,
+    /// Addresses where Network Neighborhood found devices, the latest first:
+    /// the next search asks them, and their /24s, before the rest of a big
+    /// network (see `remember_device`).
+    pub devices: Vec<Ipv4Addr>,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16], receive: false }
+        Self { dark: false, columns: None, zoom: text_size::NORMAL, terminal: None, git: None, view: ViewMode::default(), sort: None, window: None, associations: Associations::default(), custom_colors: [None; 16], receive: false, devices: Vec::new() }
     }
 }
 
@@ -109,6 +116,18 @@ impl Preferences {
             fs::write(&file, "{}\n")?;
         }
         Ok(file)
+    }
+
+    /// Puts `ip` first in `devices`, once, and drops the oldest ones past
+    /// the limit. Returns whether the list changed.
+    pub fn remember_device(&mut self, ip: Ipv4Addr) -> bool {
+        if self.devices.first() == Some(&ip) {
+            return false;
+        }
+        self.devices.retain(|d| *d != ip);
+        self.devices.insert(0, ip);
+        self.devices.truncate(MAX_DEVICES);
+        true
     }
 
     /// Reads the file again, lets `change` edit it and writes it back.
@@ -155,6 +174,11 @@ impl Preferences {
         }
         map.insert("view".into(), Value::from(self.view.key()));
         map.insert("receive".into(), Value::Bool(self.receive));
+        if self.devices.is_empty() {
+            map.remove("devices");
+        } else {
+            map.insert("devices".into(), Value::Array(self.devices.iter().map(|ip| Value::from(ip.to_string())).collect()));
+        }
         if let Some(sort) = self.sort {
             map.insert("sort".into(), serde_json::json!({ "column": sort.column.key(), "ascending": sort.ascending }));
         }
@@ -195,6 +219,11 @@ impl Preferences {
             associations: map.get("associations").map(Associations::from_json).unwrap_or_default(),
             custom_colors: read_custom_colors(map.get("custom_colors")),
             receive: map.get("receive").and_then(Value::as_bool).unwrap_or(false),
+            devices: map
+                .get("devices")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str()?.parse().ok()).take(MAX_DEVICES).collect())
+                .unwrap_or_default(),
         }
     }
 }
@@ -354,6 +383,30 @@ mod tests {
         assert!(!Preferences::load_from(&dir).receive);
         Preferences { receive: true, ..Default::default() }.save_to(&dir).unwrap();
         assert!(Preferences::load_from(&dir).receive);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn device_addresses_are_kept_latest_first_and_limited() {
+        let dir = temp("devices");
+        let mut prefs = Preferences::load_from(&dir);
+        assert!(prefs.devices.is_empty());
+        let ip = |n| Ipv4Addr::new(10, 11, 46, n);
+        assert!(prefs.remember_device(ip(1)));
+        assert!(prefs.remember_device(ip(2)));
+        assert!(!prefs.remember_device(ip(2)));
+        assert!(prefs.remember_device(ip(1)));
+        assert_eq!(prefs.devices, [ip(1), ip(2)]);
+        for n in 10..30 {
+            prefs.remember_device(ip(n));
+        }
+        assert_eq!(prefs.devices.len(), MAX_DEVICES);
+        assert_eq!(prefs.devices[0], ip(29));
+        prefs.save_to(&dir).unwrap();
+        assert_eq!(Preferences::load_from(&dir).devices, prefs.devices);
+        // Anything that isn't an IPv4 address is ignored.
+        fs::write(dir.join(FILE), r#"{"devices": ["10.0.0.5", "nope", 7, "::1"]}"#).unwrap();
+        assert_eq!(Preferences::load_from(&dir).devices, [Ipv4Addr::new(10, 0, 0, 5)]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

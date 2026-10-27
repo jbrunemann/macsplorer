@@ -28,8 +28,8 @@ let receiver = Receiver::start(&me, Options::new("/Users/me/Downloads"), |event|
 // It serves until `receiver` is dropped.
 ```
 
-- `discovery`: multicast announcements on 224.0.0.167:53317 plus a `GET /info`
-  sweep of the private /24 networks the computer is on. A `Scan` listens
+- `discovery`: multicast announcements on 224.0.0.167:53317 (also sent as UDP broadcasts, for networks that drop multicast between clients) plus a `GET /info`
+  sweep of the private networks the computer is on (up to a /16; `Options::first` names addresses to ask first, then their /24s, then the /24 around the computer). A `Scan` listens
   until it is dropped.
 - `send`: `prepare-upload` (which waits until the receiver accepts), then one
   `upload` per accepted file; folders go as their files with `/`-separated

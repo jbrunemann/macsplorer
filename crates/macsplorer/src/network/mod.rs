@@ -36,6 +36,7 @@
 mod offer_dialog;
 mod receiving;
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -44,7 +45,7 @@ use std::thread;
 use eframe::egui;
 use egui::{RichText, Sense, Ui};
 
-use localsend::discovery::{Options, Scan};
+use localsend::discovery::{Options, Scan, local_ipv4};
 use localsend::receive::{self, Closed, End, Event, Offer, Received};
 use localsend::send::{self, Progress, SendError, Sent, Stage};
 use localsend::{Device, DeviceType, Devices, Me};
@@ -56,6 +57,7 @@ use crate::app::{Guide, Status, TREE_INDENT, TREE_ROW_HEIGHT, paint_branch};
 use crate::item_drag::{DragFrame, ItemDrag, Mark};
 use crate::progress_dialog::{Kind, ProgressDialog, Snapshot, Tracked};
 use crate::theme::{self, Icon};
+use macsplorer_core::preferences::Preferences;
 
 /// The root row's label.
 pub const TITLE: &str = "Network Neighborhood";
@@ -106,6 +108,9 @@ pub struct Network {
     scan_until: f64,
     found_tx: Sender<Device>,
     found_rx: Receiver<Device>,
+    /// Where devices were found before, from the settings; the next scan
+    /// asks there first.
+    remembered: Vec<Ipv4Addr>,
     dialogs: Vec<ProgressDialog>,
     send_count: u64,
     done_tx: Sender<SendDone>,
@@ -146,6 +151,7 @@ impl Network {
             scan_until: 0.0,
             found_tx,
             found_rx,
+            remembered: if cfg!(test) { Vec::new() } else { Preferences::load().devices },
             dialogs: Vec::new(),
             send_count: 0,
             done_tx,
@@ -234,6 +240,7 @@ impl Network {
     pub fn poll(&mut self) {
         let now = self.now();
         while let Ok(device) = self.found_rx.try_recv() {
+            self.remember(&device);
             self.devices.insert(device);
         }
         while let Ok(msg) = self.msg_rx.try_recv() {
@@ -395,10 +402,25 @@ impl Network {
         None
     }
 
+    /// Keeps the address of a device found over IPv4 in the settings, so the
+    /// next scan looks there first. Addresses of this computer (a LocalSend
+    /// app on it) aren't worth keeping.
+    fn remember(&mut self, device: &Device) {
+        let IpAddr::V4(ip) = device.ip else { return };
+        if cfg!(test) || self.remembered.first() == Some(&ip) || local_ipv4().iter().any(|i| i.ip == ip) {
+            return;
+        }
+        self.remembered.retain(|d| *d != ip);
+        self.remembered.insert(0, ip);
+        Preferences::update(|p| {
+            p.remember_device(ip);
+        });
+    }
+
     fn ensure_scan(&mut self) {
         if self.scan.is_none() && !self.offline {
             let (tx, ctx) = (self.found_tx.clone(), self.ctx.clone());
-            let options = Options { announce: self.receive_state.receiving(), sweep: true };
+            let options = Options { announce: self.receive_state.receiving(), sweep: true, first: self.remembered.clone() };
             self.scan = Some(Scan::start(self.me.clone(), options, move |d| {
                 if tx.send(d).is_ok() {
                     ctx.request_repaint();
