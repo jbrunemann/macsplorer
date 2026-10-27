@@ -3,16 +3,21 @@
 //! of text, an etched line and OK. The layout is from memory, not traced.
 
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::Duration;
 
 use eframe::egui;
 use egui::{Align, Align2, Key, Layout, Rect, Sense, TextureHandle, TextureOptions, Ui, pos2, vec2};
+use macsplorer_core::preferences::Preferences;
+use update_check::Status;
 
 use crate::locale;
 use crate::theme::{self, Bevel};
 
-pub const SIZE: egui::Vec2 = vec2(380.0, 292.0);
+pub const SIZE: egui::Vec2 = vec2(380.0, 322.0);
 const FRAME: f32 = 4.0;
 const BUTTON: egui::Vec2 = vec2(75.0, 23.0);
+const CHECK_BUTTON: egui::Vec2 = vec2(125.0, 23.0);
 const TITLE: &str = "About Macsplorer";
 /// The icon's side on screen.
 const ICON: f32 = 48.0;
@@ -25,16 +30,56 @@ pub enum Outcome {
     Close,
     /// The font file's link was clicked: close and show the file in the explorer.
     Reveal(PathBuf),
+    /// The download link was clicked: open the address in the browser.
+    OpenUrl(String),
+}
+
+/// Where "Check for Updates" stands.
+enum Update {
+    Idle,
+    /// Asking, on a worker thread.
+    Checking(Receiver<Result<Status, update_check::Error>>),
+    Done(Result<Status, update_check::Error>),
 }
 
 pub struct AboutDialog {
     viewport: egui::ViewportId,
     icon: Option<TextureHandle>,
+    update: Update,
 }
 
 impl AboutDialog {
     pub fn new() -> Self {
-        Self { viewport: egui::ViewportId::from_hash_of("about"), icon: None }
+        Self { viewport: egui::ViewportId::from_hash_of("about"), icon: None, update: Update::Idle }
+    }
+
+    /// Starts asking the address in the settings file for the newest release.
+    /// The reply is picked up by `poll`; the window wakes up when it comes.
+    fn start_check(&mut self, ctx: &egui::Context) {
+        let (sender, receiver) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let version = env!("CARGO_PKG_VERSION");
+            let source = Preferences::load().update_url;
+            let _ = sender.send(update_check::check(&source, version, &format!("macsplorer/{version}")));
+            ctx.request_repaint();
+        });
+        self.update = Update::Checking(receiver);
+    }
+
+    fn poll(&mut self, ctx: &egui::Context) {
+        let Update::Checking(receiver) = &self.update else { return };
+        match receiver.try_recv() {
+            Ok(result) => self.update = Update::Done(result),
+            Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(250)),
+            Err(TryRecvError::Disconnected) => self.update = Update::Done(Err(update_check::Error::Fetch("The check stopped unexpectedly".to_owned()))),
+        }
+    }
+
+    /// Shows a result without asking, for the screenshot test.
+    #[cfg(test)]
+    pub fn set_result(&mut self, result: Result<Status, update_check::Error>) {
+        self.update = Update::Done(result);
     }
 
     /// Shows the dialog in its own window for this frame.
@@ -52,6 +97,7 @@ impl AboutDialog {
     /// Draws the whole window: frame, caption, the text, OK.
     pub fn ui(&mut self, ui: &mut Ui) -> Outcome {
         let icon = self.icon.get_or_insert_with(|| load_icon(ui.ctx())).clone();
+        self.poll(ui.ctx());
         let (outer, _) = ui.allocate_exact_size(SIZE, Sense::hover());
         let p = ui.painter();
         p.rect_filled(outer, 0.0, theme::color::face());
@@ -88,6 +134,7 @@ impl AboutDialog {
         let label_height = galley.size().y;
         ui.painter().galley(pos2(left, font_y), galley, color);
         let mut reveal = None;
+        let mut info_bottom = font_y + label_height;
         if let Some(path) = &font_info.path {
             // The font file as a link: it closes the box and opens the file's folder.
             let link = ui.visuals().hyperlink_color;
@@ -96,6 +143,7 @@ impl AboutDialog {
             job.wrap.max_width = right - left;
             let galley = ui.fonts_mut(|f| f.layout_job(job));
             let at = Rect::from_min_size(pos2(left, font_y + label_height), galley.size());
+            info_bottom = at.bottom();
             let response = ui.interact(at, ui.id().with("font-link"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
             ui.painter().galley(at.min, galley, link);
             if response.clicked() {
@@ -103,16 +151,50 @@ impl AboutDialog {
             }
         }
 
+        let open_url = self.status(ui, pos2(left, info_bottom + 10.0), right - left);
+
         let ok_top = inner.bottom() - 11.0 - BUTTON.y;
         etched_line(ui, left - 5.0, right + 5.0, ok_top - 12.0);
-        let ok = Rect::from_min_size(pos2(inner.center().x - BUTTON.x / 2.0, ok_top), BUTTON);
+        let check = Rect::from_min_size(pos2(left, ok_top), CHECK_BUTTON);
+        let checking = matches!(self.update, Update::Checking(_));
+        if theme::push_button(ui, check, "Check for Updates", !checking, false).clicked() {
+            self.start_check(ui.ctx());
+        }
+        let ok = Rect::from_min_size(pos2(right - BUTTON.x, ok_top), BUTTON);
         let escape_or_enter = ui.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::Enter));
         let ok = theme::push_button(ui, ok, "OK", true, true).clicked() || escape_or_enter;
-        match reveal {
-            Some(path) => Outcome::Reveal(path),
-            None if ok => Outcome::Close,
-            None => Outcome::Open,
+        match (reveal, open_url) {
+            (Some(path), _) => Outcome::Reveal(path),
+            (None, Some(url)) => Outcome::OpenUrl(url),
+            (None, None) if ok => Outcome::Close,
+            (None, None) => Outcome::Open,
         }
+    }
+
+    /// The update check's line or two at `at`. Returns the address of the
+    /// download page when its link was clicked.
+    fn status(&self, ui: &mut Ui, at: egui::Pos2, width: f32) -> Option<String> {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let color = theme::color::text();
+        let text = match &self.update {
+            Update::Idle => return None,
+            Update::Checking(_) => "Checking for updates...".to_owned(),
+            Update::Done(Ok(Status::UpToDate { .. })) => "You have the latest version.".to_owned(),
+            Update::Done(Ok(Status::Available(release))) => format!("Version {} is available.", release.version),
+            Update::Done(Err(e)) => format!("Couldn't check for updates: {e}."),
+        };
+        let galley = ui.fonts_mut(|f| f.layout(text, font.clone(), color, width));
+        let below = at.y + galley.size().y + 2.0;
+        ui.painter().galley(at, galley, color);
+        let Update::Done(Ok(Status::Available(release))) = &self.update else { return None };
+        let page = release.page.as_ref()?;
+        let link = ui.visuals().hyperlink_color;
+        let format = egui::TextFormat { font_id: font, color: link, underline: egui::Stroke::new(1.0, link), ..Default::default() };
+        let galley = ui.fonts_mut(|f| f.layout_job(egui::text::LayoutJob::single_section("Open the download page".to_owned(), format)));
+        let rect = Rect::from_min_size(pos2(at.x, below), galley.size());
+        let response = ui.interact(rect, ui.id().with("download-link"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(page);
+        ui.painter().galley(rect.min, galley, link);
+        response.clicked().then(|| page.clone())
     }
 }
 

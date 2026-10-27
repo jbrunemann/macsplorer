@@ -14,6 +14,7 @@ use egui::text_selection::CCursorRange;
 use egui::{Align, Key, Layout, RichText, Sense, TextEdit, Ui};
 use egui_extras::{Column as TableColumn, TableBuilder};
 
+use macsplorer_core::archive;
 use macsplorer_core::autosuggest::{self, Folder};
 use macsplorer_core::columns::{self, Column, ColumnDrag, ColumnSet, HeaderHit};
 use macsplorer_core::copy_path;
@@ -33,7 +34,7 @@ use macsplorer_core::listing::free_space;
 use macsplorer_core::natural;
 use macsplorer_core::preferences::{Preferences, SortOrder, ViewMode};
 use macsplorer_core::goto::{Candidate, Source as GotoSource};
-use macsplorer_core::places::{favorites, volumes};
+use macsplorer_core::places::{drive_kind, favorites, volumes, DriveKind};
 #[cfg(unix)]
 use macsplorer_core::places::{computer_name, is_ejectable};
 #[cfg(unix)]
@@ -48,6 +49,7 @@ use macsplorer_core::watch::FolderWatcher;
 use crate::column_dialog::{self, ColumnDialog};
 use crate::about_dialog::{AboutDialog, Outcome as AboutOutcome};
 use crate::conflict_dialog::{self, ConflictDialog};
+use crate::extract_dialog::{self, ExtractDialog};
 use crate::goto_dialog::{self, GotoDialog};
 use crate::shortcuts_dialog::{self, ShortcutsDialog};
 use crate::pasteboard::{self, Pasteboard};
@@ -58,6 +60,7 @@ use crate::network::{NetAction, Network};
 use crate::locale;
 use crate::open_with;
 use crate::open_with_dialog::{self, OpenWithDialog};
+use crate::password_dialog::{self, PasswordDialog};
 use crate::platform;
 use crate::progress_dialog::{self, ProgressDialog};
 use crate::properties::{Outcome, Properties};
@@ -90,6 +93,51 @@ enum GitUpdate {
     /// The folder's summary, `None` outside a working tree.
     Set(Option<git::Status>),
 }
+/// Something done with items in an archive, which come out of it first.
+#[derive(Clone)]
+enum ArchiveJob {
+    /// Extract the items beside the archive's other opened items, then do the rest.
+    Then(Vec<PathBuf>, AfterExtract),
+    /// Copy the items into a folder: a drop.
+    Transfer(Vec<PathBuf>, PathBuf),
+    /// Extract `items` (paths inside the archive, none for all of it) into
+    /// `dest`, and go there afterwards with `show`.
+    Extract { archive: PathBuf, items: Vec<String>, dest: PathBuf, show: bool },
+}
+
+impl ArchiveJob {
+    fn archive(&self) -> Option<PathBuf> {
+        match self {
+            ArchiveJob::Then(paths, _) | ArchiveJob::Transfer(paths, _) => archive::group(paths).map(|(a, _)| a),
+            ArchiveJob::Extract { archive, .. } => Some(archive.clone()),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum AfterExtract {
+    Open,
+    OpenWith(Option<PathBuf>),
+    /// Edit > Copy: the extracted copies go on the pasteboard.
+    Copy,
+}
+
+/// An archive job's end, tagged with its progress dialog.
+struct ArchiveDone {
+    job: ArchiveJob,
+    archive: PathBuf,
+    progress: u64,
+    /// The extracted items, where they are now.
+    result: std::io::Result<Vec<PathBuf>>,
+    /// What a copy into a folder did, as a paste reports it.
+    op: Option<OpDone>,
+}
+
+/// The largest selection a drag takes out of an archive. The items are
+/// extracted while the pointer leaves the window, which holds the window up.
+const DRAG_OUT_LIMIT: u64 = 64 << 20;
+const READ_ONLY: &str = "Items in an archive can't be changed. Use Extract All to get a copy you can change.";
+
 /// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
 type VisibleCache = ((u64, bool, String), Rc<[usize]>);
 
@@ -117,6 +165,9 @@ struct Settings {
     /// Executables, links and archives get colored names
     /// ([`macsplorer_core::highlight`]).
     color_names: bool,
+    /// Clicking the selected item's name, then waiting, renames it
+    /// ([`slow_click`]); remembered in `settings.json`.
+    click_rename: bool,
 }
 
 struct RenameState {
@@ -161,6 +212,9 @@ enum Action {
     FilterDone,
     /// Go To Folder: the quick jump window.
     ShowGoTo,
+    /// The Folders pane menu's "Expand to current folder": the pane jumps to
+    /// the open folder, even when it doesn't follow by itself.
+    ShowInTree,
     /// `?` or F1: the keyboard shortcut list.
     ShowShortcuts,
     /// The keyboard was used to move around: draw focus rectangles from now on.
@@ -183,6 +237,8 @@ enum Action {
     ToggleColumn(Column),
     /// The header menu's "More...".
     ChooseColumns,
+    /// The header menu's "Reset Sorting and Widths".
+    ResetColumns,
     Back,
     Forward,
     HistoryJump(usize),
@@ -227,6 +283,10 @@ enum Action {
     /// Properties for an item of the list: with several items selected, one
     /// dialog for the whole selection.
     ItemProperties(PathBuf),
+    /// Extract All for the archive file.
+    ExtractAll(PathBuf),
+    /// Extract the items selected inside an archive.
+    ExtractSelected,
     /// Network Neighborhood's rows and the Send To menu.
     Network(NetAction),
 }
@@ -300,6 +360,8 @@ pub struct Explorer {
     free_space: Option<u64>,
     /// Shown in the status bar's right pane, where Explorer says "My Computer".
     computer_name: String,
+    /// What kind of drive each Locations root is, for its icon in the tree.
+    drives: HashMap<PathBuf, DriveKind>,
     /// The details view lists folders on a worker thread so a huge or slow
     /// folder never freezes the window. Results for anything but the latest
     /// request (`list_request`) are dropped.
@@ -451,13 +513,24 @@ pub struct Explorer {
     navigating_from_tree: bool,
     icons: FileIcons,
     /// The "Open With" apps for the file whose context menu is open.
-    open_with: Option<(PathBuf, Vec<PathBuf>)>,
+    open_with: Option<(PathBuf, open_with::Apps)>,
     /// Open Properties dialogs, each in its own window.
     properties: Vec<Properties>,
     /// Network Neighborhood: LocalSend devices to send to.
     network: Network,
     ctx: egui::Context,
     home: Option<Home>,
+    /// The archive the open folder is in, or is, when it is one.
+    archive_open: Option<PathBuf>,
+    /// Passwords typed for encrypted archives, kept while the window is open.
+    passwords: HashMap<PathBuf, String>,
+    /// Password Needed, and the job that waits for it.
+    password_dialog: Option<(PasswordDialog, ArchiveJob)>,
+    extract_dialog: Option<ExtractDialog>,
+    /// Extract All's "Show extracted files when complete".
+    extract_show: bool,
+    archive_tx: Sender<ArchiveDone>,
+    archive_rx: Receiver<ArchiveDone>,
 }
 
 impl Explorer {
@@ -469,6 +542,7 @@ impl Explorer {
         let (eject_tx, eject_rx) = channel();
         let (op_tx, op_rx) = channel();
         let (conflict_tx, conflict_rx) = channel();
+        let (archive_tx, archive_rx) = channel();
         let wake = ctx.clone();
         #[cfg(unix)]
         let computer_name = computer_name().unwrap_or_else(|| "My Computer".into());
@@ -494,7 +568,7 @@ impl Explorer {
             git_request: 0,
             git_applied: 0,
             sort: SortSpec::default(),
-            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: true, color_names: true },
+            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: true, color_names: true, click_rename: true },
             selection: BTreeSet::new(),
             anchor: None,
             focus_item: None,
@@ -533,6 +607,7 @@ impl Explorer {
             search_needs_focus: false,
             status: None,
             tree: FolderTree::new(tree_roots()),
+            drives: drive_kinds(),
             load_tx,
             load_rx,
             eject_tx,
@@ -566,7 +641,15 @@ impl Explorer {
             properties: Vec::new(),
             ctx,
             home: dirs::home_dir().map(Home::new),
+            archive_open: None,
+            passwords: HashMap::new(),
+            password_dialog: None,
+            extract_dialog: None,
+            extract_show: true,
+            archive_tx,
+            archive_rx,
         };
+        app.archive_open = archive::split(app.current()).map(|(a, _)| a);
         // Windows' double-click time is also the slow-click rename delay, so a
         // second click before the rename starts always opens the item.
         app.ctx.options_mut(|o| o.input_options.max_double_click_delay = slow_click::DELAY_MS as f64 / 1000.0);
@@ -601,6 +684,13 @@ impl Explorer {
         }
     }
 
+    /// The removable disk the open folder is on: the mounted volume holding it,
+    /// if that can be ejected.
+    #[cfg(unix)]
+    fn open_disk(&self) -> Option<PathBuf> {
+        self.drives.keys().filter(|v| is_ejectable(v) && self.current().starts_with(v)).max_by_key(|v| v.as_os_str().len()).cloned()
+    }
+
     /// Unmounts and ejects a volume off the UI thread; `poll_ejects` reports.
     #[cfg(unix)]
     fn eject(&mut self, volume: PathBuf) {
@@ -624,6 +714,7 @@ impl Explorer {
                         self.navigate(target);
                     }
                     self.tree.set_roots(tree_roots());
+                    self.drives = drive_kinds();
                     let loads = self.tree.refresh();
                     self.load(loads);
                     self.reload();
@@ -640,6 +731,20 @@ impl Explorer {
         if paths.is_empty() {
             return;
         }
+        if self.archive_open.is_some() {
+            // Copies come out of the archive first; nothing in it can be cut.
+            if cut {
+                self.status = Some(Status::error(READ_ONLY));
+            } else {
+                self.run_archive_job(ArchiveJob::Then(paths, AfterExtract::Copy));
+            }
+            return;
+        }
+        self.put_on_clipboard(paths, cut);
+    }
+
+    /// Puts `paths` on the pasteboard (or this window's clipboard) to paste.
+    fn put_on_clipboard(&mut self, paths: Vec<PathBuf>, cut: bool) {
         if pasteboard::SUPPORTED {
             if self.pb.write(&paths, cut) {
                 let change = self.pb.change_count().unwrap_or_default();
@@ -693,6 +798,10 @@ impl Explorer {
     /// `move_here` moves even what was only copied, and leaves the copy on the
     /// clipboard like Finder's "Move Item Here".
     fn paste(&mut self, dest: PathBuf, move_here: bool) {
+        if archive::split(&dest).is_some() {
+            self.status = Some(Status::error(READ_ONLY));
+            return;
+        }
         self.refresh_clipboard();
         let (paths, was_cut) = match &self.clipboard {
             Some(clip) => (clip.paths.clone(), clip.cut),
@@ -717,6 +826,15 @@ impl Explorer {
     /// Copies or (with `cut`) moves `paths` into `dest` on a worker thread,
     /// with the progress dialog and the Replace question: a paste or a drop.
     fn transfer(&mut self, paths: Vec<PathBuf>, dest: PathBuf, cut: bool) {
+        if archive::split(&dest).is_some() {
+            self.status = Some(Status::error(READ_ONLY));
+            return;
+        }
+        // Out of an archive: always a copy, whatever the keys said.
+        if paths.iter().any(|p| archive::is_inside(p)) {
+            self.run_archive_job(ArchiveJob::Transfer(paths, dest));
+            return;
+        }
         self.status = Some(Status::note(format!("{} {} item(s)...", if cut { "Moving" } else { "Copying" }, paths.len())));
         self.transfer_count += 1;
         let (id, progress) = (self.transfer_count, std::sync::Arc::new(Progress::default()));
@@ -724,18 +842,7 @@ impl Explorer {
         self.transfers.push(ProgressDialog::new(id, progress.clone(), kind));
         let (tx, ctx, ask_tx) = (self.op_tx.clone(), self.ctx.clone(), self.conflict_tx.clone());
         thread::spawn(move || {
-            let ask_ctx = ctx.clone();
-            let ask = |conflict: &macsplorer_core::fileops::Conflict| {
-                let (reply, answer) = channel();
-                let folder = conflict.existing.parent().and_then(entry_at);
-                let ask = conflict_dialog::Ask { conflict: conflict.clone(), folder, existing: entry_at(&conflict.existing), source: entry_at(&conflict.source), reply };
-                if ask_tx.send(ask).is_err() {
-                    return Choice::Cancel;
-                }
-                ask_ctx.request_repaint();
-                // The window closing drops the dialog, and with it the sender.
-                answer.recv().unwrap_or(Choice::Cancel)
-            };
+            let ask = conflict_asker(ask_tx, ctx.clone());
             let result = transfer_with(&paths, &dest, cut, &SystemTrash, ask, &progress);
             let mut dirs = vec![dest.clone()];
             if cut {
@@ -815,6 +922,10 @@ impl Explorer {
     /// Makes shortcuts (symbolic links) to `paths` in `dest` on a worker thread.
     #[cfg_attr(not(unix), allow(unused_variables))]
     fn link(&mut self, paths: Vec<PathBuf>, dest: PathBuf) {
+        if archive::split(&dest).is_some() || paths.iter().any(|p| archive::is_inside(p)) {
+            self.status = Some(Status::error(READ_ONLY));
+            return;
+        }
         let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             #[cfg(unix)]
@@ -830,6 +941,229 @@ impl Explorer {
                 ctx.request_repaint();
             }
         });
+    }
+
+    // ---- archives ----------------------------------------------------------
+
+    /// Takes items out of an archive on a worker thread, with the progress
+    /// dialog, and then does what `job` says (`poll_archive`). Opened items go
+    /// to the archive's own folder in the cache; copies are made in a scratch
+    /// folder and moved to where they go, with the Replace question, so an
+    /// extraction is placed exactly like a paste (`CZipWiz` and
+    /// `CArchiveItemDataObject` hand the shell's copy engine the items too).
+    fn run_archive_job(&mut self, job: ArchiveJob) {
+        let (archive, inner) = match &job {
+            ArchiveJob::Then(paths, _) | ArchiveJob::Transfer(paths, _) => match archive::group(paths) {
+                Some(group) => group,
+                None => return,
+            },
+            ArchiveJob::Extract { archive, items, .. } if items.is_empty() => (archive.clone(), vec![String::new()]),
+            ArchiveJob::Extract { archive, items, .. } => (archive.clone(), items.clone()),
+        };
+        let password = self.passwords.get(&archive).cloned();
+        self.status = Some(Status::note("Extracting..."));
+        self.transfer_count += 1;
+        let (id, progress) = (self.transfer_count, std::sync::Arc::new(Progress::default()));
+        self.transfers.push(ProgressDialog::new(id, progress.clone(), progress_dialog::Kind::Copy));
+        let (tx, ctx, ask_tx) = (self.archive_tx.clone(), self.ctx.clone(), self.conflict_tx.clone());
+        thread::spawn(move || {
+            let password = password.as_deref();
+            let mut op = None;
+            let result = match &job {
+                ArchiveJob::Then(_, AfterExtract::Copy) => archive::scratch_folder().and_then(|dir| archive::extract(&archive, &inner, &dir, password, &progress)),
+                ArchiveJob::Then(..) => archive::open_folder(&archive).ok_or_else(|| std::io::Error::other("no cache folder")).and_then(|base| {
+                    let mut out = Vec::new();
+                    for item in &inner {
+                        // Each beside its archive neighbors, as it was in the archive.
+                        let dir = base.join(item.rsplit_once('/').map_or("", |(parent, _)| parent));
+                        std::fs::create_dir_all(&dir)?;
+                        out.extend(archive::extract(&archive, std::slice::from_ref(item), &dir, password, &progress)?);
+                    }
+                    Ok(out)
+                }),
+                ArchiveJob::Transfer(_, dest) | ArchiveJob::Extract { dest, .. } => (|| {
+                    let scratch = archive::scratch_folder()?;
+                    let staged = archive::extract(&archive, &inner, &scratch, password, &progress);
+                    let staged = staged.inspect_err(|_| {
+                        let _ = std::fs::remove_dir_all(&scratch);
+                    })?;
+                    let made = !dest.exists();
+                    std::fs::create_dir_all(dest)?;
+                    let result = transfer_with(&staged, dest, true, &SystemTrash, conflict_asker(ask_tx, ctx.clone()), &progress);
+                    let _ = std::fs::remove_dir_all(&scratch);
+                    // Like the wizard, a folder made for nothing goes again.
+                    if made && result.placed.is_empty() {
+                        let _ = std::fs::remove_dir(dest);
+                    }
+                    let error = result.error.map(|(path, e)| {
+                        let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                        format!("Couldn't extract \"{name}\": {e}")
+                    });
+                    let failed = error.is_some() || result.cancelled;
+                    op = Some(OpDone { dirs: vec![dest.clone()], select: result.placed.clone(), error, undo: result.undo.map(archive::moved_as_copied), transfer: None });
+                    if failed { Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "stopped")) } else { Ok(result.placed) }
+                })(),
+            };
+            if tx.send(ArchiveDone { job, archive, progress: id, result, op }).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// Finishes archive jobs: opens, copies or shows what came out, or asks
+    /// for the password a job stopped on and runs it again with it.
+    fn poll_archive(&mut self) {
+        while let Ok(done) = self.archive_rx.try_recv() {
+            for dialog in &mut self.transfers {
+                dialog.finished |= dialog.id == done.progress;
+            }
+            self.status = None;
+            if let Some(op) = done.op {
+                self.op_done(op);
+            }
+            let archive_name = done.archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            match done.result {
+                Err(e) if archive::is_password_error(&e) => {
+                    let wrong = self.passwords.remove(&done.archive).is_some();
+                    let file = match &done.job {
+                        ArchiveJob::Then(paths, _) | ArchiveJob::Transfer(paths, _) if paths.len() == 1 => paths[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(archive_name),
+                        _ => archive_name,
+                    };
+                    self.password_dialog = Some((PasswordDialog::new(file, wrong), done.job));
+                }
+                // A cancel, or a copy that reported its own error.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => self.status = Some(Status::error(format!("Couldn't extract from \"{archive_name}\": {e}"))),
+                Ok(paths) => match done.job {
+                    ArchiveJob::Then(_, AfterExtract::Open) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            self.open(path);
+                        }
+                    }
+                    ArchiveJob::Then(_, AfterExtract::OpenWith(app)) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            self.open_with(path, app);
+                        }
+                    }
+                    ArchiveJob::Then(_, AfterExtract::Copy) => self.put_on_clipboard(paths, false),
+                    ArchiveJob::Transfer(..) => {}
+                    ArchiveJob::Extract { dest, show, .. } => {
+                        if show {
+                            self.navigate(dest);
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    /// The archive File > Extract All works on: the open one, or else the one
+    /// archive selected.
+    fn extract_all_target(&self) -> Option<PathBuf> {
+        if let Some(archive) = &self.archive_open {
+            return Some(archive.clone());
+        }
+        let [path] = self.selection.iter().collect::<Vec<_>>()[..] else { return None };
+        archive::is_browsable(path).then(|| path.clone())
+    }
+
+    fn show_extract_all(&mut self, archive: PathBuf) {
+        self.show_extract(archive, Vec::new());
+    }
+
+    /// Extract for the items selected in the open archive.
+    fn show_extract_selected(&mut self) {
+        let paths: Vec<PathBuf> = self.selection.iter().filter(|p| archive::is_inside(p)).cloned().collect();
+        if let Some((archive, items)) = archive::group(&paths) {
+            self.show_extract(archive, items);
+        }
+    }
+
+    fn show_extract(&mut self, archive: PathBuf, items: Vec<String>) {
+        if self.extract_dialog.is_none() {
+            let dest = archive::default_destination(&archive);
+            self.extract_dialog = Some(ExtractDialog::new(archive, items, &dest, self.home.as_ref(), self.extract_show));
+        }
+    }
+
+    /// Password Needed and Extract All, when open.
+    fn show_archive_dialogs(&mut self, ctx: &egui::Context) {
+        let answer = self.password_dialog.as_mut().map(|(dialog, _)| dialog.show(ctx));
+        match answer {
+            Some(password_dialog::Outcome::Ok(password)) => {
+                if let Some((_, job)) = self.password_dialog.take() {
+                    if let Some(archive) = job.archive() {
+                        self.passwords.insert(archive, password);
+                    }
+                    self.run_archive_job(job);
+                }
+            }
+            Some(password_dialog::Outcome::Cancel) => self.password_dialog = None,
+            Some(password_dialog::Outcome::Keep) | None => {}
+        }
+        let Some(dialog) = &mut self.extract_dialog else { return };
+        match dialog.show(ctx) {
+            extract_dialog::Outcome::Keep => {}
+            extract_dialog::Outcome::Cancel => self.extract_dialog = None,
+            extract_dialog::Outcome::Extract { folder, show } => {
+                // `CZipWiz::_ExtractDlgProc`'s checks: a full path, not a file.
+                let dest = expand_tilde(&folder, self.home.as_ref());
+                let error = if !dest.is_absolute() {
+                    Some("Type the folder's full path, such as ~/Documents/Files.")
+                } else if dest.exists() && !dest.is_dir() {
+                    Some("There is a file with that name. Choose another folder.")
+                } else if archive::split(&dest).is_some() {
+                    Some("Files can't be extracted into an archive.")
+                } else {
+                    None
+                };
+                if let Some(error) = error {
+                    dialog.error = Some(error.into());
+                    return;
+                }
+                let (archive, items) = (dialog.archive.clone(), dialog.items.clone());
+                self.extract_dialog = None;
+                if show != self.extract_show {
+                    self.extract_show = show;
+                    if self.persist {
+                        Preferences::update(|p| p.extract_show = show);
+                    }
+                }
+                self.run_archive_job(ArchiveJob::Extract { archive, items, dest, show });
+            }
+        }
+    }
+
+    /// What a drag that leaves the window hands the other app: items in an
+    /// archive are extracted first, right away, so they are files it can
+    /// take. `None` stops the drag (too big, or a password is needed).
+    fn paths_for_drag_out(&mut self, paths: Vec<PathBuf>) -> Option<Vec<PathBuf>> {
+        let Some((archive, inner)) = archive::group(&paths) else { return Some(paths) };
+        let index = match archive::index(&archive) {
+            Ok(index) => index,
+            Err(e) => {
+                self.status = Some(Status::error(format!("Couldn't read the archive: {e}")));
+                return None;
+            }
+        };
+        let size: u64 = inner.iter().flat_map(|i| index.under(i)).map(|item| item.size).sum();
+        if size > DRAG_OUT_LIMIT {
+            self.status = Some(Status::error("That is too much to drag out of the archive. Use Copy and Paste, or Extract All."));
+            return None;
+        }
+        let password = self.passwords.get(&archive).map(String::as_str);
+        if password.is_none() && index.needs_password(&inner) {
+            self.status = Some(Status::error("These items need a password. Open one of them first, or use Extract All."));
+            return None;
+        }
+        let made = archive::scratch_folder().and_then(|dir| archive::extract(&archive, &inner, &dir, password, &Progress::default()));
+        match made {
+            Ok(made) => Some(made),
+            Err(e) => {
+                self.status = Some(Status::error(format!("Couldn't extract: {e}")));
+                None
+            }
+        }
     }
 
     /// Files dropped on the window from another app, where the platform has no
@@ -873,13 +1207,34 @@ impl Explorer {
             }
         };
         let outside = pointer.pos.is_none_or(|p| !ui.ctx().content_rect().contains(p));
-        if !drag.native && pointer.down && outside && native_drag::begin(ui.ctx(), &drag.paths) {
-            self.drag = None;
-            return;
+        if !drag.native && pointer.down && outside && native_drag::SUPPORTED {
+            let paths = drag.paths.clone();
+            // Items in an archive come out of it before AppKit takes them.
+            match self.paths_for_drag_out(paths) {
+                Some(paths) if native_drag::begin(ui.ctx(), &paths) => {
+                    self.drag = None;
+                    return;
+                }
+                Some(_) => {}
+                None => {
+                    self.drag = None;
+                    return;
+                }
+            }
         }
+        let Some(drag) = &mut self.drag else { return };
         let native = drag.native;
         let step = drag.step(ui, &self.drag_frame, pointer, |paths, target| match target {
-            Target::Folder(dir) => dragdrop::drop_effect(paths, dir, forced, allowed),
+            Target::Folder(dir) => {
+                // Nothing goes into an archive, and what comes out is a copy.
+                if archive::split(dir).is_some() {
+                    None
+                } else if paths.iter().any(|p| archive::is_inside(p)) {
+                    allowed.contains(Effect::Copy).then_some(Effect::Copy)
+                } else {
+                    dragdrop::drop_effect(paths, dir, forced, allowed)
+                }
+            }
             // A send copies, whatever the keys.
             Target::Device(_) => allowed.contains(Effect::Copy).then_some(Effect::Copy),
         });
@@ -905,6 +1260,10 @@ impl Explorer {
 
     /// Moves the selection to the Trash on a worker thread.
     fn delete_selection(&mut self) {
+        if self.archive_open.is_some() {
+            self.status = Some(Status::error(READ_ONLY));
+            return;
+        }
         let paths: Vec<PathBuf> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect();
         if paths.is_empty() {
             return;
@@ -958,22 +1317,27 @@ impl Explorer {
 
     fn poll_ops(&mut self) {
         while let Ok(done) = self.op_rx.try_recv() {
-            self.status = done.error.map(Status::error);
-            for dialog in &mut self.transfers {
-                dialog.finished |= done.transfer == Some(dialog.id);
-            }
-            if let Some(op) = done.undo {
-                self.undo.push(op);
-            }
-            let current = self.current().to_path_buf();
-            if done.dirs.contains(&current) {
-                self.pending_select = done.select.iter().filter(|p| p.parent() == Some(current.as_path())).cloned().collect();
-                self.reload();
-            }
-            for dir in &done.dirs {
-                if let Some(path) = self.tree.refresh_path(dir) {
-                    self.load([path]);
-                }
+            self.op_done(done);
+        }
+    }
+
+    /// Shows what a paste, delete or undo did: the folders it changed reload.
+    fn op_done(&mut self, done: OpDone) {
+        self.status = done.error.map(Status::error);
+        for dialog in &mut self.transfers {
+            dialog.finished |= done.transfer == Some(dialog.id);
+        }
+        if let Some(op) = done.undo {
+            self.undo.push(op);
+        }
+        let current = self.current().to_path_buf();
+        if done.dirs.contains(&current) {
+            self.pending_select = done.select.iter().filter(|p| p.parent() == Some(current.as_path())).cloned().collect();
+            self.reload();
+        }
+        for dir in &done.dirs {
+            if let Some(path) = self.tree.refresh_path(dir) {
+                self.load([path]);
             }
         }
     }
@@ -986,7 +1350,10 @@ impl Explorer {
     }
 
     fn poll_watcher_at(&mut self, now: f64) {
-        let current = self.current().to_path_buf();
+        // Inside an archive, the folder the archive is in: a change to the
+        // archive file reloads it, as `CZipFolderViewCB` registers for
+        // notifications on the zip itself.
+        let current = self.tree_folder();
         let mut dirs: BTreeSet<PathBuf> = self.tree.expanded_folders().map(Path::to_path_buf).collect();
         dirs.insert(current.clone());
         self.watcher.watch_only(&dirs);
@@ -1005,7 +1372,7 @@ impl Explorer {
 
     /// Points the navigation pane at the open folder.
     fn sync_tree(&mut self) {
-        let current = self.current().to_path_buf();
+        let current = self.tree_folder();
         if self.settings.expand_to_open {
             let loads = self.tree.reveal(&current);
             self.load(loads);
@@ -1014,8 +1381,26 @@ impl Explorer {
         }
     }
 
+    /// Brings the Folders pane back to the open folder: unfolds the way to
+    /// it, selects it and scrolls it to the middle. Unlike `sync_tree` it
+    /// ignores "Expand to open folder".
+    fn show_in_tree(&mut self) {
+        self.tree.take_open();
+        let loads = self.tree.reveal(&self.tree_folder());
+        self.load(loads);
+    }
+
     fn current(&self) -> &Path {
         self.history.current()
+    }
+
+    /// The folder the Folders pane shows for the open one: the folder an
+    /// archive is in while it is open, since the pane lists real folders only.
+    fn tree_folder(&self) -> PathBuf {
+        match &self.archive_open {
+            Some(archive) => archive.parent().map_or_else(|| archive.clone(), Path::to_path_buf),
+            None => self.current().to_path_buf(),
+        }
     }
 
     /// Lists the open folder and asks for its Git status afresh.
@@ -1034,7 +1419,8 @@ impl Explorer {
         let (request, show_hidden, branches) = (self.list_request, self.settings.show_hidden, self.list_branches);
         let (tx, ctx) = (self.list_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let result = list_dir_with(&dir, show_hidden, branches).map_err(|e| platform::open_error(&dir, &e));
+            let listed = archive::list(&dir, show_hidden).unwrap_or_else(|| list_dir_with(&dir, show_hidden, branches));
+            let result = listed.map_err(|e| platform::open_error(&dir, &e));
             #[cfg(unix)]
             let free = free_space(&dir);
             #[cfg(not(unix))]
@@ -1050,6 +1436,11 @@ impl Explorer {
     /// same working tree.
     fn reload_git(&mut self, reuse: bool) {
         self.git_request += 1;
+        if self.archive_open.is_some() {
+            self.git = None;
+            self.git_applied = self.git_request;
+            return;
+        }
         let known = self.git.as_ref().filter(|_| reuse).map(|g| g.root.clone());
         let (request, dir) = (self.git_request, self.current().to_path_buf());
         let (tx, ctx) = (self.git_tx.clone(), self.ctx.clone());
@@ -1174,6 +1565,7 @@ impl Explorer {
     }
 
     fn after_navigation(&mut self) {
+        self.archive_open = archive::split(self.current()).map(|(a, _)| a);
         self.network.deselect();
         self.address_peeking = false;
         self.peek_dir = None;
@@ -1218,7 +1610,7 @@ impl Explorer {
     }
 
     fn navigate(&mut self, path: PathBuf) {
-        if !path.is_dir() {
+        if !path.is_dir() && archive::split(&path).is_none() {
             self.status = Some(Status::error(format!("{} is not a folder.", self.shown(&path))));
             return;
         }
@@ -1230,6 +1622,10 @@ impl Explorer {
     /// it once the listing shows it, as Explorer does (the name is left to the
     /// user). Like Explorer's, the creation has no undo step.
     fn new_folder(&mut self) {
+        if self.archive_open.is_some() {
+            self.status = Some(Status::error(READ_ONLY));
+            return;
+        }
         let path = fileops::new_folder_name(self.current());
         match std::fs::create_dir(&path) {
             Ok(()) => {
@@ -1245,7 +1641,9 @@ impl Explorer {
     /// Address bar entry: a folder is opened, an existing file is revealed
     /// (its folder opens with the file selected), anything else reports the error.
     fn go_to(&mut self, path: PathBuf) {
-        if !path.is_dir() && path.symlink_metadata().is_ok() {
+        // An archive opens as a folder; a file in one is shown in its folder.
+        let archived_file = archive::is_inside(&path) && archive::entry(&path).is_some_and(|e| !e.is_folder());
+        if archived_file || (!path.is_dir() && !archive::is_browsable(&path) && path.symlink_metadata().is_ok()) {
             self.reveal_in_view(path);
         } else {
             self.navigate(path);
@@ -1261,10 +1659,25 @@ impl Explorer {
     }
 
     fn open(&mut self, path: PathBuf) {
+        if archive::is_inside(&path) {
+            // A folder in an archive is browsed; anything else is extracted
+            // to be opened, an app bundle whole (`docs/archive-findings.md` §2.5).
+            match self.entries.iter().find(|e| e.path == path).cloned().or_else(|| archive::entry(&path)) {
+                Some(entry) if entry.is_folder() => self.navigate(path),
+                Some(_) => self.run_archive_job(ArchiveJob::Then(vec![path], AfterExtract::Open)),
+                None => self.status = Some(Status::error(format!("{} isn't in the archive.", self.shown(&path)))),
+            }
+            return;
+        }
         let is_folder = self.entries.iter().find(|e| e.path == path).map_or(path.is_dir(), Entry::is_folder);
+        // An archive opens like an app: with its program. Show Package
+        // Contents is the way in.
         if is_folder {
             self.navigate(path);
-        } else if let Some(app) = open_with::chosen_app(&path) {
+        } else if let Some(app) = open_with::chosen_app(&path)
+            .or_else(|| open_with::default_app(&path).filter(|app| open_with::is_reaview(app)))
+        {
+            // Reaview is also told the sort, so it needs `open_with`'s arguments even as the default app.
             self.open_with(path, Some(app));
         } else if let Err(e) = platform::open_default(&path) {
             self.status = Some(Status::error(format!("Couldn't open {}: {e}", self.shown(&path))));
@@ -1272,6 +1685,10 @@ impl Explorer {
     }
 
     fn open_with(&mut self, path: PathBuf, app: Option<PathBuf>) {
+        if archive::is_inside(&path) {
+            self.run_archive_job(ArchiveJob::Then(vec![path], AfterExtract::OpenWith(app)));
+            return;
+        }
         let Some(app) = app else {
             // Windows' "Choose Program..." dialog.
             if self.open_with_dialog.is_none() {
@@ -1280,7 +1697,7 @@ impl Explorer {
             }
             return;
         };
-        if let Err(e) = Command::new("open").arg("-a").arg(&app).arg(&path).spawn() {
+        if let Err(e) = Command::new("open").args(open_with::open_args(&app, &path, self.sort, self.settings.show_hidden)).spawn() {
             self.status = Some(Status::error(format!("Couldn't open {} with {}: {e}", self.shown(&path), open_with::app_name(&app))));
         }
     }
@@ -1387,6 +1804,10 @@ impl Explorer {
     }
 
     fn begin_rename(&mut self) {
+        if self.archive_open.is_some() {
+            self.status = Some(Status::error(READ_ONLY));
+            return;
+        }
         let [path] = self.selection.iter().collect::<Vec<_>>()[..] else { return };
         let Some(entry) = self.entries.iter().find(|e| &e.path == path) else { return };
         self.rename = Some(RenameState {
@@ -1469,6 +1890,10 @@ impl Explorer {
     /// Like Explorer, several selected items get one dialog with their
     /// combined size; `path` is the item the command was given on.
     fn open_item_properties(&mut self, path: PathBuf) {
+        if archive::is_inside(&path) {
+            self.status = Some(Status::error("Items in an archive have no Properties. Extract them to see theirs."));
+            return;
+        }
         if self.selection.len() > 1 && self.selection.contains(&path) {
             let entries: Vec<Entry> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).cloned().collect();
             if entries.len() > 1 {
@@ -1480,6 +1905,10 @@ impl Explorer {
     }
 
     fn open_properties(&mut self, path: PathBuf) {
+        if archive::is_inside(&path) {
+            self.status = Some(Status::error("Items in an archive have no Properties. Extract them to see theirs."));
+            return;
+        }
         let entry = self.entries.iter().find(|e| e.path == path).cloned().unwrap_or_else(|| Properties::folder_entry(&path));
         // The root and mounted volumes can't be renamed from here.
         #[cfg(unix)]
@@ -1554,7 +1983,11 @@ impl Explorer {
             self.resort();
         }
         self.saved_window = prefs.window;
+        self.extract_show = prefs.extract_show;
+        self.settings.click_rename = prefs.click_rename;
         self.persist = true;
+        // What earlier runs extracted to open, once it is a day old.
+        thread::spawn(archive::clean_staging);
         // Finding git can take a moment (and `main` has told the lookup where
         // it was last time): not on this thread. When it is done the Branch
         // column can appear, and the settings file learns where git is.
@@ -1632,7 +2065,11 @@ impl Explorer {
                         view_focused: self.focus == Pane::List,
                         modifiers: toggle || extend,
                     };
-                    self.slow_click.click(path, click, now_ms(&self.ctx));
+                    if self.settings.click_rename {
+                        self.slow_click.click(path, click, now_ms(&self.ctx));
+                    } else {
+                        self.slow_click.cancel();
+                    }
                     self.focus = Pane::List;
                     self.click(index, toggle, extend, visible);
                 }
@@ -1685,6 +2122,7 @@ impl Explorer {
                     }
                 }
                 Action::ShowGoTo => self.show_goto(),
+                Action::ShowInTree => self.show_in_tree(),
                 Action::ShowShortcuts => {
                     self.shortcuts_dialog.get_or_insert_with(ShortcutsDialog::new);
                 }
@@ -1731,7 +2169,7 @@ impl Explorer {
                         self.sort.ascending = !self.sort.ascending;
                     } else {
                         self.sort.column = column;
-                        self.sort.ascending = true;
+                        self.sort.ascending = column.first_sort_ascending();
                     }
                     self.resort();
                     if self.persist {
@@ -1740,6 +2178,19 @@ impl Explorer {
                     }
                 }
                 Action::ToggleColumn(column) => self.columns.toggle(column),
+                Action::ResetColumns => {
+                    let default = SortSpec::default();
+                    self.columns.reset_widths();
+                    if (self.sort.column, self.sort.ascending) != (default.column, default.ascending) {
+                        self.sort.column = default.column;
+                        self.sort.ascending = default.ascending;
+                        self.resort();
+                    }
+                    if self.persist {
+                        let sort = SortOrder { column: default.column, ascending: default.ascending };
+                        Preferences::update(|p| p.sort = Some(sort));
+                    }
+                }
                 Action::ChooseColumns => {
                     if self.column_dialog.is_none() {
                         self.column_dialog = Some(ColumnDialog::new(&self.columns));
@@ -1769,6 +2220,7 @@ impl Explorer {
                     self.icons.clear_native();
                     self.icons.set_favorite_emblems(favorite_emblems());
                     self.tree.set_roots(tree_roots());
+                    self.drives = drive_kinds();
                     let loads = self.tree.refresh();
                     self.load(loads);
                     self.reload();
@@ -1780,14 +2232,20 @@ impl Explorer {
                     }
                 }
                 Action::RevealInFinder(p) => {
+                    // An item in an archive: the archive file.
+                    let p = archive::split(&p).map_or(p, |(archive, _)| archive);
                     thread::spawn(move || platform::reveal(&p));
                 }
+                Action::ExtractAll(archive) => self.show_extract_all(archive),
+                Action::ExtractSelected => self.show_extract_selected(),
                 Action::OpenConfig => {
                     let opened = Preferences::file_path().and_then(|file| platform::open_text(&file));
                     if let Err(e) = opened {
                         self.status = Some(Status::error(format!("Couldn't open the config file: {e}")));
                     }
                 }
+                #[cfg(unix)]
+                Action::OpenTerminal(p) if archive::split(&p).is_some() => self.status = Some(Status::error("A terminal can't open in an archive.")),
                 #[cfg(unix)]
                 Action::OpenTerminal(p) => {
                     if let Err(e) = platform::open_terminal(&p, Preferences::load().terminal.as_deref()) {
@@ -2131,8 +2589,25 @@ impl Explorer {
                     actions.push(Action::NewWindow);
                 }
                 ui.separator();
+                let archive = self.extract_all_target();
+                if ui.add_enabled(archive.is_some(), gutter_item(ui, "Extract All...", String::new())).clicked() {
+                    actions.extend(archive.map(Action::ExtractAll));
+                }
+                let selected = self.archive_open.is_some() && self.selection.iter().any(|p| archive::is_inside(p));
+                if ui.add_enabled(selected, gutter_item(ui, "Extract...", String::new())).clicked() {
+                    actions.push(Action::ExtractSelected);
+                }
+                ui.separator();
                 if ui.add(gutter_item(ui, "Properties", platform::shortcut(false, "I"))).clicked() {
                     actions.push(Action::ItemProperties(self.properties_target(self.focus == Pane::List)));
+                }
+                // Ejects the disk the open folder is on, when it is one that can go.
+                #[cfg(unix)]
+                {
+                    let disk = self.open_disk();
+                    if ui.add_enabled(disk.is_some(), gutter_item(ui, "Eject", String::new())).clicked() {
+                        actions.extend(disk.map(Action::Eject));
+                    }
                 }
                 ui.separator();
                 if ui.add(gutter_item(ui, "Close", String::new())).clicked() {
@@ -2146,7 +2621,9 @@ impl Explorer {
                 }
                 ui.separator();
                 let has_selection = !self.selection.is_empty();
-                if ui.add_enabled(has_selection, gutter_item(ui, "Cut", platform::shortcut(false, "X"))).clicked() {
+                // Nothing in an archive changes: it can only be copied out.
+                let writable = self.archive_open.is_none();
+                if ui.add_enabled(has_selection && writable, gutter_item(ui, "Cut", platform::shortcut(false, "X"))).clicked() {
                     actions.push(Action::Cut);
                 }
                 if ui.add_enabled(has_selection, gutter_item(ui, "Copy", platform::shortcut(false, "C"))).clicked() {
@@ -2155,14 +2632,14 @@ impl Explorer {
                 if ui.add_enabled(has_selection, gutter_item(ui, "Copy as Path", platform::shortcut(true, "C"))).clicked() {
                     actions.push(Action::CopyAsPath);
                 }
-                if ui.add_enabled(self.can_paste(), gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
+                if ui.add_enabled(writable && self.can_paste(), gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
                     actions.push(Action::Paste(None));
                 }
-                if ui.add_enabled(self.can_paste(), gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
+                if ui.add_enabled(writable && self.can_paste(), gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
                     actions.push(Action::MoveHere(None));
                 }
                 ui.separator();
-                if ui.add_enabled(has_selection, gutter_item(ui, "Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
+                if ui.add_enabled(has_selection && writable, gutter_item(ui, "Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
                     actions.push(Action::Delete);
                 }
                 ui.separator();
@@ -2174,7 +2651,7 @@ impl Explorer {
                 }
             });
             bar_menu_button(ui, "View", |ui| {
-                delayed_menu_button(ui, "Explorer Bar", true, |ui| {
+                delayed_menu_button(ui, "Explorer Bar", |ui| {
                     if egui_classic_menu::checkbox(ui, &mut self.settings.show_folders, "Folders").changed() {
                         ui.close();
                     }
@@ -2182,7 +2659,7 @@ impl Explorer {
                 ui.separator();
                 view_choices(ui, self.settings.view, actions);
                 ui.separator();
-                delayed_menu_button(ui, "Text Size", true, |ui| {
+                delayed_menu_button(ui, "Text Size", |ui| {
                     let current = text_size::snap(ui.ctx().zoom_factor());
                     for (zoom, label) in text_size::SIZES {
                         if egui_classic_menu::radio(ui, current == zoom, label).clicked() {
@@ -2211,6 +2688,13 @@ impl Explorer {
                 if egui_classic_menu::checkbox(ui, &mut self.settings.mix_folders, "Mix folders and files").changed() {
                     self.sort.folders_first = !self.settings.mix_folders;
                     self.resort();
+                }
+                if egui_classic_menu::checkbox(ui, &mut self.settings.click_rename, "Click to rename").changed() {
+                    self.slow_click.cancel();
+                    if self.persist {
+                        let on = self.settings.click_rename;
+                        Preferences::update(|p| p.click_rename = on);
+                    }
                 }
                 if changed {
                     self.rename = None;
@@ -2255,7 +2739,7 @@ impl Explorer {
             let arrow = theme::drop_arrow_button(ui, self.history.can_go_back());
             egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
                 for (i, p) in self.history.back_entries().take(12) {
-                    if ui.button(place_label(p)).clicked() {
+                    if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
                         actions.push(Action::HistoryJump(i));
                     }
                 }
@@ -2267,7 +2751,7 @@ impl Explorer {
             let arrow = theme::drop_arrow_button(ui, self.history.can_go_forward());
             egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
                 for (i, p) in self.history.forward_entries().take(12) {
-                    if ui.button(place_label(p)).clicked() {
+                    if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
                         actions.push(Action::HistoryJump(i));
                     }
                 }
@@ -2462,7 +2946,9 @@ impl Explorer {
 
     fn address_contents(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (icon, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
-        theme::paint_icon(ui.painter(), icon, Icon::Folder, true);
+        // Anywhere inside an archive, the folder with the zipper.
+        let zipped = archive::split(self.current()).is_some();
+        theme::paint_icon(ui.painter(), icon, if zipped { Icon::CompressedFolder } else { Icon::Folder }, true);
         if self.address_edit.is_some() {
             self.edit_address(ui, actions);
             return;
@@ -2480,14 +2966,41 @@ impl Explorer {
         // (see `address_bar`). When it is too long the front is cut off and the
         // end, the open folder, stays.
         let shown = self.address_text();
+        let chars: Vec<char> = shown.chars().collect();
+        // Inside an archive the archive's name is in its list color, so the
+        // odd step in the path stands out (not from Explorer).
+        let archive = archive::split(self.current()).filter(|_| self.settings.color_names).map(|(file, _)| {
+            let end = self.shown(&file).chars().count();
+            let len = file.file_name().map_or(0, |n| n.to_string_lossy().chars().count());
+            end - len..end
+        }).filter(|r| r.end <= chars.len());
         let font = egui::TextStyle::Body.resolve(ui.style());
         let width = ui.available_width();
-        let fit = |text: &str| ui.painter().layout_no_wrap(text.to_owned(), font.clone(), theme::color::text());
-        let mut galley = fit(&shown);
+        // The path from char `cut` on, after "…" when the front is cut off.
+        let fit = |cut: usize| {
+            let mut job = egui::text::LayoutJob::default();
+            if cut > 0 {
+                job.append("…", 0.0, egui::TextFormat::simple(font.clone(), theme::color::text()));
+            }
+            let mut add = |range: std::ops::Range<usize>, color| {
+                let text: String = chars[range].iter().collect();
+                job.append(&text, 0.0, egui::TextFormat::simple(font.clone(), color));
+            };
+            match archive.clone().filter(|r| r.end > cut) {
+                Some(r) => {
+                    let start = r.start.max(cut);
+                    add(cut..start, theme::color::text());
+                    add(start..r.end, theme::color::archive());
+                    add(r.end..chars.len(), theme::color::text());
+                }
+                None => add(cut..chars.len(), theme::color::text()),
+            }
+            ui.painter().layout_job(job)
+        };
+        let mut galley = fit(0);
         if galley.size().x > width {
-            let chars: Vec<char> = shown.chars().collect();
-            let cut = (1..chars.len()).find(|&i| fit(&format!("…{}", chars[i..].iter().collect::<String>())).size().x <= width).unwrap_or(chars.len() - 1);
-            galley = fit(&format!("…{}", chars[cut..].iter().collect::<String>()));
+            let cut = (1..chars.len()).find(|&i| fit(i).size().x <= width).unwrap_or(chars.len() - 1);
+            galley = fit(cut);
         }
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ui.available_height().max(16.0)), Sense::hover());
         ui.painter().with_clip_rect(rect).galley(egui::pos2(rect.left() + 2.0, rect.center().y - galley.size().y / 2.0), galley, theme::color::text());
@@ -2534,6 +3047,13 @@ impl Explorer {
         self.tree_page = ((viewport.height() / TREE_ROW_HEIGHT).floor() as usize).max(1);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport).layout(Layout::top_down(Align::Min)));
         let hidden = scrollbar::hidden(&mut ui);
+        // Empty space under the rows has the menu too; the rows sit on top of this and keep their own.
+        let background = ui.interact(viewport, ui.id().with("tree-background"), Sense::click());
+        egui::Popup::context_menu(&background).style(theme::menu_style).show(|ui| {
+            if ui.add(gutter_item(ui, TREE_SHOW_OPEN_LABEL, String::new())).clicked() {
+                actions.push(Action::ShowInTree);
+            }
+        });
         // Selections scroll into view in one jump, as in the tree view.
         let (drag, frame) = (self.drag.as_ref(), &mut self.drag_frame);
         let out = egui::ScrollArea::both().auto_shrink(false).animated(false).scroll_bar_visibility(hidden).show(&mut ui, |ui| {
@@ -2552,7 +3072,8 @@ impl Explorer {
                         computer_row(ui, &self.computer_name);
                     }
                 }
-                tree_row(ui, &mut self.icons, row, guide, scroll, focused, cue, (drag, &mut *frame), actions);
+                let kind = self.drives.get(&row.key.path).copied().unwrap_or_default();
+                tree_row(ui, &mut self.icons, row, kind, guide, scroll, focused, cue, (drag, &mut *frame), actions);
             }
             let mut net = Vec::new();
             self.network.tree(ui, can_send, focused, (drag, &mut *frame), &mut net);
@@ -3324,7 +3845,35 @@ impl Explorer {
     }
 }
 
+/// Whether the pointer is over one of the dialog windows while the main window is behind them.
+/// The dialogs are windows of their own, but AppKit still reports a pointer over one to the main
+/// window under it, so the list, the toolbar and the tree would light up through the dialog.
+/// `pointer` is the position in the main window; the window rectangles are in screen points.
+fn pointer_under_dialog(viewports: &egui::ViewportIdMap<egui::ViewportInfo>, pointer: egui::Pos2) -> bool {
+    let Some(root) = viewports.get(&egui::ViewportId::ROOT) else { return false };
+    let (Some(inner), false) = (root.inner_rect, root.focused.unwrap_or(false)) else { return false };
+    let screen = inner.min + pointer.to_vec2();
+    viewports.iter().filter(|(id, _)| **id != egui::ViewportId::ROOT).any(|(_, info)| {
+        info.minimized != Some(true) && info.outer_rect.or(info.inner_rect).is_some_and(|rect| rect.contains(screen))
+    })
+}
+
 impl eframe::App for Explorer {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let last = raw.events.iter().rev().find_map(|e| match e {
+            egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => Some(Some(*pos)),
+            egui::Event::PointerGone => Some(None),
+            _ => None,
+        });
+        let pointer = last.unwrap_or_else(|| ctx.input(|i| i.pointer.latest_pos()));
+        if !pointer.is_some_and(|pos| pointer_under_dialog(&raw.viewports, pos)) {
+            return;
+        }
+        let pointer_event = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
+        raw.events.retain(|e| !pointer_event(e));
+        raw.events.push(egui::Event::PointerGone);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.poll_loads();
         self.poll_lists();
@@ -3332,6 +3881,7 @@ impl eframe::App for Explorer {
         self.list_branches_if_missing();
         self.poll_ejects();
         self.poll_ops();
+        self.poll_archive();
         self.network.poll();
         if let Some(status) = self.network.take_status() {
             self.status = Some(status);
@@ -3423,8 +3973,14 @@ impl eframe::App for Explorer {
                 self.about_dialog = None;
                 self.reveal_in_view(path);
             }
+            Some(AboutOutcome::OpenUrl(url)) => {
+                if let Err(e) = platform::open_url(&url) {
+                    self.status = Some(Status::error(format!("Couldn't open {url}: {e}")));
+                }
+            }
             Some(AboutOutcome::Open) | None => {}
         }
+        self.show_archive_dialogs(&ctx);
         self.show_conflict();
         self.show_transfers();
         self.network.show_dialogs();
@@ -3435,6 +3991,22 @@ impl eframe::App for Explorer {
 
 #[cfg(unix)]
 const TERMINAL_LABEL: &str = "Open in Terminal";
+
+/// Asks the UI thread about a name conflict and waits for the answer: the
+/// Replace question of a paste running on a worker thread.
+fn conflict_asker(ask_tx: Sender<conflict_dialog::Ask>, ctx: egui::Context) -> impl FnMut(&macsplorer_core::fileops::Conflict) -> Choice {
+    move |conflict| {
+        let (reply, answer) = channel();
+        let folder = conflict.existing.parent().and_then(entry_at);
+        let ask = conflict_dialog::Ask { conflict: conflict.clone(), folder, existing: entry_at(&conflict.existing), source: entry_at(&conflict.source), reply };
+        if ask_tx.send(ask).is_err() {
+            return Choice::Cancel;
+        }
+        ctx.request_repaint();
+        // The window closing drops the dialog, and with it the sender.
+        answer.recv().unwrap_or(Choice::Cancel)
+    }
+}
 
 /// A menu bar entry. While one bar menu is open, resting the pointer on
 /// another entry opens that one instead and closes the first, as in Windows
@@ -3460,21 +4032,15 @@ fn bar_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui) -> 
 /// A submenu item that opens when the pointer has rested on it for
 /// [`menu_delay::SHOW_DELAY_MS`], as Windows' menus do (`MenuShowDelay`); a
 /// click opens it at once. egui's own `menu_button` opens on first contact.
-/// `gutter` indents the label like a marked item. Otherwise this is egui's
-/// `SubMenuButton`.
-fn delayed_menu_button<R>(ui: &mut Ui, text: &str, gutter: bool, content: impl FnOnce(&mut Ui) -> R) {
-    use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
+fn delayed_menu_button<R>(ui: &mut Ui, text: &str, content: impl FnOnce(&mut Ui) -> R) {
+    use egui::containers::menu::{MenuState, SubMenu};
     let id = ui.next_auto_id();
     let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(SubMenu::id_from_widget_id(id)));
     let inactive = ui.style().visuals.widgets.inactive;
     if open {
         ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
     }
-    let response = if gutter {
-        egui_classic_menu::submenu_row(ui, text, open)
-    } else {
-        ui.add(egui::Button::new(text).right_text(SubMenuButton::RIGHT_ARROW))
-    };
+    let response = egui_classic_menu::submenu_row(ui, text, open);
     ui.style_mut().visuals.widgets.inactive = inactive;
 
     // Remember when the rest began and in which pass it was last seen: a gap
@@ -3499,14 +4065,16 @@ fn delayed_menu_button<R>(ui: &mut Ui, text: &str, gutter: bool, content: impl F
 
 /// The "Open With" submenu: the file's apps, then "Choose Program...".
 /// The app list is looked up once per file and kept while the menu is open.
-fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<PathBuf>)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
-    delayed_menu_button(ui, "Open With", false, |ui| {
+fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, open_with::Apps)>, icons: &mut FileIcons, actions: &mut Vec<Action>) {
+    delayed_menu_button(ui, "Open With", |ui| {
         if cache.as_ref().is_none_or(|(p, _)| p != path) {
             *cache = Some((path.to_path_buf(), open_with::apps_for(path)));
         }
-        let apps = cache.as_ref().map_or(&[][..], |(_, apps)| apps.as_slice());
-        for app in apps {
-            let name = open_with::app_name(app);
+        let apps = cache.as_ref().map(|(_, apps)| apps.clone()).unwrap_or_default();
+        for (i, app) in apps.list.iter().enumerate() {
+            // Bold marks the default, like the Open item at the top of the menu.
+            let name = RichText::new(open_with::app_name(app));
+            let name = if apps.is_default(i) { name.font(theme::bold(theme::FONT_SIZE)) } else { name };
             let button = match icons.menu_icon(ui.ctx(), app) {
                 Some(icon) => egui::Button::image_and_text(egui::Image::new((icon, egui::vec2(16.0, 16.0))), name),
                 None => egui::Button::new(name),
@@ -3515,106 +4083,131 @@ fn open_with_menu(ui: &mut Ui, path: &Path, cache: &mut Option<(PathBuf, Vec<Pat
                 actions.push(Action::OpenWith(path.to_path_buf(), Some(app.clone())));
             }
         }
-        if !apps.is_empty() {
+        if !apps.list.is_empty() {
             ui.separator();
         }
-        if ui.button("Choose Program...").clicked() {
+        if ui.add(gutter_item(ui, "Choose Program...", String::new())).clicked() {
             actions.push(Action::OpenWith(path.to_path_buf(), None));
         }
     });
 }
 
-/// The context menu for an item.
+/// The context menu for an item. In an archive only what reads the item
+/// is offered: Open, Open With, Copy (`CArchiveItemContextMenu` drops Delete
+/// and Cut in a zip it can't write, and never offers Rename).
 fn item_menu(
     ui: &mut Ui,
     entry: &Entry,
     can_paste: bool,
-    open_with: &mut Option<(PathBuf, Vec<PathBuf>)>,
+    open_with: &mut Option<(PathBuf, open_with::Apps)>,
     icons: &mut FileIcons,
     network: &Network,
     actions: &mut Vec<Action>,
 ) {
-    if ui.button(RichText::new("Open").font(theme::bold(theme::FONT_SIZE))).clicked() {
+    let inside = archive::is_inside(&entry.path);
+    if ui.add(gutter_item(ui, RichText::new("Open").font(theme::bold(theme::FONT_SIZE)), String::new())).clicked() {
         actions.push(Action::Open(entry.path.clone()));
     }
     // After Finder's -[TBaseBrowserViewController cmdShowPackageContents:]:
-    // the package opens as a folder in the same window.
-    if entry.kind == RenameKind::Package && ui.button("Show Package Contents").clicked() {
+    // the package opens as a folder in the same window. An archive gets the
+    // same entry, as it opens with its program like an app does.
+    let is_archive = !inside && entry.kind == RenameKind::File && archive::format_of(&entry.name).is_some_and(archive::Format::browsable);
+    if (entry.kind == RenameKind::Package || is_archive) && ui.add(gutter_item(ui, "Show Package Contents", String::new())).clicked() {
         actions.push(Action::Navigate(entry.path.clone()));
     }
     if open_with::SUPPORTED && entry.kind == RenameKind::File {
         open_with_menu(ui, &entry.path, open_with, icons, actions);
     }
-    if ui.button(platform::REVEAL_LABEL).clicked() {
+    if is_archive && ui.add(gutter_item(ui, "Extract All...", String::new())).clicked() {
+        actions.push(Action::ExtractAll(entry.path.clone()));
+    }
+    if inside && ui.add(gutter_item(ui, "Extract...", String::new())).clicked() {
+        actions.push(Action::ExtractSelected);
+    }
+    if ui.add(gutter_item(ui, platform::REVEAL_LABEL, String::new())).clicked() {
         actions.push(Action::RevealInFinder(entry.path.clone()));
     }
     #[cfg(unix)]
-    if entry.kind == RenameKind::Folder && ui.button(TERMINAL_LABEL).clicked() {
+    if !inside && entry.kind == RenameKind::Folder && ui.add(gutter_item(ui, TERMINAL_LABEL, String::new())).clicked() {
         actions.push(Action::OpenTerminal(entry.path.clone()));
     }
     #[cfg(unix)]
-    if is_ejectable(&entry.path) && ui.button("Eject").clicked() {
+    if !inside && is_ejectable(&entry.path) && ui.add(gutter_item(ui, "Eject", String::new())).clicked() {
         actions.push(Action::Eject(entry.path.clone()));
     }
     // Windows 2000's Send To, with the LocalSend devices nearby.
-    delayed_menu_button(ui, "Send To", false, |ui| {
+    delayed_menu_button(ui, "Send To", |ui| {
         let mut net = Vec::new();
         network.send_to_items(ui, &mut net);
         actions.extend(net.into_iter().map(Action::Network));
     });
     ui.separator();
-    if ui.add(menu_item("Cut", platform::shortcut(false, "X"))).clicked() {
+    if !inside && ui.add(gutter_item(ui, "Cut", platform::shortcut(false, "X"))).clicked() {
         actions.push(Action::Cut);
     }
-    if ui.add(menu_item("Copy", platform::shortcut(false, "C"))).clicked() {
+    if ui.add(gutter_item(ui, "Copy", platform::shortcut(false, "C"))).clicked() {
         actions.push(Action::Copy);
     }
-    if ui.add(menu_item("Copy as Path", platform::shortcut(true, "C"))).clicked() {
+    if ui.add(gutter_item(ui, "Copy as Path", platform::shortcut(true, "C"))).clicked() {
         actions.push(Action::CopyAsPath);
     }
-    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, menu_item("Paste", platform::shortcut(false, "V"))).clicked() {
+    if inside {
+        return;
+    }
+    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
         actions.push(Action::Paste(Some(entry.path.clone())));
     }
-    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, menu_item("Move Here", platform::shortcut(true, "V"))).clicked() {
+    if entry.kind == RenameKind::Folder && ui.add_enabled(can_paste, gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
         actions.push(Action::MoveHere(Some(entry.path.clone())));
     }
     ui.separator();
-    if ui.add(menu_item("Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
+    if ui.add(gutter_item(ui, "Delete", platform::shortcut(false, if cfg!(target_os = "macos") { "⌫" } else { "Backspace" }))).clicked() {
         actions.push(Action::Delete);
     }
-    if ui.add(menu_item("Rename", "F2".to_owned())).clicked() {
+    if ui.add(gutter_item(ui, "Rename", "F2".to_owned())).clicked() {
         actions.push(Action::BeginRename);
     }
     ui.separator();
-    if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
+    if ui.add(gutter_item(ui, "Properties", platform::shortcut(false, "I"))).clicked() {
         actions.push(Action::ItemProperties(entry.path.clone()));
     }
 }
 
-/// The context menu for empty space in the item view.
+/// The context menu for empty space in the item view. In an archive:
+/// Refresh and Extract All.
 fn background_menu(ui: &mut Ui, folder: &Path, can_paste: bool, actions: &mut Vec<Action>) {
-    if ui.add_enabled(can_paste, menu_item("Paste", platform::shortcut(false, "V"))).clicked() {
+    if let Some((archive, _)) = archive::split(folder) {
+        if ui.add(gutter_item(ui, "Extract All...", String::new())).clicked() {
+            actions.push(Action::ExtractAll(archive));
+        }
+        ui.separator();
+        if ui.add(gutter_item(ui, "Refresh", platform::shortcut(false, "R"))).clicked() {
+            actions.push(Action::Refresh);
+        }
+        return;
+    }
+    if ui.add_enabled(can_paste, gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
         actions.push(Action::Paste(None));
     }
-    if ui.add_enabled(can_paste, menu_item("Move Here", platform::shortcut(true, "V"))).clicked() {
+    if ui.add_enabled(can_paste, gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
         actions.push(Action::MoveHere(None));
     }
     ui.separator();
-    if ui.add(menu_item("Refresh", platform::shortcut(false, "R"))).clicked() {
+    if ui.add(gutter_item(ui, "Refresh", platform::shortcut(false, "R"))).clicked() {
         actions.push(Action::Refresh);
     }
     #[cfg(unix)]
-    if ui.button(TERMINAL_LABEL).clicked() {
+    if ui.add(gutter_item(ui, TERMINAL_LABEL, String::new())).clicked() {
         actions.push(Action::OpenTerminal(folder.to_path_buf()));
     }
     ui.separator();
-    delayed_menu_button(ui, "New", false, |ui| {
-        if ui.button("Folder").clicked() {
+    delayed_menu_button(ui, "New", |ui| {
+        if ui.add(gutter_item(ui, "Folder", String::new())).clicked() {
             actions.push(Action::NewFolder);
         }
     });
     ui.separator();
-    if ui.add(menu_item("Properties", platform::shortcut(false, "I"))).clicked() {
+    if ui.add(gutter_item(ui, "Properties", platform::shortcut(false, "I"))).clicked() {
         actions.push(Action::Properties(folder.to_path_buf()));
     }
 }
@@ -3860,22 +4453,25 @@ fn cell_text(entry: &Entry, column: Column) -> String {
 }
 
 /// The column header's context menu (`CDefView::OnVisibleColumnMenu`):
-/// a check per column, then "More...".
+/// a check per column, then "More..." and, not from Explorer, "Reset Sorting
+/// and Widths".
 fn header_menu(ui: &mut Ui, columns: &ColumnSet, actions: &mut Vec<Action>) {
     let (items, more) = columns.menu();
     for item in items {
         let mut checked = item.checked;
-        if ui.add_enabled(item.enabled, egui::Checkbox::new(&mut checked, item.column.caption())).clicked() {
+        if ui.add_enabled_ui(item.enabled, |ui| egui_classic_menu::checkbox(ui, &mut checked, item.column.caption())).inner.clicked() {
             actions.push(Action::ToggleColumn(item.column));
             ui.close();
         }
     }
-    if more {
-        ui.separator();
-        if ui.button("More...").clicked() {
-            actions.push(Action::ChooseColumns);
-            ui.close();
-        }
+    ui.separator();
+    if more && ui.add(gutter_item(ui, "More...", String::new())).clicked() {
+        actions.push(Action::ChooseColumns);
+        ui.close();
+    }
+    if ui.add(gutter_item(ui, "Reset Sorting and Widths", String::new())).clicked() {
+        actions.push(Action::ResetColumns);
+        ui.close();
     }
 }
 
@@ -4013,6 +4609,7 @@ fn tree_row(
     ui: &mut Ui,
     icons: &mut FileIcons,
     row: &Row,
+    kind: DriveKind,
     guide: &Guide,
     scroll: Option<Scroll>,
     focused: bool,
@@ -4034,7 +4631,13 @@ fn tree_row(
         return;
     }
     if row.depth == 0 && row.section == Section::Locations {
-        theme::paint_icon(p, icon_rect, Icon::Drive, true);
+        let icon = match kind {
+            DriveKind::Fixed => Icon::Drive,
+            DriveKind::Removable => Icon::RemovableDrive,
+            DriveKind::Optical => Icon::OpticalDrive,
+            DriveKind::Network => Icon::NetworkDrive,
+        };
+        theme::paint_icon(p, icon_rect, icon, true);
     } else {
         icons.paint_tree_folder(ui, icon_rect, &row.key.path);
     }
@@ -4092,30 +4695,37 @@ fn tree_row(
     egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| {
         if row.expandable {
             let label = if row.expanded { "Collapse" } else { "Expand" };
-            if ui.button(RichText::new(label).font(theme::bold(theme::FONT_SIZE))).clicked() {
+            if ui.add(gutter_item(ui, RichText::new(label).font(theme::bold(theme::FONT_SIZE)), String::new())).clicked() {
                 actions.push(Action::TreeToggle(row.key.clone()));
             }
         }
-        if ui.button("Open").clicked() {
+        if ui.add(gutter_item(ui, "Open", String::new())).clicked() {
             actions.push(Action::TreeSelect(row.key.clone()));
         }
-        if ui.button(platform::REVEAL_LABEL).clicked() {
+        if ui.add(gutter_item(ui, platform::REVEAL_LABEL, String::new())).clicked() {
             actions.push(Action::RevealInFinder(row.key.path.clone()));
         }
         #[cfg(unix)]
-        if ui.button(TERMINAL_LABEL).clicked() {
+        if ui.add(gutter_item(ui, TERMINAL_LABEL, String::new())).clicked() {
             actions.push(Action::OpenTerminal(row.key.path.clone()));
         }
         #[cfg(unix)]
-        if is_ejectable(&row.key.path) && ui.button("Eject").clicked() {
+        if is_ejectable(&row.key.path) && ui.add(gutter_item(ui, "Eject", String::new())).clicked() {
             actions.push(Action::Eject(row.key.path.clone()));
         }
         ui.separator();
-        if ui.button("Properties").clicked() {
+        if ui.add(gutter_item(ui, TREE_SHOW_OPEN_LABEL, String::new())).clicked() {
+            actions.push(Action::ShowInTree);
+        }
+        if ui.add(gutter_item(ui, "Properties", String::new())).clicked() {
             actions.push(Action::Properties(row.key.path.clone()));
         }
     });
 }
+
+/// The Folders pane menu's way back to the open folder, after Windows 10's
+/// navigation pane command of the same name.
+const TREE_SHOW_OPEN_LABEL: &str = "Expand to current folder";
 
 /// The keys the Folders pane handles, see [`tree_key_action`].
 const TREE_KEYS: [Key; 10] =
@@ -4165,6 +4775,11 @@ fn favorite_emblems() -> HashMap<PathBuf, macsplorer_core::folder_style::Emblem>
     favorites().into_iter().filter_map(|p| macsplorer_core::folder_style::read(&p.path).emblem.map(|e| (p.path, e))).collect()
 }
 
+/// The kind of each mounted volume, by path.
+fn drive_kinds() -> HashMap<PathBuf, DriveKind> {
+    volumes().into_iter().map(|v| (v.path.clone(), drive_kind(&v.path))).collect()
+}
+
 fn tree_roots() -> Vec<Root> {
     let favs = favorites();
     let vols = volumes();
@@ -4191,21 +4806,15 @@ fn place_label(p: &Path) -> String {
     p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// The view modes as radio items, for the View menu and the Views button.
-/// A menu entry with its keyboard shortcut at the right edge in the weak
-/// (muted) text color, like macOS menus.
-fn menu_item(label: &str, keys: String) -> egui::Button<'_> {
-    egui::Button::new(label).shortcut_text(RichText::new(keys).family(theme::shortcut_family()))
-}
-
-/// [`menu_item`] between the check mark and arrow gutters, so the labels and
+/// A menu row between the check mark and arrow gutters, so the labels and
 /// shortcuts of a menu bar dropdown line up the way Windows' do. No shortcut
 /// when `keys` is empty.
-fn gutter_item(ui: &Ui, label: &str, keys: String) -> egui::Button<'static> {
+fn gutter_item(ui: &Ui, label: impl Into<RichText>, keys: String) -> egui::Button<'static> {
     let shortcut = (!keys.is_empty()).then(|| RichText::new(keys).family(theme::shortcut_family()));
     egui_classic_menu::item(ui, label, shortcut)
 }
 
+/// The view modes as radio items, for the View menu and the Views button.
 fn view_choices(ui: &mut Ui, current: ViewMode, actions: &mut Vec<Action>) {
     for (mode, label) in [(ViewMode::LargeIcons, "Large Icons"), (ViewMode::List, "List"), (ViewMode::Details, "Details")] {
         if egui_classic_menu::radio(ui, current == mode, label).clicked() {
@@ -4235,6 +4844,22 @@ fn expand_tilde(input: &str, home: Option<&Home>) -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn dialogs_hide_the_pointer_from_the_window_behind() {
+        let rect = |x: f32, y: f32, w: f32, h: f32| Some(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)));
+        let dialog_id = egui::ViewportId::from_hash_of("dialog");
+        let mut viewports = egui::ViewportIdMap::default();
+        viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: rect(100.0, 100.0, 800.0, 600.0), focused: Some(false), ..Default::default() });
+        // No dialog open.
+        assert!(!pointer_under_dialog(&viewports, egui::pos2(50.0, 50.0)));
+        viewports.insert(dialog_id, egui::ViewportInfo { outer_rect: rect(200.0, 200.0, 300.0, 300.0), ..Default::default() });
+        assert!(pointer_under_dialog(&viewports, egui::pos2(150.0, 150.0)), "inside the dialog");
+        assert!(!pointer_under_dialog(&viewports, egui::pos2(10.0, 10.0)), "beside the dialog");
+        // The main window was clicked, so it is in front of the dialog.
+        viewports.get_mut(&egui::ViewportId::ROOT).unwrap().focused = Some(true);
+        assert!(!pointer_under_dialog(&viewports, egui::pos2(150.0, 150.0)));
+    }
 
     #[test]
     fn pasted_paths_lose_their_quotes() {
@@ -4333,6 +4958,22 @@ mod tests {
         assert_eq!(app.saved_columns, Some(stored));
         assert_eq!(app.settings.view, ViewMode::List);
         assert_eq!((app.sort.column, app.sort.ascending), (Column::Modified, false));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reset_columns_restores_sort_and_widths_but_not_the_shown_columns() {
+        let dir = std::env::temp_dir().join(format!("macsplorer-reset-columns-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut app = Explorer::new(egui::Context::default(), dir.clone());
+        app.columns.set_visible(&[Column::Name, Column::Modified]);
+        app.columns.set_width(Column::Name, 410.0);
+        app.sort.column = Column::Modified;
+        app.sort.ascending = false;
+        app.apply(vec![Action::ResetColumns], &[]);
+        assert_eq!((app.sort.column, app.sort.ascending), (Column::Name, true));
+        assert_eq!(app.columns.width(Column::Name), Column::Name.default_width());
+        assert_eq!(app.columns.visible(), [Column::Name, Column::Modified]);
         fs::remove_dir_all(&dir).unwrap();
     }
 }
@@ -4756,6 +5397,198 @@ mod clipboard {
 }
 
 #[cfg(test)]
+mod archives {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+
+    /// A folder with `a.zip` (`top.txt` and `docs/readme.txt`) and an empty `sub`.
+    fn explorer(name: &str, password: Option<&str>) -> (Explorer, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("macsplorer-archives-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        let zip_path = dir.join("a.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+        let plain = zip::write::SimpleFileOptions::default();
+        let options = match password {
+            Some(pw) => plain.with_aes_encryption(zip::AesMode::Aes256, pw),
+            None => plain,
+        };
+        zip.start_file("top.txt", options).unwrap();
+        zip.write_all(b"top").unwrap();
+        zip.start_file("docs/readme.txt", options).unwrap();
+        zip.write_all(b"read me").unwrap();
+        zip.finish().unwrap();
+        let mut app = Explorer::new(egui::Context::default(), dir.clone());
+        app.pb = Pasteboard::private();
+        app.finish_listing();
+        (app, dir, zip_path)
+    }
+
+    fn names(app: &Explorer) -> Vec<&str> {
+        let mut names: Vec<&str> = app.entries.iter().map(|e| e.name.as_str()).collect();
+        names.sort();
+        names
+    }
+
+    /// Runs archive jobs until none is left.
+    fn wait(app: &mut Explorer) {
+        for _ in 0..500 {
+            app.poll_archive();
+            app.poll_ops();
+            if app.transfers.iter().all(|t| t.finished) && app.status.is_none() {
+                return;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("still busy: {:?}", app.status);
+    }
+
+    #[test]
+    fn a_zip_shows_its_contents_as_a_folder_and_up_leaves_it() {
+        let (mut app, dir, zip) = explorer("browse", None);
+        app.apply(vec![Action::Navigate(zip.clone())], &[]);
+        app.finish_listing();
+        assert_eq!(app.current(), zip);
+        assert_eq!(app.archive_open.as_deref(), Some(zip.as_path()));
+        assert_eq!(names(&app), ["docs", "top.txt"]);
+        app.open(zip.join("docs"));
+        app.finish_listing();
+        assert_eq!(names(&app), ["readme.txt"]);
+        // The Folders pane shows the folder the archive is in.
+        assert_eq!(app.tree_folder(), dir);
+        app.apply(vec![Action::Up, Action::Up], &[]);
+        app.finish_listing();
+        assert_eq!(app.current(), dir);
+        assert_eq!(app.archive_open, None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn go_to_a_file_in_a_zip_shows_it_in_its_folder() {
+        let (mut app, dir, zip) = explorer("goto", None);
+        app.go_to(zip.join("docs/readme.txt"));
+        app.finish_listing();
+        assert_eq!(app.current(), zip.join("docs"));
+        assert_eq!(app.selection, BTreeSet::from([zip.join("docs/readme.txt")]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn nothing_in_a_zip_can_be_changed() {
+        let (mut app, dir, zip) = explorer("readonly", None);
+        app.navigate(zip.clone());
+        app.finish_listing();
+        app.selection = BTreeSet::from([zip.join("top.txt")]);
+        for action in [Action::Delete, Action::BeginRename, Action::NewFolder, Action::Cut, Action::Paste(None)] {
+            app.status = None;
+            app.apply(vec![action], &[]);
+            assert_eq!(app.status.as_ref().map(|s| s.text.as_str()), Some(READ_ONLY));
+        }
+        assert!(app.rename.is_none());
+        app.finish_listing();
+        assert_eq!(names(&app), ["docs", "top.txt"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_drop_out_of_a_zip_copies_and_undo_removes_the_copy() {
+        let (mut app, dir, zip) = explorer("drop", None);
+        app.transfer(vec![zip.join("docs")], dir.join("sub"), true);
+        wait(&mut app);
+        assert_eq!(fs::read(dir.join("sub/docs/readme.txt")).unwrap(), b"read me");
+        // A zip folder never moves: it is still there.
+        assert!(archive::entry(&zip.join("docs/readme.txt")).is_some());
+        app.undo_last();
+        for _ in 0..200 {
+            app.poll_ops();
+            if !dir.join("sub/docs").exists() {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!dir.join("sub/docs").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn extract_all_makes_the_folder_and_goes_there() {
+        let (mut app, dir, zip) = explorer("all", None);
+        // In a temporary folder, as this one is, Extract All suggests Documents.
+        assert_eq!(archive::default_destination(&zip).file_name(), Some("a".as_ref()));
+        app.run_archive_job(ArchiveJob::Extract { archive: zip.clone(), items: Vec::new(), dest: dir.join("a"), show: true });
+        wait(&mut app);
+        app.finish_listing();
+        assert_eq!(fs::read(dir.join("a/top.txt")).unwrap(), b"top");
+        assert_eq!(fs::read(dir.join("a/docs/readme.txt")).unwrap(), b"read me");
+        assert_eq!(app.current(), dir.join("a"));
+        assert_eq!(names(&app), ["docs", "top.txt"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn extract_takes_out_only_the_selected_items() {
+        let (mut app, dir, zip) = explorer("some", None);
+        app.apply(vec![Action::Navigate(zip.clone())], &[]);
+        app.finish_listing();
+        app.selection = BTreeSet::from([zip.join("top.txt"), zip.join("docs/readme.txt")]);
+        app.apply(vec![Action::ExtractSelected], &[]);
+        let dialog = app.extract_dialog.as_ref().expect("the Extract window opens");
+        assert_eq!(dialog.items, ["docs/readme.txt", "top.txt"]);
+        app.extract_dialog = None;
+        let dest = dir.join("b");
+        app.run_archive_job(ArchiveJob::Extract { archive: zip.clone(), items: vec!["top.txt".into(), "docs/readme.txt".into()], dest: dest.clone(), show: false });
+        wait(&mut app);
+        assert_eq!(fs::read(dest.join("top.txt")).unwrap(), b"top");
+        assert_eq!(fs::read(dest.join("readme.txt")).unwrap(), b"read me");
+        assert!(!dest.join("docs").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_encrypted_zip_asks_for_the_password_and_runs_again_with_it() {
+        let (mut app, dir, zip) = explorer("password", Some("sesame"));
+        let job = ArchiveJob::Extract { archive: zip.clone(), items: Vec::new(), dest: dir.join("a"), show: false };
+        app.run_archive_job(job.clone());
+        wait(&mut app);
+        assert!(app.password_dialog.is_some());
+        assert!(!dir.join("a").exists());
+        // A wrong one asks again.
+        app.password_dialog = None;
+        app.passwords.insert(zip.clone(), "wrong".into());
+        app.run_archive_job(job.clone());
+        wait(&mut app);
+        assert!(app.password_dialog.is_some() && !app.passwords.contains_key(&zip));
+        app.password_dialog = None;
+        app.passwords.insert(zip.clone(), "sesame".into());
+        app.run_archive_job(job);
+        wait(&mut app);
+        assert!(app.password_dialog.is_none());
+        assert_eq!(fs::read(dir.join("a/top.txt")).unwrap(), b"top");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn copy_in_a_zip_puts_extracted_files_on_the_clipboard() {
+        let (mut app, dir, zip) = explorer("copy", None);
+        app.navigate(zip.clone());
+        app.finish_listing();
+        app.selection = BTreeSet::from([zip.join("top.txt")]);
+        app.apply(vec![Action::Copy], &[]);
+        wait(&mut app);
+        let copied = app.clipboard.as_ref().map(|c| c.paths.clone()).unwrap_or_default();
+        assert_eq!(copied.len(), 1);
+        assert_eq!(fs::read(&copied[0]).unwrap(), b"top");
+        app.navigate(dir.join("sub"));
+        app.finish_listing();
+        app.apply(vec![Action::Paste(None)], &[]);
+        wait(&mut app);
+        assert_eq!(fs::read(dir.join("sub/top.txt")).unwrap(), b"top");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod screenshot {
     use super::*;
     use egui_kittest::Harness;
@@ -4782,6 +5615,7 @@ mod screenshot {
             fs::write(dir.join(name), vec![b'x'; 1_500]).unwrap();
         }
         fs::write(dir.join(".gitignore"), "target\n").unwrap();
+        make_zip(&dir.join("archive.zip"));
         make_repo(&dir.join("Projects"));
         {
             use std::os::unix::fs::PermissionsExt;
@@ -4792,6 +5626,19 @@ mod screenshot {
         // A relative link to a file.
         let _ = std::os::unix::fs::symlink("notes.txt", dir.join("Link to notes.txt"));
         dir
+    }
+
+    /// A real zip, to look inside: a few files and folders like a download's.
+    fn make_zip(path: &Path) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, size) in [("docs/manual.pdf", 120_000), ("src/main.rs", 4_200), ("src/lib.rs", 9_800), ("README.md", 2_100), ("LICENSE", 1_070), ("Cargo.toml", 640)] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(&b"lorem ipsum dolor sit amet ".repeat(size / 27)).unwrap();
+        }
+        zip.add_directory("assets/", options).unwrap();
+        zip.finish().unwrap();
     }
 
     /// Turns `dir` into a Git repository on `main` with one change staged, one
@@ -4860,12 +5707,60 @@ mod screenshot {
         image.save(out.join(format!("{name}.png"))).unwrap();
     }
 
+    /// The Folders pane's drive icons, one per kind of drive.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn drive_icons() {
+        shoot("drive-icons", egui::vec2(300.0, 300.0), |app| {
+            let drives = [
+                ("USB Stick", "/usr", DriveKind::Removable),
+                ("Install DVD", "/etc", DriveKind::Optical),
+                ("Team Share", "/var", DriveKind::Network),
+                // Last, because the open folder is under it and so it unfolds.
+                ("Macintosh HD", "/", DriveKind::Fixed),
+            ];
+            let roots = drives.iter().map(|&(label, path, _)| Root { label: label.into(), path: path.into(), section: Section::Locations }).collect();
+            app.tree.set_roots(roots);
+            app.drives = drives.iter().map(|&(_, path, kind)| (PathBuf::from(path), kind)).collect();
+            app.settings.show_folders = true;
+        });
+    }
+
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
     fn window() {
         shoot("window", egui::vec2(900.0, 560.0), |app| {
             let pick = app.entries.iter().find(|e| e.name == "main.rs").map(|e| e.path.clone());
             app.selection.extend(pick);
+        });
+    }
+
+    /// Inside a zip, browsed like a folder.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn archive_folder() {
+        shoot("archive-folder", egui::vec2(900.0, 460.0), |app| {
+            let zip = app.current().join("archive.zip");
+            app.navigate(zip.clone());
+            app.finish_listing();
+            app.selection.insert(zip.join("README.md"));
+        });
+    }
+
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn extract_dialog() {
+        let dialog = crate::extract_dialog::ExtractDialog::new(PathBuf::from("/Users/me/Downloads/macsplorer-1.6.0.zip"), Vec::new(), Path::new("/Users/me/Downloads/macsplorer-1.6.0"), Some(&Home::new(PathBuf::from("/Users/me"))), true);
+        shoot_dialog("extract-all", crate::extract_dialog::SIZE, dialog, |ui, d| {
+            d.ui(ui);
+        });
+    }
+
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn password_dialog() {
+        shoot_dialog("password-needed", crate::password_dialog::SIZE, PasswordDialog::new("budget.xlsx".into(), false), |ui, d| {
+            d.ui(ui);
         });
     }
 
@@ -5547,6 +6442,14 @@ mod screenshot {
             },
             (AboutDialog::new(), false),
         );
+        // SHOT_UPDATE picks what the update line shows: available, current or error.
+        let release = update_check::Release { version: "1.5.0".into(), page: Some("https://github.com/jbrunemann/macsplorer/releases/tag/v1.5.0".into()) };
+        match std::env::var("SHOT_UPDATE").as_deref() {
+            Ok("available") => harness.state_mut().0.set_result(Ok(update_check::Status::Available(release))),
+            Ok("current") => harness.state_mut().0.set_result(Ok(update_check::Status::UpToDate { latest: "1.4.1".into() })),
+            Ok("error") => harness.state_mut().0.set_result(Err(update_check::Error::Fetch("The requested URL returned error: 403".into()))),
+            _ => {}
+        }
         for _ in 0..3 {
             harness.run();
         }

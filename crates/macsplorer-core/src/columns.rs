@@ -88,6 +88,12 @@ impl Column {
         self == Column::Size
     }
 
+    /// The direction a first click on the heading sorts in: Size and Modified
+    /// start with the biggest and the newest. Not traced from Explorer.
+    pub fn first_sort_ascending(self) -> bool {
+        !matches!(self, Column::Size | Column::Modified)
+    }
+
     /// Listed in the header menu only while shown, otherwise only under
     /// "More..." (`SHCOLSTATE_SECONDARYUI`).
     pub fn secondary(self) -> bool {
@@ -184,6 +190,12 @@ impl ColumnSet {
 
     pub fn set_width(&mut self, column: Column, width: f32) {
         self.widths[column.index()] = width.max(0.0);
+    }
+
+    /// Every column back to its default width. Which columns are shown, and
+    /// their order, stay. Not from Explorer.
+    pub fn reset_widths(&mut self) {
+        self.widths = Column::ALL.iter().map(|c| c.default_width()).collect();
     }
 
     /// The shown columns' widths, left to right, for [`hit_test`].
@@ -382,6 +394,13 @@ mod tests {
 
     const W: [f32; 3] = [100.0, 50.0, 20.0];
 
+    #[test]
+    fn size_and_modified_sort_descending_first() {
+        assert!(Column::Name.first_sort_ascending());
+        assert!(!Column::Size.first_sort_ascending());
+        assert!(!Column::Modified.first_sort_ascending());
+    }
+
     impl ColumnSet {
         fn widths(&self) -> Vec<f32> {
             Column::ALL.iter().map(|&c| self.width(c)).collect()
@@ -390,6 +409,19 @@ mod tests {
 
     fn names(v: &[Column]) -> Vec<&'static str> {
         v.iter().map(|c| c.caption()).collect()
+    }
+
+    #[test]
+    fn reset_widths_keeps_the_shown_columns() {
+        let mut set = ColumnSet::default();
+        set.toggle(Column::Owner);
+        set.set_width(Column::Name, 410.0);
+        set.set_width(Column::Owner, 33.0);
+        let shown = set.visible();
+        set.reset_widths();
+        assert_eq!(set.width(Column::Name), Column::Name.default_width());
+        assert_eq!(set.width(Column::Owner), Column::Owner.default_width());
+        assert_eq!(set.visible(), shown);
     }
 
     #[test]

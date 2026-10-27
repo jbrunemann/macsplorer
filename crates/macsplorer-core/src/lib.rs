@@ -3,6 +3,7 @@
 //! Behaviors marked as Explorer-derived are documented, with their evidence,
 //! in `docs/file-browser-findings.md`.
 
+pub mod archive;
 pub mod associations;
 pub mod autosuggest;
 pub mod bplist;

@@ -35,6 +35,9 @@ pub struct Incoming {
     pub dropped: bool,
 }
 
+/// Whether a drag can leave the window for another app ([`begin`]).
+pub const SUPPORTED: bool = cfg!(target_os = "macos");
+
 #[cfg(target_os = "macos")]
 pub use mac::{begin, incoming, install, set_answer};
 

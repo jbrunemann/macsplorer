@@ -478,10 +478,10 @@ impl Network {
         let resp = row(ui, 0, &root, icon, TITLE, true, self.expanded, selected, focused, false, actions);
         egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| {
             let label = if self.expanded { "Collapse" } else { "Expand" };
-            if ui.button(RichText::new(label).font(theme::bold(theme::FONT_SIZE))).clicked() {
+            if ui.add(egui_classic_menu::item(ui, RichText::new(label).font(theme::bold(theme::FONT_SIZE)), None)).clicked() {
                 actions.push(NetAction::Toggle);
             }
-            if ui.button("Search Again").clicked() {
+            if ui.add(egui_classic_menu::item(ui, "Search Again", None)).clicked() {
                 actions.push(NetAction::Rescan);
             }
             ui.separator();
@@ -516,7 +516,7 @@ impl Network {
             }
             let resp = resp.on_hover_text(describe(device));
             egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| {
-                let send = egui::Button::new(RichText::new("Send Selected Items").font(theme::bold(theme::FONT_SIZE)));
+                let send = egui_classic_menu::item(ui, RichText::new("Send Selected Items").font(theme::bold(theme::FONT_SIZE)), None);
                 if ui.add_enabled(can_send, send).clicked() {
                     actions.push(NetAction::SendSelection(key.clone()));
                 }

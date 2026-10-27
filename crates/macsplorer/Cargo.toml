@@ -8,9 +8,10 @@ chrono = "0.4.45"
 dirs = "7.0.0"
 eframe = "0.36.2"
 egui_extras = "0.36.2"
-egui-classic-menu = { version = "1.1.0", path = "../egui-classic-menu" }
-macsplorer-core = { version = "1.0.0", path = "../macsplorer-core" }
-localsend = { version = "1.4.0", path = "../localsend", default-features = false }
+egui-classic-menu = { version = "2.0.0", path = "../egui-classic-menu" }
+macsplorer-core = { version = "2.0.0", path = "../macsplorer-core" }
+update-check = { version = "2.0.0", path = "../update-check" }
+localsend = { version = "2.0.0", path = "../localsend", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [features]
@@ -20,10 +21,12 @@ localsend-tls = ["localsend/tls"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs", "aes-crypto"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSURL", "NSArray", "NSFileManager", "NSError", "NSDate", "NSDateFormatter", "NSFormatter", "NSLocale", "NSDictionary", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSURL", "NSArray", "NSBundle", "NSFileManager", "NSError", "NSDate", "NSDateFormatter", "NSFormatter", "NSLocale", "NSDictionary", "objc2-core-foundation"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext", "NSFont", "NSStringDrawing", "NSAttributedString", "NSView", "NSResponder", "NSWindow", "NSEvent", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSApplication", "NSCursor", "objc2-core-foundation"] }
 raw-window-handle = "0.6"
 

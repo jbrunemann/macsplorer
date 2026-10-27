@@ -33,7 +33,7 @@ Macsplorer is a file browser for your Mac. It looks and works like the Windows 2
 
 **More windows.** Choose **File › New Window** (⌘E, or ⌘N) to open a second window, for example to copy files from one folder to another. Each new window opens on the folder you're in and appears slightly offset from the one before.
 
-**Closing.** Click the red dot in the top left corner or the **×** in the top right corner, choose **File › Close**, or press ⌘Q.
+**Closing.** Click the folder icon in the top left corner (it turns into a red dot when you point at it) or the **×** in the top right corner, choose **File › Close**, or press ⌘Q.
 
 ## 2. The window at a glance
 
@@ -41,7 +41,7 @@ From top to bottom:
 
 | Part | What it does |
 |---|---|
-| **Title bar** | Shows the name of the folder you're in. Drag it to move the window. The red dot at the far left closes the window, as on other Mac windows. The buttons on the right minimize, maximize and close the window, and double-clicking the bar also maximizes it. |
+| **Title bar** | Shows the name of the folder you're in. Drag it to move the window. The folder icon at the far left turns into a red dot when you point at it, and clicking it closes the window, as on other Mac windows. The buttons on the right minimize, maximize and close the window, and double-clicking the bar also maximizes it. |
 | **Menu bar** | File, Edit, View and Help. |
 | **Toolbar** | Back, Forward, Up, Folders, Refresh, Undo and Views. Hold the pointer over a button to see what it does and its shortcut. |
 | **Address bar** | The path to the current folder. You can click any part of it. |
@@ -76,14 +76,14 @@ The summary and the **Branch** column need Git to be installed. Without it they 
 The tree on the left has three sections:
 
 - **Favorites**: your home folder, Desktop, Downloads, Documents, Pictures, Music, Movies, Applications and the Trash. Shortcuts (symbolic links) to folders that you keep directly in your home folder are listed too, just above the Trash.
-- **Locations**: your Mac, shown by its own name with a little monitor icon (it is only a label, nothing opens from it), then your Mac's disk, plus any USB sticks, external drives or network disks you have connected.
+- **Locations**: your Mac, shown by its own name with a little monitor icon (it is only a label, nothing opens from it), then your Mac's disk, plus any USB sticks, external drives or network disks you have connected. As in Windows 2000's My Computer, each kind of drive has its own icon: a gray drive for the Mac's own disk, the same with a slot for USB sticks, external drives and mounted disk images, a disc over a drive for CDs and DVDs, and a drive with a cable for disks on the network.
 - **Network**: **Network Neighborhood**, the phones, tablets and computers nearby that you can send files to. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby) and [Receiving files from a phone or computer nearby](#receiving-files-from-a-phone-or-computer-nearby).
 
 Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds, + and − do the same without moving, Home and End jump to the first and last folder, and Page Up and Page Down move a pageful at a time. Typing the first letters of a folder's name jumps to it, among the folders you can see. When you move with the keys, the folder opens on the right half a second after you stop, so you can run through the tree quickly without waiting for every folder on the way.
 
 As you move around, the tree follows you: it unfolds to and highlights the folder you're in. To turn that off, uncheck **View › Expand to open folder**.
 
-Right-click a folder in the tree for **Open**, **Properties**, and **Eject** for disks you can safely remove.
+Right-click a folder in the tree for **Open**, **Properties**, and **Eject** for disks you can safely remove. **File › Eject** does the same for the disk the open folder is on, and is dimmed when that disk can't be ejected (your Mac's own disk). The menu also has **Expand to current folder**, which takes the tree back to the folder you're looking at: it unfolds the way there, selects the folder and scrolls it into the middle. Use it when you have scrolled or folded the tree away, or when **Expand to open folder** is off. It's in the menu for empty space in the pane too.
 
 To hide the pane and give the files more room, click **Folders** on the toolbar or the **×** at the top of the pane. Click **Folders** again to bring it back.
 
@@ -119,7 +119,7 @@ Pick a view under **View**, or with the **Views** button at the right of the too
 
 A table with one row per item and columns for its name, size, the date it was last changed and its attributes. This is the view the app starts in.
 
-- **Sort** by clicking a column heading. Click it again to reverse the order. The small triangle shows which column is sorted and in which direction.
+- **Sort** by clicking a column heading. Click it again to reverse the order. Name and the other columns start from A to Z or oldest first; Size and Modified start with the biggest and the newest. The small triangle shows which column is sorted and in which direction.
 - **Resize a column** by dragging the line between two headings. Double-click the line to make the column just wide enough for its contents. Press Esc during the drag to cancel.
 
 **Choosing columns.** Right-click any column heading to turn columns on or off.
@@ -141,7 +141,9 @@ The available columns are:
 | **Owner**, **Group** | Which user and group it belongs to. |
 | **Branch** | The Git branch of a folder that is a Git repository, with the branch symbol in front. Blank for everything else. |
 
-Choose **More...** at the bottom of that menu for the **Column Settings** window. There you can check and uncheck columns, put them in a different order with **Move Up** and **Move Down**, and type an exact width for the selected column.
+Choose **Reset Sorting and Widths** at the bottom of that menu to sort by name again and give every column its original width. The columns you have shown stay as they are.
+
+Choose **More...** above it for the **Column Settings** window. There you can check and uncheck columns, put them in a different order with **Move Up** and **Move Down**, and type an exact width for the selected column.
 
 <img src="images/column-settings.png" alt="The Column Settings window" width="352">
 
@@ -162,6 +164,7 @@ Small icons with names, arranged in columns that run from top to bottom. When th
 ### What the icons tell you
 
 - **Yellow folders** are folders. The ones in your Favorites carry a small symbol, the same one Finder uses for them.
+- **A zipper** marks zip and tar archives: on a folder in Large Icons, on a paper page in the List and Details views. Show Package Contents opens them as a folder (see [Archives](#archives-zip-and-tar-files)). While you're inside one, the address bar shows the folder with the zipper.
 - **Paper pages** are files. A colored mark on the page shows the kind of file, for example a spreadsheet, a picture, a PDF or a program's source code. A plain page with gray lines is a file of a kind Macsplorer doesn't know.
 - **Apps**, and anything you have given a custom icon in Finder, show their real icon.
 
@@ -171,7 +174,7 @@ With **View › Special files in color** turned on (it is at first), some names 
 
 - **Green**: programs and scripts that can be run.
 - **Turquoise**: links (aliases) that point to another file or folder.
-- **Red**: archives such as `.zip` files and disk images, and links whose original has gone missing.
+- **Red**: archives such as `.zip` files and disk images, and links whose original has gone missing. Only the ones with a [zipper](#what-the-icons-tell-you) on their icon can be looked into with Show Package Contents; the others, such as `.rar` or `.dmg`, can't.
 
 ## 5. Selecting files
 
@@ -196,8 +199,10 @@ The status bar shows how many items you have selected and how much space they ta
 | Choice | What it does |
 |---|---|
 | **Open** | Same as a double-click. |
-| **Show Package Contents** | For apps and other packages: shows the files inside them as a folder instead of opening them. **Back** returns to where you were. |
-| **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons. **Choose Program...** opens a list where you pick an app, or use **Other...** for any app on your Mac. Tick **Always use this program to open these files** and double-clicking that kind of file (all `.jpg` and `.jpeg` files, say) opens it with that app from then on, in Macsplorer only. Finder isn't affected. |
+| **Show Package Contents** | For apps, other packages and zip and tar archives: shows the files inside them as a folder instead of opening them. **Back** returns to where you were. |
+| **Open With** | Pick another app to open the file with. The apps that can open it are listed with their icons, and the one the file opens with now (the one you chose, or else the Mac's default) is in bold and comes first. **Choose Program...** opens a list where you pick an app (the current one is marked "(default)"), or use **Other...** for any app on your Mac. Tick **Always use this program to open these files** and double-clicking that kind of file (all `.jpg` and `.jpeg` files, say) opens it with that app from then on, in Macsplorer only. Finder isn't affected. |
+| **Extract All...** | For `.zip` and `.tar` archives: copies everything in the archive into a folder. See [Archives](#archives-zip-and-tar-files). |
+| **Extract...** | Inside an archive: copies the selected items into a folder. |
 | **Show in Finder** | Opens a Finder window with the item selected. |
 | **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |
 | **Eject** | For disks and drives: safely disconnects them. |
@@ -211,13 +216,34 @@ The status bar shows how many items you have selected and how much space they ta
 
 Right-click an empty spot in the list for **Paste**, **Move Here**, **Refresh**, **New**, and **Properties** of the folder you're in. **New › Folder** makes a folder called New Folder (or New Folder (2) and so on if that name is taken) and lets you type its name right away.
 
+### Archives (zip and tar files)
+
+An archive is handled like an app: double-clicking it opens it with its program (Archive Utility, say), and **Show Package Contents** in its menu shows what's inside as a folder, like Windows' compressed folders. This works for `.zip`, `.tar`, `.tar.gz` (or `.tgz`), `.tar.bz2`, `.tar.xz` and `.tar.zst` files, with folders you can go into. Typing the archive's path in the address bar does the same. The address bar shows the way in, for example `~/Downloads/photos.zip/2026`, with the archive's name in red (when [colored names](#colored-names) are on), and **Up** or **Back** takes you out again. Their icon has a zipper. Other kinds of archive (`.7z`, `.rar`, `.cab`) keep their page icon and still open in their own app.
+
+<img src="images/archive-folder.png" alt="Inside a zip file" width="900">
+
+What's inside an archive can be looked at and copied, but not changed: **Rename**, **Delete**, **Cut**, **Paste** and **New Folder** aren't available there. To change the files, extract them first.
+
+- **Open a file** by double-clicking it. Macsplorer takes a copy out of the archive and opens that, so changes you make to it don't go back into the archive. An app inside an archive is taken out whole before it starts.
+- **Copy** files and paste them somewhere else, or **drag** them to a folder, to Finder or to another app. Dragging out of the window works for up to 64 MB at a time; for more, use Copy and Paste or Extract All.
+- **Extract...** (in the **File** menu or the menu for an item inside the archive) copies just the items you selected, one or many, into a folder. It asks for the folder the same way Extract All does, and folders come out with everything in them.
+- **Extract All...** (in the **File** menu, in the menu for the archive, or by right-clicking an empty spot inside it) copies everything into a folder. It suggests a folder next to the archive with the archive's name (or one in your Documents folder when the archive is in a temporary folder). Type another place if you like; `~` stands for your home folder. With **Show extracted files when complete** ticked, Macsplorer goes to that folder afterwards; Macsplorer remembers whether you ticked it.
+
+<img src="images/extract-all.png" alt="The Extract All window" width="460">
+
+A **password-protected zip** asks for its password the first time you open, copy or extract something from it, and remembers it until you close the window. If the password is wrong, it asks again.
+
+<img src="images/password-needed.png" alt="Asking for a zip file's password" width="380">
+
+Files that came from the internet stay marked that way when they come out of the archive, so your Mac checks an app from a downloaded zip before it opens, just as it does when you unzip it in Finder. The copies Macsplorer makes to open files are kept in its cache folder and removed a day later.
+
 ## 7. Renaming
 
 Start renaming in any of these ways:
 
 - select the item and press **F2**,
 - right-click it and choose **Rename**,
-- or click the name of an item that's already selected, then wait a moment.
+- or click the name of an item that's already selected, then wait a moment. If you'd rather not have this, turn off **View › Click to rename**.
 
 The name turns into a text box. Only the part before the extension is selected, so you can type a new name straight away without losing the `.txt` or `.pdf` at the end.
 
@@ -419,6 +445,7 @@ All of these are in the **View** menu.
 | **Expand to open folder** | Lets the Folders pane follow you to the folder you're in. |
 | **Natural number sorting** | Sorts numbers in names by their value, so "File 2" comes before "File 10". Turn it off to sort letter by letter. |
 | **Mix folders and files** | Sorts folders in between the files instead of putting them all at the top. |
+| **Click to rename** | Clicking the name of a selected item, then waiting a moment, starts [renaming](#7-renaming) it. Turn it off if that happens when you don't want it; **F2** and **Rename** still work. Macsplorer remembers this choice. |
 | **Refresh** | Reloads the list. |
 
 <img src="images/hidden-items.png" alt="Hidden files shown faded" width="900">
@@ -542,3 +569,8 @@ Check that LocalSend is open on it and that both are on the same network (guest 
 
 **Which version do I have?**
 Choose **Help › About Macsplorer**. A small window shows the app icon, the version, the locale (the region that dates and numbers follow, and the language names are sorted by) and the font the text is set in. When the font comes from a file, its location is a link: click it and the window closes and the font's folder opens with the file selected. Press OK, Return or Escape to close the window.
+
+**Is there a newer version?**
+Open **Help › About Macsplorer** and press **Check for Updates**. Macsplorer asks the project's releases page on GitHub for the newest version and says either that you have the latest one or which version is available, with a link to its download page. Macsplorer never checks by itself: nothing is sent until you press the button. The check needs `curl`, which every Mac has.
+
+The address it asks is the `update_url` entry in `~/Library/Application Support/macsplorer/settings.json` (**Help › Open config file** opens it). If the GitHub page ever disappears, change it to the address of a file that says what the newest version is, for example `{"version": "1.5.0", "url": "https://example.org/macsplorer"}`. GitHub's own "latest release" format works as well.

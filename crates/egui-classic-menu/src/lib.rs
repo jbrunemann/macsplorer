@@ -37,8 +37,8 @@ pub fn dot(p: &Painter, pos: Pos2, color: Color32) {
 
 /// A label between the two gutters. A `shortcut` goes left of the right
 /// gutter, in the weak text color.
-pub fn gutter_atoms(label: &str, shortcut: Option<RichText>) -> Atoms<'static> {
-    let mut atoms = Atoms::new(label.to_owned());
+pub fn gutter_atoms(label: impl Into<RichText>, shortcut: Option<RichText>) -> Atoms<'static> {
+    let mut atoms = Atoms::new(label.into());
     atoms.push_left(Atom::custom(Id::new(MARK_GUTTER), vec2(GUTTER, 13.0)));
     atoms.push_right(Atom::grow());
     if let Some(keys) = shortcut {
@@ -56,12 +56,12 @@ pub fn gap(ui: &Ui) -> f32 {
 
 /// A plain menu row with its label behind the left gutter, so it lines up
 /// with the marked rows. Add it with `ui.add`.
-pub fn item(ui: &Ui, label: &str, shortcut: Option<RichText>) -> Button<'static> {
+pub fn item(ui: &Ui, label: impl Into<RichText>, shortcut: Option<RichText>) -> Button<'static> {
     Button::new(gutter_atoms(label, shortcut)).gap(gap(ui))
 }
 
 /// A check mark row. Returns the response, `changed()` when it was toggled.
-pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
+pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: impl Into<RichText>) -> Response {
     let mut response = mark_row(ui, label, *checked, false);
     if response.clicked() {
         *checked = !*checked;
@@ -71,13 +71,13 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
 }
 
 /// A radio row: a bullet when `selected`.
-pub fn radio(ui: &mut Ui, selected: bool, label: &str) -> Response {
+pub fn radio(ui: &mut Ui, selected: bool, label: impl Into<RichText>) -> Response {
     mark_row(ui, label, selected, true)
 }
 
 /// A row that opens a submenu, with the arrow in the right gutter. `open` when
 /// its submenu is showing, which keeps the arrow white with the highlight.
-pub fn submenu_row(ui: &mut Ui, label: &str, open: bool) -> Response {
+pub fn submenu_row(ui: &mut Ui, label: impl Into<RichText>, open: bool) -> Response {
     let out = Button::new(gutter_atoms(label, None)).gap(gap(ui)).atom_ui(ui);
     let hot = open || is_hot(&out.response);
     if let Some(rect) = out.rect(Id::new(ARROW_GUTTER)) {
@@ -93,7 +93,7 @@ pub fn submenu_row(ui: &mut Ui, label: &str, open: bool) -> Response {
     out.response
 }
 
-fn mark_row(ui: &mut Ui, label: &str, marked: bool, radio: bool) -> Response {
+fn mark_row(ui: &mut Ui, label: impl Into<RichText>, marked: bool, radio: bool) -> Response {
     let out = Button::new(gutter_atoms(label, None)).gap(gap(ui)).atom_ui(ui);
     if let (true, Some(rect)) = (marked, out.rect(Id::new(MARK_GUTTER))) {
         let color = row_color(ui, is_hot(&out.response));
