@@ -206,8 +206,9 @@ impl Network {
             actions.push(NetAction::ToggleReceive);
             ui.close();
         }
-        if ui.button("Open Downloads").clicked() {
+        if ui.add(egui_classic_menu::item(ui, "Open Downloads", None)).clicked() {
             actions.push(NetAction::OpenDownloads);
+            ui.close();
         }
     }
 
