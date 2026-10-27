@@ -3822,11 +3822,7 @@ impl Explorer {
         p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
         let icon = egui::Rect::from_min_size(egui::pos2(right.left() + 4.0, right.center().y - 8.0), egui::vec2(16.0, 16.0));
         theme::paint_icon(p, icon, Icon::Computer, true);
-        // The computer, shared while it takes files from nearby devices; a
-        // click gives Receive Files.
-        if self.network.receiving() {
-            theme::paint_shared(p, icon);
-        }
+        // A click on the computer gives Receive Files.
         // Not over the size grip, which resizes the window.
         let hit = if grip { right.shrink(2.0).with_max_x(right.right() - 2.0 - theme::GRIP_WIDTH) } else { right.shrink(2.0) };
         let pane = ui.interact(hit, egui::Id::new("status-computer"), Sense::click()).on_hover_text(self.network.computer_tooltip());

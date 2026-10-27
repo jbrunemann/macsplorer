@@ -333,9 +333,9 @@ The first time, your Mac may ask whether Macsplorer may find devices on your loc
 
 Macsplorer can also take files that a phone, tablet or computer sends with LocalSend. This is off until you turn it on: right-click **Network Neighborhood** and choose **Receive Files**, or click your computer's name at the right end of the status bar and choose it there. Macsplorer remembers it, in every window, until you turn it off the same way.
 
-While it is on, other devices list your Mac in LocalSend under the name in the status bar, and a hand under the computer there and under Network Neighborhood's icon shows that your Mac is open to them, the way Windows showed a shared folder. Point at the computer to see the name the others see.
+While it is on, other devices list your Mac in LocalSend under the name in the status bar, and a hand under Network Neighborhood's icon shows that your Mac is open to them, the way Windows showed a shared folder. Point at the computer to see the name the others see.
 
-<img src="images/receiving.png" alt="The status bar's computer with the sharing hand, and its menu with Receive Files checked" width="560">
+<img src="images/receiving.png" alt="Network Neighborhood's icon with the sharing hand, and the status bar computer's menu with Receive Files checked" width="560">
 
 When someone sends you files, Macsplorer asks first. It shows who is sending, from what kind of device and network address, and which files, with their sizes:
 
@@ -564,7 +564,7 @@ Check that the search box is empty, then turn on **View › Hidden files and fol
 Both need Git to be installed on your Mac. Macsplorer looks for it when it starts, so if you install Git while Macsplorer is open, close and reopen it. If you have Git and they still don't show, [Git repositories](#git-repositories) explains when they appear. After changes made by other programs, press ⌘R to bring the summary up to date.
 
 **My phone can't find my Mac in LocalSend.**
-Check that **Receive Files** is on: the computer at the right end of the status bar has a hand under it. Then refresh the list in LocalSend on the phone. Both have to be on the same network, as for sending.
+Check that **Receive Files** is on: Network Neighborhood's icon has a hand under it, and the menu of the computer at the right end of the status bar shows a check mark by it. Then refresh the list in LocalSend on the phone. Both have to be on the same network, as for sending.
 
 **My phone doesn't show up in Network Neighborhood.**
 Check that LocalSend is open on it and that both are on the same network (guest Wi-Fi networks often keep devices apart). Then right-click Network Neighborhood and choose **Search Again**. If your Mac asked about finding devices on your local network and you said no, see [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).
