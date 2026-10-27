@@ -77,6 +77,8 @@ impl Default for Options {
 /// announcements are done once, at the start.
 pub struct Scan {
     stop: Arc<AtomicBool>,
+    /// Stops the sweep alone; the listener goes on.
+    cancelled: Arc<AtomicBool>,
     sweeping: Arc<AtomicUsize>,
     /// The addresses of the sweep and how many were taken so far.
     sweep: Option<(Arc<Vec<Ipv4Addr>>, Arc<AtomicUsize>)>,
@@ -106,6 +108,7 @@ impl Scan {
     pub fn start(me: Me, options: Options, found: impl Fn(Device) + Send + Sync + 'static) -> Scan {
         let stop = Arc::new(AtomicBool::new(false));
         let sweeping = Arc::new(AtomicUsize::new(0));
+        let cancelled = Arc::new(AtomicBool::new(false));
         let found: Arc<dyn Fn(Device) + Send + Sync> = Arc::new(found);
         let interfaces = local_ipv4();
         let mine = me.fingerprint.clone();
@@ -133,10 +136,10 @@ impl Scan {
             let agent = crate::send::agent(&me, Some(INFO_TIMEOUT));
             sweeping.store(SWEEP_THREADS, Ordering::Relaxed);
             for _ in 0..SWEEP_THREADS {
-                let (stop, hosts, next, agent, report, sweeping) =
-                    (stop.clone(), hosts.clone(), next.clone(), agent.clone(), report.clone(), sweeping.clone());
+                let (stop, cancelled, hosts, next, agent, report, sweeping) =
+                    (stop.clone(), cancelled.clone(), hosts.clone(), next.clone(), agent.clone(), report.clone(), sweeping.clone());
                 thread::spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
+                    while !stop.load(Ordering::Relaxed) && !cancelled.load(Ordering::Relaxed) {
                         let Some(&ip) = hosts.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
                         if let Some(device) = probe(&agent, ip) {
                             report(device);
@@ -146,12 +149,18 @@ impl Scan {
                 });
             }
         }
-        Scan { stop, sweeping, sweep }
+        Scan { stop, cancelled, sweeping, sweep }
     }
 
     /// Whether the sweep is still going through the addresses.
     pub fn sweeping(&self) -> bool {
         self.sweeping.load(Ordering::Relaxed) > 0
+    }
+
+    /// Stops asking addresses. Devices that announce themselves are still
+    /// heard, and the ones found stay found.
+    pub fn cancel_sweep(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
     }
 
     /// How far the sweep has got, while it is going.
@@ -420,6 +429,18 @@ mod tests {
         // A /32 has no broadcast of its own; its "directed" address is itself.
         let host = Interface { ip: Ipv4Addr::new(10, 0, 0, 1), mask: Ipv4Addr::BROADCAST };
         assert_eq!(broadcasts(&host).len(), 2);
+    }
+
+    #[test]
+    fn a_cancelled_sweep_stops() {
+        let scan = Scan::start(Me::new("test", None), Options { announce: false, sweep: true, first: Vec::new() }, |_| {});
+        scan.cancel_sweep();
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while scan.sweeping() && std::time::Instant::now() < until {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!scan.sweeping());
+        assert_eq!(scan.progress(), None);
     }
 
     #[test]

@@ -74,6 +74,8 @@ pub enum NetAction {
     Toggle,
     /// "Search Again": forget the devices and scan anew.
     Rescan,
+    /// Stop asking addresses, from the search note's menu.
+    CancelSearch,
     /// Make sure a scan runs, for the Send To menu.
     Scan,
     /// A click on Network Neighborhood (`None`) or a device.
@@ -383,6 +385,11 @@ impl Network {
                 self.expanded = true;
                 self.ensure_scan();
             }
+            NetAction::CancelSearch => {
+                if let Some(scan) = &self.scan {
+                    scan.cancel_sweep();
+                }
+            }
             NetAction::Scan => {
                 self.scan_until = self.now() + MENU_SCAN_SECONDS;
                 self.ensure_scan();
@@ -509,7 +516,11 @@ impl Network {
                 None if self.searching() => "Searching...".to_owned(),
                 None => "No LocalSend devices found".to_owned(),
             };
-            note_row(ui, &text);
+            let searching = self.searching();
+            let resp = note_row(ui, &text);
+            if searching {
+                search_menu(&resp, actions);
+            }
             return;
         }
         let count = self.devices.len() + usize::from(sweep.is_some());
@@ -533,7 +544,8 @@ impl Network {
             });
         }
         if let Some(text) = sweep {
-            note_row(ui, &text);
+            let resp = note_row(ui, &text);
+            search_menu(&resp, actions);
         }
     }
 
@@ -658,12 +670,23 @@ fn offer_detail(offer: &Offer) -> String {
 
 /// A device's tooltip and status bar text.
 /// The last row of Network Neighborhood: a gray note under the devices.
-fn note_row(ui: &mut Ui, text: &str) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TREE_ROW_HEIGHT), Sense::hover());
+fn note_row(ui: &mut Ui, text: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TREE_ROW_HEIGHT), Sense::click());
     let leaf = Guide { ancestors: vec![false], has_next: false, has_prev: true };
     paint_branch(ui, rect, 1, &leaf, false, false);
     let x = ui.max_rect().left() + 2.0 + 2.0 * TREE_INDENT;
     ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, text, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
+    resp
+}
+
+/// The menu of the note while a search goes on: Cancel stops it.
+fn search_menu(resp: &egui::Response, actions: &mut Vec<NetAction>) {
+    egui::Popup::context_menu(resp).style(theme::menu_style).show(|ui| {
+        if ui.add(egui_classic_menu::item(ui, "Cancel", None)).clicked() {
+            actions.push(NetAction::CancelSearch);
+            ui.close();
+        }
+    });
 }
 
 /// Which part of the network the sweep is asking, and how far along it is:
