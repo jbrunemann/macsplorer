@@ -14,8 +14,11 @@
 //! removing this folder, the crate and the calls.
 //!
 //! - Expanding Network Neighborhood starts a scan ([`Scan`]), which goes on
-//!   listening while it stays expanded; collapsing stops it. "Search
-//!   Again" starts over.
+//!   listening while it stays expanded; collapsing stops it. The search
+//!   asks the addresses remembered from before and their /24s, then our
+//!   /24 and the multicast group, as LocalSend does; only when that finds
+//!   no device does it go through the whole network. "Search Again" starts
+//!   over and goes through the whole network at once.
 //! - The Send To submenu starts a scan too, if none is running, and keeps
 //!   it for [`MENU_SCAN_SECONDS`].
 //! - Items dropped on a device, or sent with Send To, go there: the device
@@ -59,7 +62,7 @@ use airlynx_core::{Peer, receive::ReceiveEvent};
 use eframe::egui;
 use egui::{RichText, Sense, Ui};
 
-use localsend::discovery::{Options, Scan, SweepProgress, local_ipv4};
+use localsend::discovery::{Options, Scan, Sweep, SweepProgress, local_ipv4};
 use localsend::receive::{self, Closed, End, Event, Offer, Received};
 use localsend::send::{self, Progress, SendError, Sent, Stage};
 use localsend::{Device, DeviceType, Devices, Me};
@@ -416,6 +419,14 @@ impl Network {
         if self.scan.is_some() && !self.expanded && now > self.scan_until {
             self.stop_scans();
         }
+        // The near search is over and had a few seconds for the multicast
+        // answers: with no device of either kind, ask the whole network.
+        if self.found().is_empty()
+            && now - self.scan_started >= SEARCH_SECONDS
+            && let Some(scan) = &mut self.scan
+        {
+            scan.broaden();
+        }
         if self.searching() {
             self.ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
@@ -578,7 +589,7 @@ impl Network {
                 self.peers.clear();
                 self.stop_scans();
                 self.expanded = true;
-                self.ensure_scan();
+                self.start_scan(Sweep::All);
             }
             NetAction::Introduce(key) => self.introduce(&key),
             NetAction::CancelSearch => {
@@ -629,10 +640,17 @@ impl Network {
         });
     }
 
+    /// Starts the usual search if none is going: the remembered addresses
+    /// and their /24s, our /24 and the multicast group. The whole network
+    /// follows only when that found nothing ([`Network::poll`]).
     fn ensure_scan(&mut self) {
+        self.start_scan(Sweep::Near);
+    }
+
+    fn start_scan(&mut self, sweep: Sweep) {
         if self.scan.is_none() && !self.offline {
             let (tx, ctx) = (self.found_tx.clone(), self.ctx.clone());
-            let options = Options { announce: self.receive_state.receiving(), sweep: true, first: self.remembered.clone() };
+            let options = Options { announce: self.receive_state.receiving(), sweep, first: self.remembered.clone() };
             self.scan = Some(Scan::start(self.me.clone(), options, move |d| {
                 if tx.send(d).is_ok() {
                     ctx.request_repaint();

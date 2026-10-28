@@ -11,13 +11,16 @@
 //!   out as a UDP broadcast too ([`broadcasts`]), for networks that drop
 //!   multicast between clients but pass broadcast: LocalSend binds its
 //!   port on every address, so it takes the datagram all the same.
-//! - **Sweep.** For networks where multicast doesn't get through, every
-//!   address of the private IPv4 networks we are on (up to a /16, by the
-//!   interface's netmask) gets a `GET /info` on [`PORT`], the /24 around us
-//!   first, then the others by distance. [`Options::first`] puts addresses
-//!   known from an earlier scan, and their /24s, ahead of that. That route only describes the device,
-//!   unlike the spec's legacy `POST /register` sweep, so the sweep doesn't
-//!   add this side to anyone's list.
+//! - **Sweep.** For networks where multicast doesn't get through, addresses
+//!   get a `GET /info` on [`PORT`]. It goes in two steps. The near step is
+//!   the addresses known from an earlier scan ([`Options::first`]) and their
+//!   /24s, then the /24 we are in, which is what LocalSend's own sweep asks.
+//!   The broad step is every other address of the private IPv4 networks we
+//!   are on (up to a /16, by the interface's netmask), by distance from us.
+//!   [`Sweep::Near`] stops after the near step, and [`Scan::broaden`] adds the
+//!   broad one later, for when the near one found nothing. That route only
+//!   describes the device, unlike the spec's legacy `POST /register` sweep,
+//!   so the sweep doesn't add this side to anyone's list.
 //!
 //! The listener binds the group's own address, shared (`SO_REUSEADDR`,
 //! `SO_REUSEPORT`), which works next to a LocalSend app on the same
@@ -58,8 +61,8 @@ const POLL: Duration = Duration::from_millis(250);
 pub struct Options {
     /// Announce this side on the multicast group to get answers.
     pub announce: bool,
-    /// Ask every address nearby with `GET /info`.
-    pub sweep: bool,
+    /// Ask addresses with `GET /info`: how many.
+    pub sweep: Sweep,
     /// Addresses where devices were found before. The sweep asks them
     /// first, then the rest of their /24s, before it goes through the
     /// network by distance. Those outside the networks we are on are
@@ -69,8 +72,20 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { announce: true, sweep: true, first: Vec::new() }
+        Self { announce: true, sweep: Sweep::All, first: Vec::new() }
     }
+}
+
+/// How many addresses a scan asks with `GET /info`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sweep {
+    /// None: only the multicast group is heard.
+    Off,
+    /// The known addresses and their /24s, then the /24 we are in. The
+    /// rest can follow with [`Scan::broaden`].
+    Near,
+    /// Everything: the near step, then the whole network.
+    All,
 }
 
 /// A scan going on. It listens until it is dropped; the sweep and the
@@ -82,6 +97,10 @@ pub struct Scan {
     sweeping: Arc<AtomicUsize>,
     /// The addresses of the sweep and how many were taken so far.
     sweep: Option<(Arc<Vec<Ipv4Addr>>, Arc<AtomicUsize>)>,
+    /// What [`Sweep::Near`] left out, until [`Scan::broaden`] asks it.
+    rest: Option<Vec<Ipv4Addr>>,
+    agent: ureq::Agent,
+    report: Arc<dyn Fn(Device) + Send + Sync>,
 }
 
 /// How far the sweep has got through its addresses.
@@ -128,28 +147,60 @@ impl Scan {
             let message = serde_json::to_vec(&Announcement { info: me.info(), announce: true }).unwrap_or_default();
             thread::spawn(move || announce(&message, &interfaces, &stop));
         }
-        let mut sweep = None;
-        if options.sweep {
-            let hosts: Arc<Vec<Ipv4Addr>> = Arc::new(sweep_hosts(&interfaces, &options.first));
-            let next = Arc::new(AtomicUsize::new(0));
-            sweep = Some((hosts.clone(), next.clone()));
-            let agent = crate::send::agent(&me, Some(INFO_TIMEOUT));
-            sweeping.store(SWEEP_THREADS, Ordering::Relaxed);
-            for _ in 0..SWEEP_THREADS {
-                let (stop, cancelled, hosts, next, agent, report, sweeping) =
-                    (stop.clone(), cancelled.clone(), hosts.clone(), next.clone(), agent.clone(), report.clone(), sweeping.clone());
-                thread::spawn(move || {
-                    while !stop.load(Ordering::Relaxed) && !cancelled.load(Ordering::Relaxed) {
-                        let Some(&ip) = hosts.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
-                        if let Some(device) = probe(&agent, ip) {
-                            report(device);
-                        }
-                    }
-                    sweeping.fetch_sub(1, Ordering::Relaxed);
-                });
+        let agent = crate::send::agent(&me, Some(INFO_TIMEOUT));
+        let mut scan = Scan { stop, cancelled, sweeping, sweep: None, rest: None, agent, report };
+        let (mut near, rest) = sweep_split(&interfaces, &options.first);
+        match options.sweep {
+            Sweep::Off => {}
+            Sweep::Near => {
+                scan.rest = Some(rest);
+                scan.sweep_hosts(near);
+            }
+            Sweep::All => {
+                near.extend(rest);
+                scan.sweep_hosts(near);
             }
         }
-        Scan { stop, cancelled, sweeping, sweep }
+        scan
+    }
+
+    /// Asks the addresses on worker threads, one after the other in the
+    /// order given.
+    fn sweep_hosts(&mut self, hosts: Vec<Ipv4Addr>) {
+        let hosts = Arc::new(hosts);
+        let next = Arc::new(AtomicUsize::new(0));
+        self.sweep = Some((hosts.clone(), next.clone()));
+        let threads = SWEEP_THREADS.min(hosts.len());
+        self.sweeping.store(threads, Ordering::Relaxed);
+        for _ in 0..threads {
+            let (stop, cancelled, hosts, next, agent, report, sweeping) =
+                (self.stop.clone(), self.cancelled.clone(), hosts.clone(), next.clone(), self.agent.clone(), self.report.clone(), self.sweeping.clone());
+            thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) && !cancelled.load(Ordering::Relaxed) {
+                    let Some(&ip) = hosts.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
+                    if let Some(device) = probe(&agent, ip) {
+                        report(device);
+                    }
+                }
+                sweeping.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
+    }
+
+    /// Whether the broad step of a [`Sweep::Near`] scan is still to come:
+    /// the near step is over and nobody cancelled.
+    pub fn can_broaden(&self) -> bool {
+        self.rest.is_some() && !self.sweeping() && !self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Asks the addresses the near step left out. Nothing happens unless
+    /// [`Scan::can_broaden`].
+    pub fn broaden(&mut self) {
+        if self.can_broaden()
+            && let Some(rest) = self.rest.take()
+        {
+            self.sweep_hosts(rest);
+        }
     }
 
     /// Whether the sweep is still going through the addresses.
@@ -228,6 +279,15 @@ pub fn local_ipv4() -> Vec<Interface> {
 /// Our own addresses stay in, for a LocalSend app on this computer; this side
 /// serves nothing there.
 pub fn sweep_hosts(interfaces: &[Interface], first: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
+    let (mut near, rest) = sweep_split(interfaces, first);
+    near.extend(rest);
+    near
+}
+
+/// [`sweep_hosts`] in two parts: the near one, the addresses in `first`, the
+/// /24s they are in and the /24 of each interface (what LocalSend's own
+/// sweep asks), and the rest of the networks.
+pub fn sweep_split(interfaces: &[Interface], first: &[Ipv4Addr]) -> (Vec<Ipv4Addr>, Vec<Ipv4Addr>) {
     let nets: Vec<(u32, u32, u32)> = interfaces
         .iter()
         .filter(|i| i.ip.is_private())
@@ -240,23 +300,33 @@ pub fn sweep_hosts(interfaces: &[Interface], first: &[Ipv4Addr]) -> Vec<Ipv4Addr
     let is_host = |h: u32| nets.iter().any(|&(net, broadcast, _)| h > net && h < broadcast);
     let known: Vec<u32> = first.iter().map(|&ip| u32::from(ip)).filter(|&h| is_host(h)).collect();
     let known_blocks: HashSet<u32> = known.iter().map(|h| h >> 8).collect();
+    let homes: HashSet<u32> = nets.iter().map(|&(_, _, home)| home).collect();
 
-    let mut out = Vec::new();
+    let mut near = Vec::new();
+    let mut rest = Vec::new();
     let mut seen = HashSet::new();
-    let mut push = |host: u32| {
+    let mut push = |out: &mut Vec<Ipv4Addr>, host: u32| {
         if seen.insert(host) {
             out.push(Ipv4Addr::from(host));
         }
     };
-    known.iter().for_each(|&h| push(h));
-    for &(net, broadcast, home) in &nets {
-        let mut blocks: Vec<u32> = (net >> 8..=broadcast >> 8).collect();
-        blocks.sort_by_key(|b| (!known_blocks.contains(b), b.abs_diff(home)));
-        for block in blocks {
-            (block << 8..=(block << 8) | 0xFF).filter(|h| *h > net && *h < broadcast).for_each(&mut push);
+    known.iter().for_each(|&h| push(&mut near, h));
+    // The near blocks of every network come before any of the rest, so that
+    // overlapping networks don't push our own /24 into the broad step.
+    for near_step in [true, false] {
+        for &(net, broadcast, home) in &nets {
+            let mut blocks: Vec<u32> = (net >> 8..=broadcast >> 8).collect();
+            blocks.sort_by_key(|b| (!known_blocks.contains(b), b.abs_diff(home)));
+            for block in blocks {
+                if (known_blocks.contains(&block) || homes.contains(&block)) != near_step {
+                    continue;
+                }
+                let out = if near_step { &mut near } else { &mut rest };
+                (block << 8..=(block << 8) | 0xFF).filter(|h| *h > net && *h < broadcast).for_each(|h| push(out, h));
+            }
         }
     }
-    out
+    (near, rest)
 }
 
 /// The multicast socket: the shared port, the group joined on each
@@ -432,8 +502,39 @@ mod tests {
     }
 
     #[test]
+    fn the_near_step_is_the_known_blocks_and_ours() {
+        let ifaces = [Interface { ip: Ipv4Addr::new(10, 1, 2, 3), mask: Ipv4Addr::new(255, 255, 0, 0) }];
+        let phone = Ipv4Addr::new(10, 1, 9, 40);
+        let (near, rest) = sweep_split(&ifaces, &[phone]);
+        assert_eq!(near[0], phone);
+        assert_eq!(near.len(), 256 + 256, "the phone's /24 and ours");
+        assert!(near.contains(&Ipv4Addr::new(10, 1, 2, 1)) && near.contains(&Ipv4Addr::new(10, 1, 9, 254)));
+        assert!(rest.contains(&Ipv4Addr::new(10, 1, 3, 1)) && !rest.contains(&phone));
+        assert_eq!(sweep_hosts(&ifaces, &[phone]).len(), near.len() + rest.len());
+    }
+
+    #[test]
+    fn the_broad_step_waits_for_broaden() {
+        let me = Me::new("test", None);
+        let mut scan = Scan::start(me.clone(), Options { announce: false, sweep: Sweep::Near, first: Vec::new() }, |_| {});
+        let until = std::time::Instant::now() + Duration::from_secs(20);
+        while scan.sweeping() && std::time::Instant::now() < until {
+            thread::sleep(Duration::from_millis(20));
+        }
+        // With no private network there is nothing to add; either way it
+        // happens once.
+        let first = scan.can_broaden();
+        scan.broaden();
+        assert!(!scan.can_broaden() || !first);
+        let mut all = Scan::start(me, Options { announce: false, sweep: Sweep::All, first: Vec::new() }, |_| {});
+        all.cancel_sweep();
+        all.broaden();
+        assert!(!all.can_broaden(), "a full scan has nothing left to add");
+    }
+
+    #[test]
     fn a_cancelled_sweep_stops() {
-        let scan = Scan::start(Me::new("test", None), Options { announce: false, sweep: true, first: Vec::new() }, |_| {});
+        let scan = Scan::start(Me::new("test", None), Options { announce: false, sweep: Sweep::All, first: Vec::new() }, |_| {});
         scan.cancel_sweep();
         let until = std::time::Instant::now() + Duration::from_secs(5);
         while scan.sweeping() && std::time::Instant::now() < until {
