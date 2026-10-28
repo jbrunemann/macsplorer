@@ -263,6 +263,8 @@ enum Action {
     /// Finder's "Move Item Here" (Option+Cmd+V): paste as a move, even a copy.
     MoveHere(Option<PathBuf>),
     Delete,
+    /// Delete a folder of the Folders pane, whatever the list has selected.
+    DeleteFolder(PathBuf),
     TreeSelect(NodeKey),
     /// A tree selection made with the keyboard, which opens after a pause.
     TreeKeySelect(NodeKey),
@@ -1265,14 +1267,33 @@ impl Explorer {
             return;
         }
         let paths: Vec<PathBuf> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect();
+        let dir = self.current().to_path_buf();
+        self.trash_paths(paths, dir);
+    }
+
+    /// Deletes a folder of the Folders pane. When the open folder is in it,
+    /// the window moves to the folder's parent first.
+    fn delete_folder(&mut self, path: PathBuf) {
+        let Some(parent) = path.parent().map(Path::to_path_buf) else { return };
+        if self.current().starts_with(&path) {
+            self.navigate(parent.clone());
+        }
+        self.trash_paths(vec![path], parent);
+    }
+
+    /// Moves `paths` to the Trash on a worker thread; `dir` is the folder
+    /// that reloads, as do the parents of the paths.
+    fn trash_paths(&mut self, paths: Vec<PathBuf>, dir: PathBuf) {
         if paths.is_empty() {
             return;
         }
         self.rename = None;
-        let dir = self.current().to_path_buf();
+        let mut dirs = vec![dir];
+        dirs.extend(paths.iter().filter_map(|p| p.parent().map(Path::to_path_buf)));
+        dirs.dedup();
         let (tx, ctx) = (self.op_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let mut done = OpDone { dirs: vec![dir], select: Vec::new(), error: None, undo: None, transfer: None };
+            let mut done = OpDone { dirs, select: Vec::new(), error: None, undo: None, transfer: None };
             let mut trashed = Vec::new();
             for path in &paths {
                 match SystemTrash.trash(path) {
@@ -2266,6 +2287,7 @@ impl Explorer {
                     self.paste(dir, true);
                 }
                 Action::Delete => self.delete_selection(),
+                Action::DeleteFolder(path) => self.delete_folder(path),
                 Action::TreeSelect(key) => self.tree_select(key),
                 Action::TreeKeySelect(key) => self.tree_key_select(key),
                 Action::TreeToggle(key) => {
@@ -4714,6 +4736,13 @@ fn tree_row(
         #[cfg(unix)]
         if is_ejectable(&row.key.path) && ui.add(gutter_item(ui, "Eject", String::new())).clicked() {
             actions.push(Action::Eject(row.key.path.clone()));
+        }
+        // A drive isn't something to trash.
+        if !(row.depth == 0 && row.section == Section::Locations) {
+            ui.separator();
+            if ui.add(gutter_item(ui, "Delete", String::new())).clicked() {
+                actions.push(Action::DeleteFolder(row.key.path.clone()));
+            }
         }
         ui.separator();
         if ui.add(gutter_item(ui, TREE_SHOW_OPEN_LABEL, String::new())).clicked() {
