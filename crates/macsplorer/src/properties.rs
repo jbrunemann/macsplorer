@@ -37,21 +37,21 @@ use crate::theme::{self, Bevel};
 
 /// The window's width. Its height is fixed for an item, like a property
 /// sheet, but follows the rows the item has (see [`size_for`]).
-const WIDTH: f32 = 380.0;
+pub(crate) const WIDTH: f32 = 380.0;
 /// The window's height without any group of rows: frame, caption, tab, the
 /// icon and name row, and the buttons.
-const BASE_HEIGHT: f32 = 155.0;
+pub(crate) const BASE_HEIGHT: f32 = 155.0;
 /// The etched line above a group, and the gap below it.
-const GROUP_TOP: f32 = 9.0;
-const GROUP_BOTTOM: f32 = 6.0;
+pub(crate) const GROUP_TOP: f32 = 9.0;
+pub(crate) const GROUP_BOTTOM: f32 = 6.0;
 /// Where each permission's check box starts, from the first one.
 const BOX_STEP: f32 = 76.0;
-const FRAME: f32 = 4.0;
-const TAB_HEIGHT: f32 = 20.0;
-const ROW_HEIGHT: f32 = 22.0;
-const BUTTON: egui::Vec2 = vec2(75.0, 23.0);
+pub(crate) const FRAME: f32 = 4.0;
+pub(crate) const TAB_HEIGHT: f32 = 20.0;
+pub(crate) const ROW_HEIGHT: f32 = 22.0;
+pub(crate) const BUTTON: egui::Vec2 = vec2(75.0, 23.0);
 /// Where values start, right of the labels and lined up with the name box.
-const VALUE_X: f32 = 86.0;
+pub(crate) const VALUE_X: f32 = 86.0;
 /// The color swatches on the Customize tab: their size and where each starts
 /// from the one before.
 const SWATCH: f32 = 20.0;
@@ -81,7 +81,7 @@ pub fn size_for_multi() -> egui::Vec2 {
     vec2(WIDTH, BASE_HEIGHT + group_height(4))
 }
 
-fn group_height(rows: usize) -> f32 {
+pub(crate) fn group_height(rows: usize) -> f32 {
     GROUP_TOP + rows as f32 * ROW_HEIGHT + GROUP_BOTTOM
 }
 
@@ -742,7 +742,7 @@ fn customizable(entry: &Entry, editable: bool) -> bool {
 /// A raised tab page with its tabs along the top edge. The selected tab is
 /// joined to the page and stands out two pixels further up and to each side
 /// than the others, like the comctl32 tab control. Returns a clicked tab.
-fn tab_page(ui: &Ui, page: Rect, labels: &[&str], selected: usize) -> Option<usize> {
+pub(crate) fn tab_page(ui: &Ui, page: Rect, labels: &[&str], selected: usize) -> Option<usize> {
     theme::bevel(ui.painter(), page, Bevel::Raised);
     let font = egui::TextStyle::Body.resolve(ui.style());
     let mut x = page.left() + 2.0;
@@ -814,7 +814,7 @@ fn row_label(ui: &Ui, page: Rect, y: f32, text: &str) {
 }
 
 /// The etched groove between groups of rows.
-fn etched_line(ui: &Ui, page: Rect, y: f32) {
+pub(crate) fn etched_line(ui: &Ui, page: Rect, y: f32) {
     let x = (page.left() + 14.0)..=(page.right() - 12.0);
     let p = ui.painter();
     p.hline(x.clone(), y + 0.5, egui::Stroke::new(1.0, theme::color::shadow()));

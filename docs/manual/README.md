@@ -321,6 +321,8 @@ To send, do one of these:
 - Right-click the selected items and choose **Send To**, then the device. The Send To menu starts looking on its own when Network Neighborhood is closed, so a device may take a moment to appear in it.
 - Right-click a device and choose **Send Selected Items**.
 
+Right-click a device and choose **Properties** to see what Macsplorer knows about it: its kind, its address and port and the protocol. A LocalSend device also shows its model. An AirLynx device shows its ID (in full, and the short form AirLynx lists it by), whether it is a favorite here and whether it has added your Mac, and when it was first and last seen. "Last seen" is the last time the device answered while Network Neighborhood was open, so it stops moving when you collapse the list; the times start when you open Macsplorer.
+
 <img src="images/send-to-menu.png" alt="Send To in the right-click menu, with two devices" width="560">
 
 The other device asks whether to accept the files, and the "Sending..." window waits until someone answers there. Once they accept, it shows how far it has got; **Cancel** stops it. A folder arrives as a folder with everything in it. The status bar says when the files have arrived, or why they didn't: declined, a device that is busy with another transfer, or one that asks for a PIN (not supported yet; switch the PIN off in LocalSend's settings on that device).

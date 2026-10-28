@@ -43,14 +43,17 @@
 //!   off the other devices' lists.
 
 mod airlynx;
+mod device_dialog;
 mod offer_dialog;
 mod receiving;
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
+use std::time::SystemTime;
 
 use airlynx_core::{Peer, receive::ReceiveEvent};
 use eframe::egui;
@@ -101,6 +104,8 @@ pub enum NetAction {
     OpenDownloads,
     /// An AirLynx device's menu: add it to the favorites, or take it off.
     ToggleFavorite(String),
+    /// A device's menu: its Properties window, by the device's key.
+    Properties(String),
 }
 
 /// The identity kept between runs, so other devices know this computer
@@ -116,6 +121,12 @@ type Introduced = (String, Result<(), SendError>);
 
 /// An AirLynx send's outcome, tagged with its dialog and the device's name.
 type AirSendDone = (u64, String, Result<airlynx::Sent, airlynx::SendError>);
+
+/// When a device was first and last heard from.
+struct Seen {
+    first: SystemTime,
+    last: SystemTime,
+}
 
 /// A device found, of either kind.
 enum Found<'a> {
@@ -164,6 +175,13 @@ pub struct Network {
     air_done_rx: Receiver<AirSendDone>,
     /// Files AirLynx favorites sent in this session, for the status bar.
     air_saved: usize,
+    /// When each device (by key) was first and last heard from, kept for the
+    /// session even when Search Again forgets the device.
+    seen: HashMap<String, Seen>,
+    /// Open device Properties windows, by the device's key. The view is
+    /// refreshed while the device is still listed, and stays as it was
+    /// when it isn't any more.
+    device_props: Vec<(String, device_dialog::View)>,
     /// Where devices were found before, from the settings; the next scan
     /// asks there first.
     remembered: Vec<Ipv4Addr>,
@@ -223,6 +241,8 @@ impl Network {
             air_done_tx,
             air_done_rx,
             air_saved: 0,
+            seen: HashMap::new(),
+            device_props: Vec::new(),
             remembered: if cfg!(test) { Vec::new() } else { Preferences::load().devices },
             dialogs: Vec::new(),
             send_count: 0,
@@ -292,14 +312,20 @@ impl Network {
     pub fn fake(&mut self, devices: impl IntoIterator<Item = Device>, expanded: bool, selected: Option<String>) {
         self.offline = true;
         self.expanded = expanded;
-        devices.into_iter().for_each(|d| _ = self.devices.insert(d));
+        for d in devices {
+            self.saw(d.key());
+            self.devices.insert(d);
+        }
         self.selected = selected.map(Some);
     }
 
     /// Tests: shows `peers` as AirLynx devices found.
     #[cfg(test)]
     pub fn fake_air(&mut self, peers: impl IntoIterator<Item = Peer>) {
-        self.peers.extend(peers);
+        for p in peers {
+            self.saw(airlynx::key(&p));
+            self.peers.push(p);
+        }
     }
 
     /// Whether a network row has the tree's selection, which the folder
@@ -322,11 +348,13 @@ impl Network {
     pub fn poll(&mut self) {
         let now = self.now();
         while let Ok(device) = self.found_rx.try_recv() {
+            self.saw(device.key());
             self.remember(device.ip);
             self.devices.insert(device);
         }
         let mut peers = false;
         while let Ok(peer) = self.air_found_rx.try_recv() {
+            self.saw(airlynx::key(&peer));
             self.remember(peer.addr.ip());
             self.peers.retain(|p| p.id != peer.id);
             self.peers.push(peer);
@@ -501,6 +529,17 @@ impl Network {
             d.finished |= d.progress.is_cancelled();
             d.show(&ctx, now, false)
         });
+        let found: Vec<(String, device_dialog::View, bool)> =
+            if self.device_props.is_empty() { Vec::new() } else { self.found().iter().map(|f| (f.key(), self.device_view(f), matches!(f, Found::Air(_)))).collect() };
+        self.device_props.retain_mut(|(key, view)| {
+            let kind = found.iter().find(|(k, ..)| k == key);
+            if let Some((_, fresh, _)) = kind {
+                *view = fresh.clone();
+            }
+            let air = kind.map_or_else(|| key.starts_with(airlynx::KEY_PREFIX), |k| k.2);
+            let logo = if air { self.air_logo.id() } else { self.logo.id() };
+            !device_dialog::show(&ctx, key, view, logo)
+        });
         let answer = self.offer.as_ref().and_then(|(id, _, view)| offer_dialog::show(&ctx, *id, view, self.logo.id()));
         if let Some(answer) = answer
             && let Some((id, offer, view)) = self.offer.take()
@@ -556,6 +595,13 @@ impl Network {
                 self.selected = Some(key);
             }
             NetAction::ToggleFavorite(key) => self.toggle_favorite(&key),
+            NetAction::Properties(key) => {
+                if !self.device_props.iter().any(|(k, _)| *k == key)
+                    && let Some(view) = self.found().into_iter().find(|f| f.key() == key).map(|f| self.device_view(&f))
+                {
+                    self.device_props.push((key, view));
+                }
+            }
             NetAction::SendSelection(key) => self.send(&key, selection),
             NetAction::ToggleReceive => {
                 self.receive_wanted = !self.receive_wanted;
@@ -628,6 +674,48 @@ impl Network {
             Found::Local(_) => self.logo.id(),
             Found::Air(_) => self.air_logo.id(),
         }
+    }
+
+    /// Notes that the device `key` was just heard from.
+    fn saw(&mut self, key: String) {
+        let now = SystemTime::now();
+        self.seen.entry(key).and_modify(|s| s.last = now).or_insert(Seen { first: now, last: now });
+    }
+
+    /// What a device's Properties window shows: where it is, who it is and
+    /// when it was seen.
+    fn device_view(&self, found: &Found) -> device_dialog::View {
+        let when = |t: Option<SystemTime>| t.map_or_else(String::new, |t| crate::locale::long_date_time(Some(t), true));
+        let seen = self.seen.get(&found.key());
+        let times = vec![("First seen:", when(seen.map(|s| s.first))), ("Last seen:", when(seen.map(|s| s.last)))];
+        let yes_no = |b: bool| if b { "Yes" } else { "No" };
+        let sentence = |word: &str| word[..1].to_uppercase() + &word[1..];
+        let groups = match found {
+            Found::Local(d) => {
+                let model = d.info.device_model.clone().unwrap_or_else(|| "Unknown".to_owned());
+                vec![
+                    vec![("Type:", sentence(local_kind_word(d.device_type()))), ("Model:", model)],
+                    vec![
+                        ("Address:", d.ip.to_string()),
+                        ("Port:", d.port.to_string()),
+                        ("Protocol:", format!("LocalSend {}, {}", d.info.version, d.protocol.scheme().to_uppercase())),
+                    ],
+                ]
+            }
+            Found::Air(p) => {
+                let favorite = self.air.is_favorite(p.id);
+                vec![
+                    vec![("Type:", sentence(airlynx::kind_word(p.kind))), ("ID:", p.id.to_string()), ("Short ID:", p.id.short())],
+                    vec![("Address:", p.addr.ip().to_string()), ("Port:", p.addr.port().to_string()), ("Protocol:", "AirLynx".to_owned())],
+                    vec![
+                        ("Favorite:", format!("{}: {}", yes_no(favorite), if favorite { "it can send files here" } else { "it can't send files here" })),
+                        ("Added you:", format!("{}: {}", yes_no(p.mutual), if p.mutual { "this computer can send to it" } else { "this computer can't send to it" })),
+                    ],
+                    times,
+                ]
+            }
+        };
+        device_dialog::View { name: found.alias().to_owned(), groups }
     }
 
     /// Adds an AirLynx device to the favorites, or takes it off.
@@ -788,6 +876,7 @@ impl Network {
                         actions.push(NetAction::ToggleFavorite(key.clone()));
                         ui.close();
                     }
+                    properties_item(ui, &key, actions);
                     return;
                 }
                 let visible = egui_classic_menu::item(ui, "Let Device Find This Computer", None);
@@ -798,6 +887,7 @@ impl Network {
                 } else if !receiving {
                     let _ = resp.on_disabled_hover_text("Turn on Receive Files first: the device could not send anything to this computer otherwise.");
                 }
+                properties_item(ui, &key, actions);
             });
         }
         if let Some(text) = sweep {
@@ -885,6 +975,15 @@ fn row(
     resp
 }
 
+/// The device menu's last item, set off by a line: its Properties window.
+fn properties_item(ui: &mut Ui, key: &str, actions: &mut Vec<NetAction>) {
+    ui.separator();
+    if ui.add(egui_classic_menu::item(ui, "Properties", None)).clicked() {
+        actions.push(NetAction::Properties(key.to_owned()));
+        ui.close();
+    }
+}
+
 /// What a row shows left of its label: an icon, with the sharing hand
 /// under it, or an image.
 enum RowIcon {
@@ -962,14 +1061,18 @@ fn progress_text(p: &SweepProgress) -> String {
     format!("Searching {a}.{b}.{c}.x ({}%)", p.percent())
 }
 
-fn describe(d: &Device) -> String {
-    let kind = match d.device_type() {
+fn local_kind_word(kind: DeviceType) -> &'static str {
+    match kind {
         DeviceType::Mobile => "phone or tablet",
         DeviceType::Desktop => "computer",
         DeviceType::Web => "web browser",
         DeviceType::Headless => "LocalSend without a window",
         DeviceType::Server => "server",
-    };
+    }
+}
+
+fn describe(d: &Device) -> String {
+    let kind = local_kind_word(d.device_type());
     let model = d.info.device_model.as_deref().map_or_else(String::new, |m| format!(" ({m})"));
     format!("{}: {kind}{model} at {}, LocalSend protocol {}", d.alias(), d.ip, d.info.version)
 }
@@ -1064,6 +1167,71 @@ pub mod tests {
             name: name.into(),
             mutual,
             kind,
+        }
+    }
+
+    /// A device's Properties name where it is, who it is and when it was seen.
+    #[test]
+    fn a_device_has_properties() {
+        let mut network = super::Network::new(egui::Context::default(), "Test Mac");
+        network.fake([device("Jan's Pixel", DeviceType::Mobile, 31)], true, None);
+        network.fake_air([air_peer("Living Room Mac", airlynx_core::DeviceKind::Desktop, true, 44)]);
+        let found = network.found();
+        let rows = |view: &super::device_dialog::View| view.groups.iter().flatten().map(|(l, v)| format!("{l} {v}")).collect::<Vec<_>>();
+
+        let local = rows(&network.device_view(&found[0]));
+        assert!(local.iter().any(|r| r == "Address: 192.168.1.31"), "{local:?}");
+        assert!(local.iter().any(|r| r == "Protocol: LocalSend 2.1, HTTPS"), "{local:?}");
+        assert!(local.iter().all(|r| !r.starts_with("Fingerprint") && !r.contains("seen")), "{local:?}");
+
+        let air = network.device_view(&found[1]);
+        let air_rows = rows(&air);
+        assert!(air_rows.iter().any(|r| r == "Address: 192.168.1.44"), "{air_rows:?}");
+        assert!(air_rows.iter().any(|r| r == "ID: 0000000000000000000000000000002c"), "{air_rows:?}");
+        assert!(air_rows.iter().any(|r| r == "Short ID: 00000000"), "{air_rows:?}");
+        assert!(air_rows.iter().any(|r| r.starts_with("Favorite: No")), "{air_rows:?}");
+        assert!(air_rows.iter().any(|r| r.starts_with("Added you: Yes")), "{air_rows:?}");
+        assert!(air_rows.iter().all(|r| !r.ends_with(": ") && !r.ends_with(':')), "a date is missing: {air_rows:?}");
+        assert_eq!(air.title(), "Living Room Mac Properties");
+
+        // The menu's action opens one window, however often it is chosen.
+        let key = found[0].key();
+        drop(found);
+        network.apply(super::NetAction::Properties(key.clone()), Vec::new());
+        network.apply(super::NetAction::Properties(key), Vec::new());
+        network.apply(super::NetAction::Properties("gone".into()), Vec::new());
+        assert_eq!(network.device_props.len(), 1);
+    }
+
+    /// The device Properties windows, for a LocalSend and an AirLynx device.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn device_properties() {
+        let mut network = super::Network::new(egui::Context::default(), "Test Mac");
+        network.fake([device("Jan's Pixel", DeviceType::Mobile, 31)], true, None);
+        network.fake_air([air_peer("Living Room Mac", airlynx_core::DeviceKind::Desktop, true, 44)]);
+        let views: Vec<_> = network.found().iter().map(|f| (network.device_view(f), matches!(f, super::Found::Air(_)))).collect();
+        for (view, air) in views {
+            let mut harness = Harness::builder().with_size(view.size()).with_pixels_per_point(2.0).wgpu().build_ui_state(
+                |ui, logos: &mut Option<(egui::TextureHandle, egui::TextureHandle)>| {
+                    let Some((local, air_logo)) = logos else {
+                        crate::theme::install(ui.ctx());
+                        crate::theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
+                        *logos = Some((super::load_logo(ui.ctx()), super::load_air_logo(ui.ctx())));
+                        return;
+                    };
+                    let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
+                    super::device_dialog::draw(&mut window, &view, if air { air_logo.id() } else { local.id() });
+                },
+                None,
+            );
+            for _ in 0..3 {
+                harness.run();
+            }
+            let image = harness.render().expect("render");
+            let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+            std::fs::create_dir_all(&out).unwrap();
+            image.save(out.join(if air { "device-properties-airlynx.png" } else { "device-properties-localsend.png" })).unwrap();
         }
     }
 
