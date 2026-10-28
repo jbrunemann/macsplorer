@@ -4551,6 +4551,10 @@ fn tree_row(
     // The whole row takes drops (`TVHT_ONITEMROW`, unverified for drags);
     // the drop target is drawn selected and focused.
     let mark = Mark::Tree(row.key.clone());
+    // A right-clicked row gets only the dotted focus rectangle while its menu
+    // is open, and isn't selected: selecting a row opens its folder, which the
+    // menu's commands don't need (unverified for Explorer).
+    let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
     let marked = drag.is_some_and(|d| d.marks(&mark));
     let expand = (row.expandable && !row.expanded).then(|| row.key.clone());
     frame.zone(ui.clip_rect(), rect, Some(row.key.path.clone()), Some(mark), expand);
@@ -4573,6 +4577,8 @@ fn tree_row(
     // The tree's focus is its selected row.
     if row.selected && cue {
         theme::focus_rect_over(p, text_rect, theme::color::selection());
+    } else if menu_open && !row.selected {
+        theme::focus_rect_over(p, text_rect, theme::color::window());
     }
     // Keyboard moves scroll only as far as needed (`TVM_ENSUREVISIBLE`).
     match scroll {
