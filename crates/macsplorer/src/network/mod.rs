@@ -4,77 +4,70 @@
 //! Network Neighborhood listed SMB computers and shares, this one lists
 //! LocalSend and AirLynx apps.
 //!
-//! The protocols are the `localsend` crate and `airlynx-core` ([`airlynx`]
-//! has the AirLynx side); this module is the glue: the
-//! rows (drawn like the tree's own, with `app::paint_branch`), the Send To
-//! submenu, drops on a device, the "Sending..." and "Receiving..." progress
-//! dialogs, the Receive Files question ([`offer_dialog`]) and the worker
-//! that runs the receiver ([`receiving`]). The app talks to it through
-//! [`Network`] and [`NetAction`] only, so the feature comes out by
-//! removing this folder, the crate and the calls.
+//! Network Neighborhood has one row for each of the two, which expand on
+//! their own with a +:
 //!
-//! - Expanding Network Neighborhood starts a scan ([`Scan`]), which goes on
-//!   listening while it stays expanded; collapsing stops it. The search
-//!   asks the addresses remembered from before and their /24s, then our
-//!   /24 and the multicast group, as LocalSend does; only when that finds
-//!   no device does it go through the whole network. "Search Again" starts
-//!   over and goes through the whole network at once.
-//! - The Send To submenu starts a scan too, if none is running, and keeps
-//!   it for [`MENU_SCAN_SECONDS`].
-//! - Items dropped on a device, or sent with Send To, go there: the device
-//!   asks its user to accept, and the dialog waits until they do.
+//! ```text
+//! Network Neighborhood
+//!   LocalSend
+//!     Jan's Pixel
+//!   AirLynx
+//!     Living Room Mac
+//! ```
+//!
+//! They are separate in the code too. [`localsend`] and [`airlynx`] each own
+//! their devices, scan, sends and rows, and neither knows the other; nothing
+//! of a protocol runs until its row is expanded. This module is the glue
+//! between them and the app: the root row, what they share (the status bar
+//! message, the progress dialogs, the device Properties windows), and the
+//! routing of an action to the protocol its device key belongs to. The app
+//! talks to it through [`Network`] and [`NetAction`] only, so the feature
+//! comes out by removing this folder, the crates and the calls, and either
+//! protocol by removing its file and the lines that route to it.
+//!
+//! - Expanding a protocol's row starts its scan, which goes on while it stays
+//!   expanded; collapsing it (or Network Neighborhood) stops it.
+//! - The Send To submenu starts both scans, if none is running, and keeps
+//!   them for [`MENU_SCAN_SECONDS`]: it is how a device is reached without
+//!   opening the Folders pane.
+//! - Items dropped on a device, or sent with Send To, go there.
 //!
 //! Devices carry their app's own logo (`assets/localsend`, `assets/airlynx`),
 //! not a Windows icon: they are LocalSend or AirLynx apps, whatever they run
 //! on.
 //!
-//! AirLynx devices differ in one way: nothing asks. A device takes files
-//! from its favorites, so a device's menu has Add to Favorites (what lets it
-//! send here) and sending needs the device to have added this computer. The
-//! list shows both kinds, by name.
-//!
 //! - Receive Files (Network Neighborhood's menu, or the computer pane of
-//!   the status bar) lets nearby devices send files here. It is off until
-//!   turned on, remembered in `settings.json` and shared by all windows.
-//!   Each LocalSend offer asks first; accepted files go to Downloads, as
-//!   do the files of AirLynx favorites, which arrive without a question and
-//!   show in the status bar. While it is
-//!   on, this computer is shown shared: Windows 2000's sharing hand under
-//!   Network Neighborhood's icon and the status bar's computer, whose
-//!   tooltip says under what name others see it. Scans only announce this
-//!   side while it receives, so a computer that doesn't take files stays
-//!   off the other devices' lists.
+//!   the status bar) lets nearby devices send files here, over both
+//!   protocols ([`receiving`]). It is off until turned on, remembered in
+//!   `settings.json` and shared by all windows. Each LocalSend offer asks
+//!   first; accepted files go to Downloads, as do the files of AirLynx
+//!   favorites, which arrive without a question and show in the status bar.
+//!   While it is on, this computer is shown shared: Windows 2000's sharing
+//!   hand under Network Neighborhood's icon and the status bar's computer,
+//!   whose tooltip says under what name others see it. LocalSend's scans
+//!   only announce this side while it receives, so a computer that doesn't
+//!   take files stays off the other devices' lists.
 
 mod airlynx;
 mod device_dialog;
+mod localsend;
 mod offer_dialog;
 mod receiving;
 
-use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::thread;
-use std::time::SystemTime;
+use std::sync::mpsc::{Receiver, channel};
 
-use airlynx_core::{Peer, receive::ReceiveEvent};
 use eframe::egui;
 use egui::{RichText, Sense, Ui};
 
-use localsend::discovery::{Options, Scan, Sweep, SweepProgress, local_ipv4};
-use localsend::receive::{self, Closed, End, Event, Offer, Received};
-use localsend::send::{self, Progress, SendError, Sent, Stage};
-use localsend::{Device, DeviceType, Devices, Me};
-
-pub use offer_dialog::View as OfferView;
+use airlynx::AirLynx;
+use localsend::LocalSend;
 use receiving::{Msg, State, Supervisor};
 
 use crate::app::{Guide, Status, TREE_INDENT, TREE_ROW_HEIGHT, paint_branch};
 use crate::item_drag::{DragFrame, ItemDrag, Mark};
-use crate::progress_dialog::{Kind, ProgressDialog, Snapshot, Tracked};
+use crate::progress_dialog::ProgressDialog;
 use crate::theme::{self, Icon};
-use macsplorer_core::preferences::Preferences;
 
 /// The root row's label.
 pub const TITLE: &str = "Network Neighborhood";
@@ -84,21 +77,48 @@ const MENU_SCAN_SECONDS: f64 = 30.0;
 /// the announcements are out by then (`localsend::discovery`).
 const SEARCH_SECONDS: f64 = 3.0;
 
+/// The two kinds of device Network Neighborhood lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Service {
+    LocalSend,
+    AirLynx,
+}
+
+impl Service {
+    /// The protocol a device key belongs to.
+    fn of(key: &str) -> Self {
+        if key.starts_with(airlynx::KEY_PREFIX) { Service::AirLynx } else { Service::LocalSend }
+    }
+}
+
+/// A row of the section, as selected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Node {
+    /// Network Neighborhood itself.
+    Root,
+    /// LocalSend's or AirLynx's row.
+    Service(Service),
+    /// A device, by its key.
+    Device(String),
+}
+
 /// What the user did with the network rows and menus.
 #[derive(Clone, Debug)]
 pub enum NetAction {
-    /// The +/− box, a double-click, Expand or Collapse.
-    Toggle,
-    /// "Search Again": forget the devices and scan anew.
-    Rescan,
-    /// A device's menu: tell it about this computer, by the device's key.
+    /// The +/− box, a double-click, Expand or Collapse: of a protocol's row,
+    /// or `None` for Network Neighborhood.
+    Toggle(Option<Service>),
+    /// "Search Again" on a protocol's row: forget its devices and scan anew.
+    Rescan(Service),
+    /// A LocalSend device's menu: tell it about this computer, by the
+    /// device's key.
     Introduce(String),
-    /// Stop asking addresses, from the search note's menu.
+    /// Stop asking addresses, from LocalSend's search note's menu.
     CancelSearch,
-    /// Make sure a scan runs, for the Send To menu.
+    /// Make sure the scans run, for the Send To menu.
     Scan,
-    /// A click on Network Neighborhood (`None`) or a device.
-    Select(Option<String>),
+    /// A click on a row.
+    Select(Node),
     /// Send To, or the device's "Send Selected Items": the selected items.
     SendSelection(String),
     /// Receive Files, on or off.
@@ -111,157 +131,75 @@ pub enum NetAction {
     Properties(String),
 }
 
-/// The identity kept between runs, so other devices know this computer
-/// again: next to `settings.json`.
-#[cfg(all(feature = "localsend-tls", not(test)))]
-const IDENTITY_FILE: &str = "localsend-identity.pem";
-
-/// A send's outcome, tagged with its dialog.
-type SendDone = (u64, String, Result<Sent, SendError>);
-
-/// The outcome of telling a device about this computer, with its name.
-type Introduced = (String, Result<(), SendError>);
-
-/// An AirLynx send's outcome, tagged with its dialog and the device's name.
-type AirSendDone = (u64, String, Result<airlynx::Sent, airlynx::SendError>);
-
-/// When a device was first and last heard from.
-struct Seen {
-    first: SystemTime,
-    last: SystemTime,
+/// What the protocols share: the message for the status bar and the
+/// progress dialogs, with the numbering of both.
+#[derive(Default)]
+struct Shared {
+    /// A message for the status bar, taken by the app.
+    status: Option<Status>,
+    dialogs: Vec<ProgressDialog>,
+    count: u64,
 }
 
-/// A device found, of either kind.
-enum Found<'a> {
-    Local(&'a Device),
-    Air(&'a Peer),
-}
-
-impl Found<'_> {
-    fn key(&self) -> String {
-        match self {
-            Found::Local(d) => d.key(),
-            Found::Air(p) => airlynx::key(p),
-        }
+impl Shared {
+    fn say(&mut self, status: Status) {
+        self.status = Some(status);
     }
 
-    fn alias(&self) -> &str {
-        match self {
-            Found::Local(d) => d.alias(),
-            Found::Air(p) => &p.name,
+    /// An id for a dialog (a send's, or a question's).
+    fn next_id(&mut self) -> u64 {
+        self.count += 1;
+        self.count
+    }
+
+    /// The transfer behind dialog `id` is over.
+    fn finish(&mut self, id: u64) {
+        for d in &mut self.dialogs {
+            d.finished |= d.id == id;
         }
     }
 }
 
 pub struct Network {
-    me: Me,
-    devices: Devices,
+    /// Network Neighborhood itself is expanded: the protocols' rows show.
     expanded: bool,
-    /// The row last clicked, while the network has the tree's selection:
-    /// `Some(None)` for Network Neighborhood itself.
-    selected: Option<Option<String>>,
-    scan: Option<Scan>,
-    /// When the scan started, for "Searching..."
-    scan_started: f64,
-    /// A scan started by the menu stops then, unless the section is expanded.
-    scan_until: f64,
-    found_tx: Sender<Device>,
-    found_rx: Receiver<Device>,
-    /// AirLynx: this computer's identity and favorites, the devices found,
-    /// the scan for them and the sends under way.
-    air: airlynx::Air,
-    peers: Vec<Peer>,
-    air_scan: Option<airlynx::Scan>,
-    air_found_tx: Sender<Peer>,
-    air_found_rx: Receiver<Peer>,
-    air_done_tx: Sender<AirSendDone>,
-    air_done_rx: Receiver<AirSendDone>,
-    /// Files AirLynx favorites sent in this session, for the status bar.
-    air_saved: usize,
-    /// When each device (by key) was first and last heard from, kept for the
-    /// session even when Search Again forgets the device.
-    seen: HashMap<String, Seen>,
+    /// The row last clicked, while the network has the tree's selection.
+    selected: Option<Node>,
+    local: LocalSend,
+    air: AirLynx,
+    shared: Shared,
     /// Open device Properties windows, by the device's key. The view is
     /// refreshed while the device is still listed, and stays as it was
     /// when it isn't any more.
     device_props: Vec<(String, device_dialog::View)>,
-    /// Where devices were found before, from the settings; the next scan
-    /// asks there first.
-    remembered: Vec<Ipv4Addr>,
-    dialogs: Vec<ProgressDialog>,
-    send_count: u64,
-    done_tx: Sender<SendDone>,
-    done_rx: Receiver<SendDone>,
-    introduced_tx: Sender<Introduced>,
-    introduced_rx: Receiver<Introduced>,
-    /// A message for the status bar, taken by the app.
-    status: Option<Status>,
-    /// Tests: never touch the network.
-    offline: bool,
-    /// LocalSend's logo, which its device rows and menu items show, and
-    /// AirLynx's, for the other kind.
-    logo: egui::TextureHandle,
-    air_logo: egui::TextureHandle,
-    /// Runs the receiver while Receive Files is on; `None` in tests.
+    /// Runs the receivers while Receive Files is on; `None` in tests.
     supervisor: Option<Supervisor>,
     msg_rx: Receiver<Msg>,
     /// Receive Files as set.
     receive_wanted: bool,
     receive_state: State,
-    /// The offer being asked, with its dialog's id and what it shows.
-    offer: Option<(u64, Offer, OfferView)>,
     ctx: egui::Context,
 }
 
 impl Network {
     /// `alias` is the name other devices list this one under.
     pub fn new(ctx: egui::Context, alias: &str) -> Self {
-        let (found_tx, found_rx) = channel();
-        let (done_tx, done_rx) = channel();
-        let (introduced_tx, introduced_rx) = channel();
-        let (air_found_tx, air_found_rx) = channel();
-        let (air_done_tx, air_done_rx) = channel();
         let alias = alias.strip_suffix(".local").unwrap_or(alias);
-        let me = Me::with_identity(alias, Some("Macsplorer".into()), identity());
+        let local = LocalSend::new(ctx.clone(), alias);
+        let air = AirLynx::new(ctx.clone(), alias);
         let (msg_tx, msg_rx) = channel();
-        let air = airlynx::Air::load(alias);
-        let supervisor = (!cfg!(test)).then(|| Supervisor::start(me.clone(), air.me.clone(), air.favorites.clone(), msg_tx, ctx.clone()));
+        let supervisor = (!cfg!(test)).then(|| Supervisor::start(local.me().clone(), air.me.clone(), air.favorites.clone(), msg_tx, ctx.clone()));
         Self {
-            me,
-            devices: Devices::default(),
             expanded: false,
             selected: None,
-            scan: None,
-            scan_started: 0.0,
-            scan_until: 0.0,
-            found_tx,
-            found_rx,
+            local,
             air,
-            peers: Vec::new(),
-            air_scan: None,
-            air_found_tx,
-            air_found_rx,
-            air_done_tx,
-            air_done_rx,
-            air_saved: 0,
-            seen: HashMap::new(),
+            shared: Shared::default(),
             device_props: Vec::new(),
-            remembered: if cfg!(test) { Vec::new() } else { Preferences::load().devices },
-            dialogs: Vec::new(),
-            send_count: 0,
-            done_tx,
-            done_rx,
-            introduced_tx,
-            introduced_rx,
-            status: None,
-            offline: false,
-            logo: load_logo(&ctx),
-            air_logo: load_air_logo(&ctx),
             supervisor,
             msg_rx,
             receive_wanted: false,
             receive_state: State::Off,
-            offer: None,
             ctx,
         }
     }
@@ -281,7 +219,7 @@ impl Network {
 
     /// The status bar computer's tooltip.
     pub fn computer_tooltip(&self) -> String {
-        let name = &self.me.alias;
+        let name = &self.local.me().alias;
         match &self.receive_state {
             State::On(_) | State::Elsewhere => format!(
                 "Receiving files: nearby devices with LocalSend or AirLynx see this computer as \"{name}\". LocalSend devices can offer it files, which go to {} once you accept them, and AirLynx favorites can send them right away.",
@@ -310,25 +248,18 @@ impl Network {
         }
     }
 
-    /// Tests: shows `devices` as found, without scanning.
+    /// Tests: shows `devices` as found under LocalSend, without scanning.
     #[cfg(test)]
-    pub fn fake(&mut self, devices: impl IntoIterator<Item = Device>, expanded: bool, selected: Option<String>) {
-        self.offline = true;
+    pub fn fake(&mut self, devices: impl IntoIterator<Item = ::localsend::Device>, expanded: bool, selected: Option<String>) {
         self.expanded = expanded;
-        for d in devices {
-            self.saw(d.key());
-            self.devices.insert(d);
-        }
-        self.selected = selected.map(Some);
+        self.local.fake(devices, expanded);
+        self.selected = selected.map(Node::Device);
     }
 
-    /// Tests: shows `peers` as AirLynx devices found.
+    /// Tests: shows `peers` as found under AirLynx.
     #[cfg(test)]
-    pub fn fake_air(&mut self, peers: impl IntoIterator<Item = Peer>) {
-        for p in peers {
-            self.saw(airlynx::key(&p));
-            self.peers.push(p);
-        }
+    pub fn fake_air(&mut self, peers: impl IntoIterator<Item = airlynx_core::Peer>) {
+        self.air.fake(peers);
     }
 
     /// Whether a network row has the tree's selection, which the folder
@@ -343,92 +274,26 @@ impl Network {
     }
 
     pub fn take_status(&mut self) -> Option<Status> {
-        self.status.take()
+        self.shared.status.take()
+    }
+
+    /// Whether the protocol's scan has a reason to run: its row can be seen.
+    fn visible(&self, service: Service) -> bool {
+        self.expanded
+            && match service {
+                Service::LocalSend => self.local.expanded(),
+                Service::AirLynx => self.air.expanded(),
+            }
     }
 
     /// Takes in what the workers found and finished, and stops a scan that
     /// is no longer wanted. Call once a frame.
     pub fn poll(&mut self) {
-        let now = self.now();
-        while let Ok(device) = self.found_rx.try_recv() {
-            self.saw(device.key());
-            self.remember(device.ip);
-            self.devices.insert(device);
-        }
-        let mut peers = false;
-        while let Ok(peer) = self.air_found_rx.try_recv() {
-            self.saw(airlynx::key(&peer));
-            self.remember(peer.addr.ip());
-            self.peers.retain(|p| p.id != peer.id);
-            self.peers.push(peer);
-            peers = true;
-        }
-        if peers {
-            // A favorite may have been added or removed in another window.
-            self.air.refresh();
-        }
+        let (local, air) = (self.visible(Service::LocalSend), self.visible(Service::AirLynx));
+        self.local.poll(local, &mut self.shared);
+        self.air.poll(air, &mut self.shared);
         while let Ok(msg) = self.msg_rx.try_recv() {
             self.receive_msg(msg);
-        }
-        if let Some((_, offer, view)) = &self.offer
-            && let Some(closed) = offer.closed()
-        {
-            self.status = Some(Status::note(match closed {
-                Closed::Withdrawn => format!("{} took back the files it offered", view.from),
-                Closed::Expired => format!("The files {} offered weren't accepted in time", view.from),
-            }));
-            self.offer = None;
-        }
-        while let Ok((alias, result)) = self.introduced_rx.try_recv() {
-            self.status = Some(match result {
-                Ok(()) => Status::note(format!("{alias} can now find this computer")),
-                Err(e) => Status::error(format!("Couldn't tell {alias} about this computer: {e}")),
-            });
-        }
-        while let Ok((id, name, result)) = self.air_done_rx.try_recv() {
-            for d in &mut self.dialogs {
-                d.finished |= d.id == id;
-            }
-            self.status = Some(match result {
-                Ok(airlynx::Sent { files, failed: 0, skipped: 0 }) => Status::note(format!("Sent {files} file(s) to {name}")),
-                Ok(airlynx::Sent { files, failed, skipped }) => {
-                    let mut text = format!("Sent {files} file(s) to {name}");
-                    if failed > 0 {
-                        text.push_str(&format!("; {failed} arrived damaged and were refused"));
-                    }
-                    if skipped > 0 {
-                        text.push_str(&format!("; {skipped} folder(s) weren't sent, AirLynx sends files only"));
-                    }
-                    if failed > 0 { Status::error(text) } else { Status::note(text) }
-                }
-                Err(airlynx::SendError::Cancelled) => Status::note(format!("Sending to {name} was cancelled")),
-                Err(e) => Status::error(format!("Couldn't send to {name}: {e}")),
-            });
-        }
-        while let Ok((id, alias, result)) = self.done_rx.try_recv() {
-            for d in &mut self.dialogs {
-                d.finished |= d.id == id;
-            }
-            self.status = Some(match result {
-                Ok(Sent { files, declined: 0 }) => Status::note(format!("Sent {files} file(s) to {alias}")),
-                Ok(Sent { files, declined }) => Status::note(format!("Sent {files} file(s) to {alias}; {declined} weren't accepted")),
-                Err(SendError::Cancelled) => Status::note(format!("Sending to {alias} was cancelled")),
-                Err(e) => Status::error(format!("Couldn't send to {alias}: {e}")),
-            });
-        }
-        if self.scan.is_some() && !self.expanded && now > self.scan_until {
-            self.stop_scans();
-        }
-        // The near search is over and had a few seconds for the multicast
-        // answers: with no device of either kind, ask the whole network.
-        if self.found().is_empty()
-            && now - self.scan_started >= SEARCH_SECONDS
-            && let Some(scan) = &mut self.scan
-        {
-            scan.broaden();
-        }
-        if self.searching() {
-            self.ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
     }
 
@@ -436,179 +301,99 @@ impl Network {
         match msg {
             Msg::State { wanted, state } => {
                 if let State::Failed(e) = &state {
-                    self.status = Some(Status::error(format!("Couldn't receive files: {e}")));
+                    self.shared.say(Status::error(format!("Couldn't receive files: {e}")));
                 }
                 if let State::On(me) = &state {
-                    self.me.port = me.port;
-                    self.me.protocol = me.protocol;
+                    self.local.listening(me);
                 }
                 // The next scan announces this side, or no longer does.
-                if state.receiving() != self.receive_state.receiving() && !self.expanded {
-                    self.stop_scans();
+                if state.receiving() != self.receive_state.receiving() && !self.visible(Service::LocalSend) {
+                    self.local.stop();
                 }
                 self.receive_wanted = wanted;
                 self.receive_state = state;
             }
-            Msg::Event(Event::Device(device)) => {
-                if device.info.fingerprint != self.me.fingerprint {
-                    self.devices.insert(device);
-                }
-            }
-            Msg::Event(Event::Offer(offer)) => {
-                if self.offer.is_some() {
-                    offer.decline();
-                    return;
-                }
-                self.send_count += 1;
-                let view = OfferView {
-                    from: offer.from.alias.clone(),
-                    detail: offer_detail(&offer),
-                    files: offer.files.iter().map(|f| (f.file_name.clone(), f.size)).collect(),
-                    folder: folder_name(&receiving::downloads()),
-                };
-                self.status = Some(Status::note(format!("{} wants to send you files", view.from)));
-                // If Macsplorer is in the background, the Dock icon bounces.
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
-                self.offer = Some((self.send_count, offer, view));
-            }
-            Msg::Event(Event::Done(received)) => self.received(received),
-            Msg::Air(event) => self.air_event(event),
-            Msg::AirUnavailable(why) => {
-                self.status = Some(Status::error(format!("AirLynx devices can't send files here: {why}")));
-            }
+            Msg::Event(event) => self.local.event(event, &mut self.shared),
+            Msg::Air(event) => self.air.event(event, &mut self.shared),
+            Msg::AirUnavailable(why) => self.air.unavailable(&why, &mut self.shared),
         }
-    }
-
-    /// What an AirLynx favorite sends in, as it happens: the status bar says
-    /// which file is coming and how it ended.
-    fn air_event(&mut self, event: ReceiveEvent) {
-        let folder = folder_name(&receiving::downloads());
-        let name_at = |peer: &str| {
-            let ip = peer.rsplit_once(':').map_or(peer, |(ip, _)| ip);
-            self.peers.iter().find(|p| p.addr.ip().to_string() == ip).map_or_else(|| "a device".to_owned(), |p| p.name.clone())
-        };
-        self.status = Some(match event {
-            ReceiveEvent::Refused { name, .. } => Status::error(format!(
-                "{name} tried to send files, but isn't one of your AirLynx favorites. Add it to the favorites in Network Neighborhood first."
-            )),
-            ReceiveEvent::Connected { peer, files } => Status::note(format!("Receiving {files} file(s) from {}...", name_at(&peer))),
-            ReceiveEvent::FileStarted { peer, name, .. } => Status::note(format!("Receiving '{name}' from {}...", name_at(&peer))),
-            ReceiveEvent::FileProgress { peer, name, received, size } => {
-                let percent = (received * 100).checked_div(size).unwrap_or(100);
-                Status::note(format!("Receiving '{name}' from {}: {percent}%", name_at(&peer)))
-            }
-            ReceiveEvent::FileSaved { path, .. } => {
-                airlynx::quarantine(&path);
-                self.air_saved += 1;
-                Status::note(format!("Received {} in {folder}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())))
-            }
-            ReceiveEvent::FileRejected { peer, name, reason } => Status::error(format!("'{name}' from {} was refused: {reason}", name_at(&peer))),
-            ReceiveEvent::SessionEnded { peer, error: Some(e) } => Status::error(format!("Receiving from {} stopped: {e}", name_at(&peer))),
-            ReceiveEvent::SessionEnded { peer, error: None } => {
-                let n = std::mem::take(&mut self.air_saved);
-                if n == 0 {
-                    return;
-                }
-                Status::note(format!("Received {n} file(s) from {} in {folder}", name_at(&peer)))
-            }
-        });
-    }
-
-    /// A transfer in is over: its dialog closes, the status bar says how it went.
-    fn received(&mut self, r: Received) {
-        for d in &mut self.dialogs {
-            d.finished |= d.kind() == Kind::Receive;
-        }
-        let folder = folder_name(&receiving::downloads());
-        let (n, from) = (r.saved.len(), &r.from);
-        self.status = Some(match r.end {
-            End::Finished if r.missing == 0 => Status::note(format!("Received {n} file(s) from {from} in {folder}")),
-            End::Finished => Status::error(format!("Received {n} file(s) from {from} in {folder}; {} didn't arrive", r.missing)),
-            End::Cancelled => Status::note(format!("Receiving from {from} was cancelled; {n} file(s) were saved in {folder}")),
-            End::CancelledBySender => Status::note(format!("{from} cancelled sending; {n} file(s) were saved in {folder}")),
-            End::TimedOut => Status::error(format!("{from} stopped sending; {n} file(s) were saved in {folder}")),
-        });
     }
 
     /// The "Sending..." dialogs that are due. Cancel closes one at once:
     /// while the device hasn't answered yet, the worker can only drop the
     /// transfer once it does.
     pub fn show_dialogs(&mut self) {
-        let now = self.now();
+        let now = now(&self.ctx);
         let ctx = self.ctx.clone();
-        self.dialogs.retain_mut(|d| {
+        self.shared.dialogs.retain_mut(|d| {
             d.finished |= d.progress.is_cancelled();
             d.show(&ctx, now, false)
         });
-        let found: Vec<(String, device_dialog::View, bool)> =
-            if self.device_props.is_empty() { Vec::new() } else { self.found().iter().map(|f| (f.key(), self.device_view(f), matches!(f, Found::Air(_)))).collect() };
+        let (local, air) = (&self.local, &self.air);
         self.device_props.retain_mut(|(key, view)| {
-            let kind = found.iter().find(|(k, ..)| k == key);
-            if let Some((_, fresh, _)) = kind {
-                *view = fresh.clone();
+            let (fresh, logo) = match Service::of(key) {
+                Service::LocalSend => (local.view(key), local.logo()),
+                Service::AirLynx => (air.view(key), air.logo()),
+            };
+            if let Some(fresh) = fresh {
+                *view = fresh;
             }
-            let air = kind.map_or_else(|| key.starts_with(airlynx::KEY_PREFIX), |k| k.2);
-            let logo = if air { self.air_logo.id() } else { self.logo.id() };
             !device_dialog::show(&ctx, key, view, logo)
         });
-        let answer = self.offer.as_ref().and_then(|(id, _, view)| offer_dialog::show(&ctx, *id, view, self.logo.id()));
-        if let Some(answer) = answer
-            && let Some((id, offer, view)) = self.offer.take()
-        {
-            match answer {
-                offer_dialog::Answer::Accept => {
-                    let progress = offer.accept();
-                    let tracked = Arc::new(Receiving { progress, alias: view.from.clone(), folder: view.folder.clone() });
-                    self.dialogs.push(ProgressDialog::new(id, tracked, Kind::Receive));
-                    self.status = Some(Status::note(format!("Receiving files from {}...", view.from)));
-                }
-                offer_dialog::Answer::Decline => {
-                    offer.decline();
-                    self.status = Some(Status::note(format!("Declined the files from {}", view.from)));
-                }
-            }
-        }
+        self.local.show_dialogs(&mut self.shared);
     }
 
     /// Does `action`; `Some` is a folder to open.
     pub fn apply(&mut self, action: NetAction, selection: Vec<PathBuf>) -> Option<PathBuf> {
         match action {
-            NetAction::Toggle => {
+            NetAction::Toggle(None) => {
                 self.expanded = !self.expanded;
-                if self.expanded {
-                    self.ensure_scan();
-                } else {
-                    self.stop_scans();
-                    if self.selected.as_ref().is_some_and(Option::is_some) {
-                        self.selected = Some(None);
-                    }
+                if !self.expanded && self.selected.as_ref().is_some_and(|n| *n != Node::Root) {
+                    self.selected = Some(Node::Root);
                 }
+                self.sync(Service::LocalSend);
+                self.sync(Service::AirLynx);
             }
-            NetAction::Rescan => {
-                self.devices.clear();
-                self.peers.clear();
-                self.stop_scans();
+            NetAction::Toggle(Some(service)) => {
+                match service {
+                    Service::LocalSend => self.local.toggle(),
+                    Service::AirLynx => self.air.toggle(),
+                }
+                if !self.visible(service) && matches!(&self.selected, Some(Node::Device(key)) if Service::of(key) == service) {
+                    self.selected = Some(Node::Service(service));
+                }
+                self.sync(service);
+            }
+            NetAction::Rescan(service) => {
                 self.expanded = true;
-                self.start_scan(Sweep::All);
-            }
-            NetAction::Introduce(key) => self.introduce(&key),
-            NetAction::CancelSearch => {
-                if let Some(scan) = &self.scan {
-                    scan.cancel_sweep();
+                let announce = self.receiving();
+                match service {
+                    Service::LocalSend => self.local.rescan(announce),
+                    Service::AirLynx => self.air.rescan(),
                 }
             }
+            NetAction::Introduce(key) => self.local.introduce(&key, &mut self.shared),
+            NetAction::CancelSearch => self.local.cancel_search(),
             NetAction::Scan => {
-                self.scan_until = self.now() + MENU_SCAN_SECONDS;
-                self.ensure_scan();
+                let until = now(&self.ctx) + MENU_SCAN_SECONDS;
+                let announce = self.receiving();
+                self.local.keep_until(until);
+                self.local.ensure_scan(announce);
+                self.air.keep_until(until);
+                self.air.ensure_scan();
             }
-            NetAction::Select(key) => {
-                self.status = key.as_deref().and_then(|k| self.found().into_iter().find(|f| f.key() == k)).map(|f| Status::note(self.describe(&f)));
-                self.selected = Some(key);
+            NetAction::Select(node) => {
+                let text = match &node {
+                    Node::Device(key) => self.describe(key),
+                    Node::Root | Node::Service(_) => None,
+                };
+                self.shared.status = text.map(Status::note);
+                self.selected = Some(node);
             }
-            NetAction::ToggleFavorite(key) => self.toggle_favorite(&key),
+            NetAction::ToggleFavorite(key) => self.air.toggle_favorite(&key, &mut self.shared),
             NetAction::Properties(key) => {
                 if !self.device_props.iter().any(|(k, _)| *k == key)
-                    && let Some(view) = self.found().into_iter().find(|f| f.key() == key).map(|f| self.device_view(&f))
+                    && let Some(view) = self.device_view(&key)
                 {
                     self.device_props.push((key, view));
                 }
@@ -625,141 +410,32 @@ impl Network {
         None
     }
 
-    /// Keeps the address of a device found over IPv4 in the settings, so the
-    /// next scan looks there first. Addresses of this computer (a LocalSend
-    /// app on it) aren't worth keeping.
-    fn remember(&mut self, ip: IpAddr) {
-        let IpAddr::V4(ip) = ip else { return };
-        if cfg!(test) || self.remembered.first() == Some(&ip) || local_ipv4().iter().any(|i| i.ip == ip) {
-            return;
+    /// Starts the protocol's scan when its row is in sight, and ends it when
+    /// it isn't.
+    fn sync(&mut self, service: Service) {
+        let (visible, announce) = (self.visible(service), self.receiving());
+        match service {
+            Service::LocalSend if visible => self.local.ensure_scan(announce),
+            Service::LocalSend => self.local.stop(),
+            Service::AirLynx if visible => self.air.ensure_scan(),
+            Service::AirLynx => self.air.stop(),
         }
-        self.remembered.retain(|d| *d != ip);
-        self.remembered.insert(0, ip);
-        Preferences::update(|p| {
-            p.remember_device(ip);
-        });
-    }
-
-    /// Starts the usual search if none is going: the remembered addresses
-    /// and their /24s, our /24 and the multicast group. The whole network
-    /// follows only when that found nothing ([`Network::poll`]).
-    fn ensure_scan(&mut self) {
-        self.start_scan(Sweep::Near);
-    }
-
-    fn start_scan(&mut self, sweep: Sweep) {
-        if self.scan.is_none() && !self.offline {
-            let (tx, ctx) = (self.found_tx.clone(), self.ctx.clone());
-            let options = Options { announce: self.receive_state.receiving(), sweep, first: self.remembered.clone() };
-            self.scan = Some(Scan::start(self.me.clone(), options, move |d| {
-                if tx.send(d).is_ok() {
-                    ctx.request_repaint();
-                }
-            }));
-            self.scan_started = self.now();
-            let (tx, ctx) = (self.air_found_tx.clone(), self.ctx.clone());
-            self.air_scan = Some(airlynx::Scan::start(self.air.me.clone(), move |p| {
-                if tx.send(p).is_ok() {
-                    ctx.request_repaint();
-                }
-            }));
-        }
-    }
-
-    /// Ends the search for both kinds of device.
-    fn stop_scans(&mut self) {
-        self.scan = None;
-        self.air_scan = None;
-    }
-
-    /// Every device found, by name.
-    fn found(&self) -> Vec<Found<'_>> {
-        let mut all: Vec<Found> = self.devices.iter().map(Found::Local).chain(self.peers.iter().map(Found::Air)).collect();
-        all.sort_by_cached_key(|f| f.alias().to_lowercase());
-        all
     }
 
     /// A device's tooltip and status bar text.
-    fn describe(&self, found: &Found) -> String {
-        match found {
-            Found::Local(d) => describe(d),
-            Found::Air(p) => airlynx::describe(p, self.air.is_favorite(p.id)),
+    fn describe(&self, key: &str) -> Option<String> {
+        match Service::of(key) {
+            Service::LocalSend => self.local.describe(key),
+            Service::AirLynx => self.air.describe(key),
         }
     }
 
-    fn logo_of(&self, found: &Found) -> egui::TextureId {
-        match found {
-            Found::Local(_) => self.logo.id(),
-            Found::Air(_) => self.air_logo.id(),
+    /// What a device's Properties window shows.
+    fn device_view(&self, key: &str) -> Option<device_dialog::View> {
+        match Service::of(key) {
+            Service::LocalSend => self.local.view(key),
+            Service::AirLynx => self.air.view(key),
         }
-    }
-
-    /// Notes that the device `key` was just heard from.
-    fn saw(&mut self, key: String) {
-        let now = SystemTime::now();
-        self.seen.entry(key).and_modify(|s| s.last = now).or_insert(Seen { first: now, last: now });
-    }
-
-    /// What a device's Properties window shows: where it is, who it is and
-    /// when it was seen.
-    fn device_view(&self, found: &Found) -> device_dialog::View {
-        let when = |t: Option<SystemTime>| t.map_or_else(String::new, |t| crate::locale::long_date_time(Some(t), true));
-        let seen = self.seen.get(&found.key());
-        let times = vec![("First seen:", when(seen.map(|s| s.first))), ("Last seen:", when(seen.map(|s| s.last)))];
-        let yes_no = |b: bool| if b { "Yes" } else { "No" };
-        let sentence = |word: &str| word[..1].to_uppercase() + &word[1..];
-        let groups = match found {
-            Found::Local(d) => {
-                let model = d.info.device_model.clone().unwrap_or_else(|| "Unknown".to_owned());
-                vec![
-                    vec![("Type:", sentence(local_kind_word(d.device_type()))), ("Model:", model)],
-                    vec![
-                        ("Address:", d.ip.to_string()),
-                        ("Port:", d.port.to_string()),
-                        ("Protocol:", format!("LocalSend {}, {}", d.info.version, d.protocol.scheme().to_uppercase())),
-                    ],
-                ]
-            }
-            Found::Air(p) => {
-                let favorite = self.air.is_favorite(p.id);
-                vec![
-                    vec![("Type:", sentence(airlynx::kind_word(p.kind))), ("ID:", p.id.to_string()), ("Short ID:", p.id.short())],
-                    vec![("Address:", p.addr.ip().to_string()), ("Port:", p.addr.port().to_string()), ("Protocol:", "AirLynx".to_owned())],
-                    vec![
-                        ("Favorite:", format!("{}: {}", yes_no(favorite), if favorite { "it can send files here" } else { "it can't send files here" })),
-                        ("Added you:", format!("{}: {}", yes_no(p.mutual), if p.mutual { "this computer can send to it" } else { "this computer can't send to it" })),
-                    ],
-                    times,
-                ]
-            }
-        };
-        device_dialog::View { name: found.alias().to_owned(), groups }
-    }
-
-    /// Adds an AirLynx device to the favorites, or takes it off.
-    fn toggle_favorite(&mut self, key: &str) {
-        let Some(peer) = self.peers.iter().find(|p| airlynx::key(p) == key).cloned() else { return };
-        self.status = Some(match self.air.toggle_favorite(&peer) {
-            Ok(true) if peer.mutual => Status::note(format!("{} is a favorite now: files can go either way", peer.name)),
-            Ok(true) => Status::note(format!("{} is a favorite now and can send files here. To send to it, it has to add this computer too.", peer.name)),
-            Ok(false) => Status::note(format!("{} is no longer a favorite, so it can't send files here", peer.name)),
-            Err(e) => Status::error(format!("Couldn't change the favorites: {e}")),
-        });
-    }
-
-    /// What the search says while it goes: the part of the network being
-    /// asked and how far along it is.
-    fn searching_text(&self) -> String {
-        self.scan.as_ref().and_then(Scan::progress).map_or_else(|| "Searching...".to_owned(), |p| progress_text(&p))
-    }
-
-    /// Whether a scan is young enough that an empty list means "not yet".
-    fn searching(&self) -> bool {
-        self.scan.as_ref().is_some_and(|s| s.sweeping() || self.now() - self.scan_started < SEARCH_SECONDS)
-    }
-
-    fn now(&self) -> f64 {
-        self.ctx.input(|i| i.time)
     }
 
     /// Sends `paths` to the device `key` on a worker thread, with the
@@ -768,61 +444,17 @@ impl Network {
         if paths.is_empty() {
             return;
         }
-        if key.starts_with(airlynx::KEY_PREFIX) {
-            return self.send_air(key, paths);
+        match Service::of(key) {
+            Service::LocalSend => self.local.send(key, paths, &mut self.shared),
+            Service::AirLynx => self.air.send(key, paths, &mut self.shared),
         }
-        let Some(device) = self.devices.get(key).cloned() else { return };
-        self.send_count += 1;
-        let id = self.send_count;
-        let progress = Arc::new(Sending { progress: Progress::default(), alias: device.alias().to_owned(), from: paths[0].clone() });
-        self.dialogs.push(ProgressDialog::new(id, progress.clone(), Kind::Send));
-        self.status = Some(Status::note(format!("Waiting for {} to accept...", device.alias())));
-        let (me, tx, ctx) = (self.me.clone(), self.done_tx.clone(), self.ctx.clone());
-        thread::spawn(move || {
-            let result = send::send(&me, &device, &paths, None, &progress.progress);
-            if tx.send((id, device.alias().to_owned(), result)).is_ok() {
-                ctx.request_repaint();
-            }
-        });
-    }
-
-    /// `send` for an AirLynx device: no question to wait for, so the dialog
-    /// shows the files going at once.
-    fn send_air(&mut self, key: &str, paths: Vec<PathBuf>) {
-        let Some(peer) = self.peers.iter().find(|p| airlynx::key(p) == key).cloned() else { return };
-        self.send_count += 1;
-        let id = self.send_count;
-        let progress = Arc::new(airlynx::Sending::new(&peer.name, paths[0].clone()));
-        self.dialogs.push(ProgressDialog::new(id, progress.clone(), Kind::Send));
-        self.status = Some(Status::note(format!("Sending to {}...", peer.name)));
-        let (me, tx, ctx) = (self.air.me.clone(), self.air_done_tx.clone(), self.ctx.clone());
-        thread::spawn(move || {
-            let result = airlynx::send_to(&peer, &me, &paths, &progress);
-            if tx.send((id, peer.name.clone(), result)).is_ok() {
-                ctx.request_repaint();
-            }
-        });
-    }
-
-    /// Tells the device `key` about this computer on a worker thread, so it
-    /// lists it, as it would after hearing our announcement.
-    fn introduce(&mut self, key: &str) {
-        let Some(device) = self.devices.get(key).cloned() else { return };
-        self.status = Some(Status::note(format!("Telling {} about this computer...", device.alias())));
-        let (me, tx, ctx) = (self.me.clone(), self.introduced_tx.clone(), self.ctx.clone());
-        thread::spawn(move || {
-            let result = send::introduce(&me, &device);
-            if tx.send((device.alias().to_owned(), result)).is_ok() {
-                ctx.request_repaint();
-            }
-        });
     }
 
     // ---- drawing --------------------------------------------------------
 
     /// The Network section of the Folders pane: its heading, Network
-    /// Neighborhood and, expanded, the devices or a note that there are
-    /// none. Device rows take drops.
+    /// Neighborhood and, expanded, the two protocols with their devices.
+    /// Device rows take drops.
     pub fn tree(&self, ui: &mut Ui, can_send: bool, focused: bool, (drag, frame): (Option<&ItemDrag>, &mut DragFrame), actions: &mut Vec<NetAction>) {
         ui.add_space(3.0);
         ui.horizontal(|ui| {
@@ -830,115 +462,85 @@ impl Network {
             ui.label(RichText::new("Network").font(theme::bold(theme::FONT_SIZE)));
         });
         ui.add_space(1.0);
+        let receiving = self.receiving();
+        let mut rows = Rows { can_send, focused, drag, frame, selected: self.selected.as_ref(), actions };
         let root = Guide { ancestors: Vec::new(), has_next: false, has_prev: false };
-        let selected = self.selected == Some(None);
-        let icon = RowIcon::Paint(Icon::Network, self.receiving());
-        let resp = row(ui, 0, &root, icon, TITLE, true, self.expanded, selected, focused, false, actions);
+        let resp = rows.branch(ui, 0, &root, RowIcon::Paint(Icon::Network, receiving), TITLE, Node::Root, self.expanded);
+        let actions = &mut *rows.actions;
         egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| {
             let label = if self.expanded { "Collapse" } else { "Expand" };
             if ui.add(egui_classic_menu::item(ui, RichText::new(label).font(theme::bold(theme::FONT_SIZE)), None)).clicked() {
-                actions.push(NetAction::Toggle);
-            }
-            if ui.add(egui_classic_menu::item(ui, "Search Again", None)).clicked() {
-                actions.push(NetAction::Rescan);
+                actions.push(NetAction::Toggle(None));
             }
             ui.separator();
             self.receive_items(ui, actions);
         });
-        if self.receiving() {
+        if receiving {
             let _ = resp.on_hover_text(self.computer_tooltip());
         }
         if !self.expanded {
             return;
         }
-        // While the sweep goes on, a last row says which part of the network
-        // it is at, whether or not devices were found already.
-        let sweep = self.scan.as_ref().and_then(Scan::progress).map(|p| progress_text(&p));
-        let found = self.found();
-        if found.is_empty() {
-            let text = match sweep {
-                Some(text) => text,
-                None if self.searching() => "Searching...".to_owned(),
-                None => "No LocalSend or AirLynx devices found".to_owned(),
-            };
-            let searching = self.searching();
-            let resp = note_row(ui, &text);
-            if searching {
-                search_menu(&resp, actions);
-            }
-            return;
-        }
-        let receiving = self.receiving();
-        let count = found.len() + usize::from(sweep.is_some());
-        for (i, device) in found.iter().enumerate() {
-            let key = device.key();
-            let guide = Guide { ancestors: vec![false], has_next: i + 1 < count, has_prev: true };
-            let mark = Mark::Device(key.clone());
-            let marked = drag.is_some_and(|d| d.marks(&mark));
-            let selected = self.selected.as_ref().is_some_and(|s| s.as_deref() == Some(key.as_str()));
-            let resp = row(ui, 1, &guide, RowIcon::Image(self.logo_of(device)), device.alias(), false, false, selected || marked, focused || marked, true, actions);
-            frame.device(ui.clip_rect(), resp.rect, &key);
-            if resp.clicked() {
-                actions.push(NetAction::Select(Some(key.clone())));
-            }
-            let resp = resp.on_hover_text(self.describe(device));
-            egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| {
-                let send = egui_classic_menu::item(ui, RichText::new("Send Selected Items").font(theme::bold(theme::FONT_SIZE)), None);
-                if ui.add_enabled(can_send, send).clicked() {
-                    actions.push(NetAction::SendSelection(key.clone()));
-                }
-                if let Found::Air(peer) = device {
-                    let favorite = self.air.is_favorite(peer.id);
-                    let label = if favorite { "Remove from Favorites" } else { "Add to Favorites" };
-                    if ui.add(egui_classic_menu::item(ui, label, None)).clicked() {
-                        actions.push(NetAction::ToggleFavorite(key.clone()));
-                        ui.close();
-                    }
-                    properties_item(ui, &key, actions);
-                    return;
-                }
-                let visible = egui_classic_menu::item(ui, "Let Device Find This Computer", None);
-                let resp = ui.add_enabled(receiving, visible);
-                if receiving && resp.clicked() {
-                    actions.push(NetAction::Introduce(key.clone()));
-                    ui.close();
-                } else if !receiving {
-                    let _ = resp.on_disabled_hover_text("Turn on Receive Files first: the device could not send anything to this computer otherwise.");
-                }
-                properties_item(ui, &key, actions);
-            });
-        }
-        if let Some(text) = sweep {
-            let resp = note_row(ui, &text);
-            search_menu(&resp, actions);
-        }
+        self.local.tree(ui, &mut rows, false, receiving);
+        self.air.tree(ui, &mut rows, true);
     }
 
     /// The Send To submenu's items: a device each, or a note while there
     /// are none.
     pub fn send_to_items(&self, ui: &mut Ui, actions: &mut Vec<NetAction>) {
-        if self.scan.is_none() && !self.offline {
+        if self.local.idle() || self.air.idle() {
             actions.push(NetAction::Scan);
         }
-        let found = self.found();
-        if found.is_empty() {
-            let text = if self.scan.is_none() || self.searching() { self.searching_text() } else { "No LocalSend or AirLynx devices found".to_owned() };
+        if self.local.is_empty() && self.air.is_empty() {
+            let looking = self.local.searching() || self.air.searching() || !(self.local.scanning() || self.air.scanning());
+            let text = if looking { self.local.searching_text() } else { "No LocalSend or AirLynx devices found".to_owned() };
             ui.add_enabled(false, egui::Button::new(text));
             return;
         }
-        for device in &found {
-            let button = egui::Button::image_and_text(egui::Image::new((self.logo_of(device), egui::vec2(16.0, 16.0))), device.alias());
-            if ui.add(button).on_hover_text(self.describe(device)).clicked() {
-                actions.push(NetAction::SendSelection(device.key()));
-            }
+        self.local.send_to_items(ui, actions);
+        self.air.send_to_items(ui, actions);
+    }
+}
+
+/// What the protocols' rows need to draw: the pane's state, and where the
+/// clicks and menu choices go.
+struct Rows<'a> {
+    can_send: bool,
+    focused: bool,
+    drag: Option<&'a ItemDrag>,
+    frame: &'a mut DragFrame,
+    selected: Option<&'a Node>,
+    actions: &'a mut Vec<NetAction>,
+}
+
+impl Rows<'_> {
+    /// A row that expands: Network Neighborhood or a protocol.
+    #[allow(clippy::too_many_arguments)]
+    fn branch(&mut self, ui: &mut Ui, depth: usize, guide: &Guide, icon: RowIcon, label: &str, node: Node, expanded: bool) -> egui::Response {
+        let selected = self.selected == Some(&node);
+        row(ui, depth, guide, icon, label, Some((&node, expanded)), selected, self.focused, self.actions)
+    }
+
+    /// A device's row, a drop target; the caller adds its menu. A click
+    /// selects it, and `tooltip` is what it shows when pointed at.
+    #[allow(clippy::too_many_arguments)]
+    fn device(&mut self, ui: &mut Ui, depth: usize, guide: &Guide, key: &str, alias: &str, logo: egui::TextureId, tooltip: String) -> egui::Response {
+        let marked = self.drag.is_some_and(|d| d.marks(&Mark::Device(key.to_owned())));
+        let selected = self.selected.is_some_and(|n| matches!(n, Node::Device(k) if k == key));
+        let resp = row(ui, depth, guide, RowIcon::Image(logo), alias, None, selected || marked, self.focused || marked, self.actions);
+        self.frame.device(ui.clip_rect(), resp.rect, key);
+        if resp.clicked() {
+            self.actions.push(NetAction::Select(Node::Device(key.to_owned())));
         }
+        resp.on_hover_text(tooltip)
     }
 }
 
 /// One row: lines, box, icon and a label that highlights only its text, as
-/// `app::tree_row` draws a folder. Clicks on the box or a double-click
-/// toggle an `expandable` row; a click elsewhere selects it (the caller
-/// handles that for devices, `device`).
+/// `app::tree_row` draws a folder. A `branch` (the node and whether it is
+/// expanded) has a box: clicks on the box or a double-click toggle it, a
+/// click elsewhere selects it. A device has none, and the caller handles its
+/// clicks.
 #[allow(clippy::too_many_arguments)]
 fn row(
     ui: &mut Ui,
@@ -946,11 +548,9 @@ fn row(
     guide: &Guide,
     icon: RowIcon,
     label: &str,
-    expandable: bool,
-    expanded: bool,
+    branch: Option<(&Node, bool)>,
     selected: bool,
     focused: bool,
-    device: bool,
     actions: &mut Vec<NetAction>,
 ) -> egui::Response {
     let font = egui::TextStyle::Body.resolve(ui.style());
@@ -959,7 +559,7 @@ fn row(
     let label_x = x0 + (depth + 1) as f32 * TREE_INDENT + 16.0 + 4.0;
     let width = (label_x - ui.max_rect().left() + text_w + 6.0).max(ui.available_width());
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TREE_ROW_HEIGHT), Sense::click());
-    let boxr = paint_branch(ui, rect, depth, guide, expandable, expanded);
+    let boxr = paint_branch(ui, rect, depth, guide, branch.is_some(), branch.is_some_and(|(_, expanded)| expanded));
     let p = ui.painter();
     let icon_rect = egui::Rect::from_min_size(egui::pos2(x0 + (depth + 1) as f32 * TREE_INDENT, rect.center().y - 8.0), egui::vec2(16.0, 16.0));
     match icon {
@@ -981,16 +581,33 @@ fn row(
         theme::color::text()
     };
     p.text(egui::pos2(label_x, rect.center().y), egui::Align2::LEFT_CENTER, label, font, color);
-    if !device {
+    if let Some((node, _)) = branch {
+        let service = match node {
+            Node::Service(s) => Some(*s),
+            Node::Root | Node::Device(_) => None,
+        };
         let on_box = resp.interact_pointer_pos().is_some_and(|p| boxr.expand(3.0).contains(p));
         if resp.clicked() {
-            actions.push(if on_box { NetAction::Toggle } else { NetAction::Select(None) });
+            actions.push(if on_box { NetAction::Toggle(service) } else { NetAction::Select(node.clone()) });
         }
         if resp.double_clicked() && !on_box {
-            actions.push(NetAction::Toggle);
+            actions.push(NetAction::Toggle(service));
         }
     }
     resp
+}
+
+/// The menu of a protocol's row: Expand or Collapse, and Search Again.
+fn section_menu(resp: &egui::Response, service: Service, expanded: bool, actions: &mut Vec<NetAction>) {
+    egui::Popup::context_menu(resp).style(theme::menu_style).show(|ui| {
+        let label = if expanded { "Collapse" } else { "Expand" };
+        if ui.add(egui_classic_menu::item(ui, RichText::new(label).font(theme::bold(theme::FONT_SIZE)), None)).clicked() {
+            actions.push(NetAction::Toggle(Some(service)));
+        }
+        if ui.add(egui_classic_menu::item(ui, "Search Again", None)).clicked() {
+            actions.push(NetAction::Rescan(service));
+        }
+    });
 }
 
 /// The device menu's last item, set off by a line: its Properties window.
@@ -1009,16 +626,17 @@ enum RowIcon {
     Image(egui::TextureId),
 }
 
-/// LocalSend's logo as a texture, 32 pixels for the 16 point icon.
-fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
-    load_png(ctx, "localsend-logo", include_bytes!("../../../../assets/localsend/logo-32.png"))
+/// A gray note in a protocol's list: "No devices found", or how the search
+/// is going. `depth` is the level of the devices it sits under.
+fn note_row(ui: &mut Ui, depth: usize, guide: &Guide, text: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TREE_ROW_HEIGHT), Sense::click());
+    paint_branch(ui, rect, depth, guide, false, false);
+    let x = ui.max_rect().left() + 2.0 + (depth + 1) as f32 * TREE_INDENT;
+    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, text, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
+    resp
 }
 
-/// AirLynx's logo, the same size.
-fn load_air_logo(ctx: &egui::Context) -> egui::TextureHandle {
-    load_png(ctx, "airlynx-logo", include_bytes!("../../../../assets/airlynx/logo-32.png"))
-}
-
+/// A logo as a texture, 32 pixels for the 16 point icon.
 fn load_png(ctx: &egui::Context, name: &str, png: &[u8]) -> egui::TextureHandle {
     let rgba = image::load_from_memory_with_format(png, image::ImageFormat::Png).expect("the embedded logo is a PNG").into_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
@@ -1026,127 +644,19 @@ fn load_png(ctx: &egui::Context, name: &str, png: &[u8]) -> egui::TextureHandle 
     ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
 }
 
-/// The kept identity (with TLS), or none for a fingerprint new to this run.
-fn identity() -> Option<localsend::Identity> {
-    #[cfg(all(feature = "localsend-tls", not(test)))]
-    return macsplorer_core::preferences::config_dir().and_then(|d| localsend::Identity::load_or_generate(&d.join(IDENTITY_FILE)));
-    #[cfg(not(all(feature = "localsend-tls", not(test))))]
-    None
-}
-
 /// A folder as the user knows it: "Downloads".
 fn folder_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// The second line of the question: "Phone or tablet (Samsung) at 192.168.2.15".
-fn offer_detail(offer: &Offer) -> String {
-    let model = offer.from.device_model.as_deref().map_or_else(String::new, |m| format!(" ({m})"));
-    let kind = match offer.from.device_type.unwrap_or(DeviceType::Desktop) {
-        DeviceType::Mobile => "Phone or tablet",
-        DeviceType::Desktop => "Computer",
-        DeviceType::Web => "Web browser",
-        DeviceType::Headless | DeviceType::Server => "Server",
-    };
-    format!("{kind}{model} at {}", offer.ip)
+/// A word with a capital: "computer" is "Computer".
+fn sentence(word: &str) -> String {
+    word[..1].to_uppercase() + &word[1..]
 }
 
-/// A device's tooltip and status bar text.
-/// The last row of Network Neighborhood: a gray note under the devices.
-fn note_row(ui: &mut Ui, text: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TREE_ROW_HEIGHT), Sense::click());
-    let leaf = Guide { ancestors: vec![false], has_next: false, has_prev: true };
-    paint_branch(ui, rect, 1, &leaf, false, false);
-    let x = ui.max_rect().left() + 2.0 + 2.0 * TREE_INDENT;
-    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, text, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
-    resp
-}
-
-/// The menu of the note while a search goes on: Cancel stops it.
-fn search_menu(resp: &egui::Response, actions: &mut Vec<NetAction>) {
-    egui::Popup::context_menu(resp).style(theme::menu_style).show(|ui| {
-        if ui.add(egui_classic_menu::item(ui, "Cancel", None)).clicked() {
-            actions.push(NetAction::CancelSearch);
-            ui.close();
-        }
-    });
-}
-
-/// Which part of the network the sweep is asking, and how far along it is:
-/// "Searching 10.11.46.x (38%)", the /24 the address is in.
-fn progress_text(p: &SweepProgress) -> String {
-    let [a, b, c, _] = p.at.octets();
-    format!("Searching {a}.{b}.{c}.x ({}%)", p.percent())
-}
-
-fn local_kind_word(kind: DeviceType) -> &'static str {
-    match kind {
-        DeviceType::Mobile => "phone or tablet",
-        DeviceType::Desktop => "computer",
-        DeviceType::Web => "web browser",
-        DeviceType::Headless => "LocalSend without a window",
-        DeviceType::Server => "server",
-    }
-}
-
-fn describe(d: &Device) -> String {
-    let kind = local_kind_word(d.device_type());
-    let model = d.info.device_model.as_deref().map_or_else(String::new, |m| format!(" ({m})"));
-    format!("{}: {kind}{model} at {}, LocalSend protocol {}", d.alias(), d.ip, d.info.version)
-}
-
-/// A send as the progress dialog sees it.
-struct Sending {
-    progress: Progress,
-    alias: String,
-    /// The first item sent, for the "From" line.
-    from: PathBuf,
-}
-
-/// A transfer in, as the progress dialog sees it.
-struct Receiving {
-    progress: Arc<receive::Progress>,
-    alias: String,
-    folder: String,
-}
-
-impl Tracked for Receiving {
-    fn snapshot(&self) -> Snapshot {
-        let (done, total) = self.progress.bytes();
-        let current = self.progress.current();
-        let first = if current.is_empty() { format!("Waiting for {}...", self.alias) } else { current };
-        Snapshot { done, total, lines: [first, format!("From '{}' to '{}'", self.alias, self.folder)] }
-    }
-
-    fn cancel(&self) {
-        self.progress.cancel()
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.progress.is_cancelled()
-    }
-}
-
-impl Tracked for Sending {
-    fn snapshot(&self) -> Snapshot {
-        let (done, total) = self.progress.bytes();
-        let folder = self.from.parent().and_then(|p| p.file_name()).map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let lines = match self.progress.stage() {
-            Stage::Preparing => ["Preparing...".to_owned(), String::new()],
-            Stage::Waiting => [format!("Waiting for {} to accept...", self.alias), String::new()],
-            Stage::Sending(name) => [name, format!("From '{folder}' to '{}'", self.alias)],
-        };
-        // Nothing is done while waiting, so no time left is shown.
-        Snapshot { done, total, lines }
-    }
-
-    fn cancel(&self) {
-        self.progress.cancel()
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.progress.is_cancelled()
-    }
+/// The frame's time, in seconds.
+fn now(ctx: &egui::Context) -> f64 {
+    ctx.input(|i| i.time)
 }
 
 #[cfg(test)]
@@ -1157,8 +667,7 @@ pub mod tests {
     use eframe::egui;
     use egui_kittest::Harness;
 
-    use localsend::discovery::SweepProgress;
-    use localsend::{Device, DeviceInfo, DeviceType, Protocol};
+    use ::localsend::{Device, DeviceInfo, DeviceType, Protocol};
 
     /// A device as a scan would report it.
     pub fn device(alias: &str, kind: DeviceType, last: u8) -> Device {
@@ -1188,21 +697,29 @@ pub mod tests {
         }
     }
 
+    /// A Network with a phone under LocalSend and a computer under AirLynx.
+    fn both() -> (super::Network, String, String) {
+        let mut network = super::Network::new(egui::Context::default(), "Test Mac");
+        let phone = device("Jan's Pixel", DeviceType::Mobile, 31);
+        let mac = air_peer("Living Room Mac", airlynx_core::DeviceKind::Desktop, true, 44);
+        let keys = (phone.key(), super::airlynx::key(&mac));
+        network.fake([phone], true, None);
+        network.fake_air([mac]);
+        (network, keys.0, keys.1)
+    }
+
     /// A device's Properties name where it is, who it is and when it was seen.
     #[test]
     fn a_device_has_properties() {
-        let mut network = super::Network::new(egui::Context::default(), "Test Mac");
-        network.fake([device("Jan's Pixel", DeviceType::Mobile, 31)], true, None);
-        network.fake_air([air_peer("Living Room Mac", airlynx_core::DeviceKind::Desktop, true, 44)]);
-        let found = network.found();
+        let (mut network, local_key, air_key) = both();
         let rows = |view: &super::device_dialog::View| view.groups.iter().flatten().map(|(l, v)| format!("{l} {v}")).collect::<Vec<_>>();
 
-        let local = rows(&network.device_view(&found[0]));
+        let local = rows(&network.device_view(&local_key).unwrap());
         assert!(local.iter().any(|r| r == "Address: 192.168.1.31"), "{local:?}");
         assert!(local.iter().any(|r| r == "Protocol: LocalSend 2.1, HTTPS"), "{local:?}");
         assert!(local.iter().all(|r| !r.starts_with("Fingerprint") && !r.contains("seen")), "{local:?}");
 
-        let air = network.device_view(&found[1]);
+        let air = network.device_view(&air_key).unwrap();
         let air_rows = rows(&air);
         assert!(air_rows.iter().any(|r| r == "Address: 192.168.1.44"), "{air_rows:?}");
         assert!(air_rows.iter().any(|r| r == "ID: 0000000000000000000000000000002c"), "{air_rows:?}");
@@ -1213,33 +730,60 @@ pub mod tests {
         assert_eq!(air.title(), "Living Room Mac Properties");
 
         // The menu's action opens one window, however often it is chosen.
-        let key = found[0].key();
-        drop(found);
-        network.apply(super::NetAction::Properties(key.clone()), Vec::new());
-        network.apply(super::NetAction::Properties(key), Vec::new());
+        network.apply(super::NetAction::Properties(local_key.clone()), Vec::new());
+        network.apply(super::NetAction::Properties(local_key), Vec::new());
         network.apply(super::NetAction::Properties("gone".into()), Vec::new());
         assert_eq!(network.device_props.len(), 1);
+    }
+
+    /// Each protocol's row expands on its own, and a scan only runs while it
+    /// is expanded and in sight.
+    #[test]
+    fn the_protocols_expand_on_their_own() {
+        use super::{NetAction, Node, Service};
+        let (mut network, local_key, air_key) = both();
+        let toggle = |n: &mut super::Network, s| {
+            n.apply(NetAction::Toggle(s), Vec::new());
+        };
+        assert!(network.visible(Service::LocalSend) && network.visible(Service::AirLynx));
+
+        // AirLynx collapses, LocalSend stays; a device of AirLynx that was
+        // selected leaves the selection on its row.
+        network.apply(NetAction::Select(Node::Device(air_key.clone())), Vec::new());
+        toggle(&mut network, Some(Service::AirLynx));
+        assert!(network.visible(Service::LocalSend) && !network.visible(Service::AirLynx));
+        assert_eq!(network.selected, Some(Node::Service(Service::AirLynx)));
+
+        // A device of the other one stays selected.
+        network.apply(NetAction::Select(Node::Device(local_key.clone())), Vec::new());
+        toggle(&mut network, Some(Service::AirLynx));
+        assert_eq!(network.selected, Some(Node::Device(local_key)));
+
+        // Collapsing Network Neighborhood hides both, and keeps their state.
+        toggle(&mut network, None);
+        assert!(!network.visible(Service::LocalSend) && !network.visible(Service::AirLynx));
+        assert_eq!(network.selected, Some(Node::Root));
+        toggle(&mut network, None);
+        assert!(network.visible(Service::LocalSend) && network.visible(Service::AirLynx));
     }
 
     /// The device Properties windows, for a LocalSend and an AirLynx device.
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
     fn device_properties() {
-        let mut network = super::Network::new(egui::Context::default(), "Test Mac");
-        network.fake([device("Jan's Pixel", DeviceType::Mobile, 31)], true, None);
-        network.fake_air([air_peer("Living Room Mac", airlynx_core::DeviceKind::Desktop, true, 44)]);
-        let views: Vec<_> = network.found().iter().map(|f| (network.device_view(f), matches!(f, super::Found::Air(_)))).collect();
+        let (network, local_key, air_key) = both();
+        let views = [(network.device_view(&local_key).unwrap(), false), (network.device_view(&air_key).unwrap(), true)];
         for (view, air) in views {
             let mut harness = Harness::builder().with_size(view.size()).with_pixels_per_point(2.0).wgpu().build_ui_state(
-                |ui, logos: &mut Option<(egui::TextureHandle, egui::TextureHandle)>| {
-                    let Some((local, air_logo)) = logos else {
+                |ui, apps: &mut Option<(super::LocalSend, super::AirLynx)>| {
+                    let Some((local, air_app)) = apps else {
                         crate::theme::install(ui.ctx());
                         crate::theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
-                        *logos = Some((super::load_logo(ui.ctx()), super::load_air_logo(ui.ctx())));
+                        *apps = Some((super::LocalSend::new(ui.ctx().clone(), "Test Mac"), super::AirLynx::new(ui.ctx().clone(), "Test Mac")));
                         return;
                     };
                     let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
-                    super::device_dialog::draw(&mut window, &view, if air { air_logo.id() } else { local.id() });
+                    super::device_dialog::draw(&mut window, &view, if air { air_app.logo() } else { local.logo() });
                 },
                 None,
             );
@@ -1253,31 +797,24 @@ pub mod tests {
         }
     }
 
-    #[test]
-    fn the_search_names_the_part_of_the_network_it_is_at() {
-        let at = Ipv4Addr::new(10, 11, 46, 85);
-        assert_eq!(super::progress_text(&SweepProgress { done: 76, total: 200, at }), "Searching 10.11.46.x (38%)");
-        assert_eq!(super::progress_text(&SweepProgress { done: 0, total: 254, at }), "Searching 10.11.46.x (0%)");
-    }
-
     /// The Receive Files question, for a phone offering photos.
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
     fn receive_offer() {
         let mut files: Vec<(String, u64)> = (0..7).map(|i| (format!("IMG_20241017_18{:04}.jpg", 3205 + i * 7), 2_400_000 + i * 310_000)).collect();
         files.insert(0, ("Holiday video.mp4".into(), 48_500_000));
-        let view = super::OfferView { from: "Jan's Pixel".into(), detail: "Phone or tablet (Pixel 8) at 192.168.2.31".into(), files, folder: "Downloads".into() };
+        let view = super::offer_dialog::View { from: "Jan's Pixel".into(), detail: "Phone or tablet (Pixel 8) at 192.168.2.31".into(), files, folder: "Downloads".into() };
         let size = view.size();
         let mut harness = Harness::builder().with_size(size).with_pixels_per_point(2.0).wgpu().build_ui_state(
-            |ui, logo: &mut Option<egui::TextureHandle>| {
-                let Some(logo) = logo else {
+            |ui, app: &mut Option<super::LocalSend>| {
+                let Some(local) = app else {
                     crate::theme::install(ui.ctx());
                     crate::theme::set_dark(ui.ctx(), std::env::var_os("SHOT_DARK").is_some());
-                    *logo = Some(super::load_logo(ui.ctx()));
+                    *app = Some(super::LocalSend::new(ui.ctx().clone(), "Test Mac"));
                     return;
                 };
                 let mut window = ui.new_child(egui::UiBuilder::new().max_rect(ui.ctx().content_rect()));
-                super::offer_dialog::draw(&mut window, &view, logo.id());
+                super::offer_dialog::draw(&mut window, &view, local.logo());
             },
             None,
         );

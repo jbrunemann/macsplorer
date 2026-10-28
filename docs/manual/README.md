@@ -311,17 +311,17 @@ On Linux, files dragged from another file manager such as Nautilus go into the f
 
 Macsplorer can send files to phones, tablets and computers on the same Wi-Fi or network that run [LocalSend](https://localsend.org), a free app for Android, iPhone, iPad, Windows, Mac and Linux. Nothing has to be set up: open LocalSend on the other device and leave it open.
 
-In the Folders pane, click the **+** next to **Network Neighborhood** under **Network**. Macsplorer looks for LocalSend on your network, which takes a few seconds, and lists every device it finds by the name LocalSend gives it, with the LocalSend logo. Point at a device to see what kind of device it is and its network address. Click **−** to stop looking; right-click Network Neighborhood and choose **Search Again** if a device you just started doesn't show up. While it looks, the last row under Network Neighborhood says which part of the network it is asking, such as "Searching 10.11.46.x (38%)". Right-click that row and choose **Cancel** to stop looking; devices already found stay in the list, and ones that announce themselves are still added. Macsplorer looks first where it found devices before, then in your own range, as LocalSend does. Only if that finds nothing does it go through the whole network, which on a big network (a phone in another range than your Mac) can take a minute or more. **Search Again** always goes through the whole network.
+In the Folders pane, click the **+** next to **Network Neighborhood** under **Network**. It holds one row for each app, **LocalSend** and **AirLynx**, and each has its own **+**: Macsplorer only starts looking for an app's devices when you open its row, and stops when you close it again (or close Network Neighborhood). Click the **+** next to **LocalSend**. Macsplorer looks for LocalSend on your network, which takes a few seconds, and lists every device it finds by the name LocalSend gives it, with the LocalSend logo. Point at a device to see what kind of device it is and its network address. Click **−** to stop looking; right-click the LocalSend row and choose **Search Again** if a device you just started doesn't show up. While it looks, the last row under LocalSend says which part of the network it is asking, such as "Searching 10.11.46.x (38%)". Right-click that row and choose **Cancel** to stop looking; devices already found stay in the list, and ones that announce themselves are still added. Macsplorer looks first where it found devices before, then in your own range, as LocalSend does. Only if that finds nothing does it go through the whole network, which on a big network (a phone in another range than your Mac) can take a minute or more. **Search Again** always goes through the whole network.
 
 <img src="images/network-neighborhood.png" alt="Network Neighborhood with a phone and a computer found" width="560">
 
 To send, do one of these:
 
 - Drag files or folders onto a device in the Folders pane.
-- Right-click the selected items and choose **Send To**, then the device. The Send To menu starts looking on its own when Network Neighborhood is closed, so a device may take a moment to appear in it.
+- Right-click the selected items and choose **Send To**, then the device. The Send To menu looks for devices of both apps on its own, even when their rows are closed, so a device may take a moment to appear in it.
 - Right-click a device and choose **Send Selected Items**.
 
-Right-click a device and choose **Properties** to see what Macsplorer knows about it: its kind, its address and port and the protocol. A LocalSend device also shows its model. An AirLynx device shows its ID (in full, and the short form AirLynx lists it by), whether it is a favorite here and whether it has added your Mac, and when it was first and last seen. "Last seen" is the last time the device answered while Network Neighborhood was open, so it stops moving when you collapse the list; the times start when you open Macsplorer.
+Right-click a device and choose **Properties** to see what Macsplorer knows about it: its kind, its address and port and the protocol. A LocalSend device also shows its model. An AirLynx device shows its ID (in full, and the short form AirLynx lists it by), whether it is a favorite here and whether it has added your Mac, and when it was first and last seen. "Last seen" is the last time the device answered while the AirLynx row was open, so it stops moving when you collapse the list; the times start when you open Macsplorer.
 
 <img src="images/send-to-menu.png" alt="Send To in the right-click menu, with two devices" width="560">
 
@@ -333,7 +333,7 @@ The first time, your Mac may ask whether Macsplorer may find devices on your loc
 
 #### AirLynx devices
 
-Network Neighborhood also lists devices that run AirLynx, a small file-transfer app for Android and Mac. They show up in the same list, sorted by name, with the AirLynx logo instead of LocalSend's. Sending to one works the same way (drag, Send To, or **Send Selected Items**), with two differences:
+Network Neighborhood also has a row for AirLynx, a small file-transfer app for Android and Mac. Click the **+** next to **AirLynx** to look for its devices; the two apps are looked for separately, so you can use one without the other. The devices are sorted by name and carry the AirLynx logo. Right-click the AirLynx row and choose **Search Again** if one doesn't show up. Sending to one works the same way (drag, Send To, or **Send Selected Items**), with two differences:
 
 - AirLynx never asks the other side. A device only takes files from its **favorites**, so sending works once the other device has added your Mac as a favorite, and files from it only arrive once you have added it. Right-click the device and choose **Add to Favorites** (or **Remove from Favorites**). Point at a device to see where things stand: whether it is a favorite here, and whether it has added your Mac. If it hasn't, Macsplorer says so when you try to send.
 - AirLynx sends files, not folders. A folder among the selected items is left out, and the status bar says so.
@@ -578,7 +578,7 @@ Both need Git to be installed on your Mac. Macsplorer looks for it when it start
 Check that **Receive Files** is on: Network Neighborhood's icon has a hand under it, and the menu of the computer at the right end of the status bar shows a check mark by it. Then refresh the list in LocalSend on the phone. Both have to be on the same network, as for sending.
 
 **My phone doesn't show up in Network Neighborhood.**
-Check that LocalSend (or AirLynx) is open on it and that both are on the same network (guest Wi-Fi networks often keep devices apart). Then right-click Network Neighborhood and choose **Search Again**. If your Mac asked about finding devices on your local network and you said no, see [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).
+Check that LocalSend (or AirLynx) is open on it and that both are on the same network (guest Wi-Fi networks often keep devices apart). Then right-click the LocalSend or AirLynx row and choose **Search Again**. If your Mac asked about finding devices on your local network and you said no, see [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).
 
 **Which version do I have?**
 Choose **Help › About Macsplorer**. A small window shows the app icon, the version, the locale (the region that dates and numbers follow, and the language names are sorted by) and the font the text is set in. When the font comes from a file, its location is a link: click it and the window closes and the font's folder opens with the file selected. Press OK, Return or Escape to close the window.
