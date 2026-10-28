@@ -1,0 +1,12 @@
+[package]
+name = "airlynx-core"
+description = "AirLynx: UDP discovery, favorite devices and an encrypted TCP file transfer between devices on the local network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chacha20poly1305 = "0.10"
+getrandom = "0.3"
+sha2 = "0.10"
+x25519-dalek = "2"

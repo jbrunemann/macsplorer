@@ -1,10 +1,11 @@
-//! Network Neighborhood: the LocalSend devices nearby, as a section of the
-//! Folders pane, sending files to them and receiving theirs. Not from
-//! Windows beyond the name and the place in the tree: Explorer's Network
-//! Neighborhood listed SMB computers and shares, this one lists LocalSend
-//! apps.
+//! Network Neighborhood: the LocalSend and AirLynx devices nearby, as a
+//! section of the Folders pane, sending files to them and receiving theirs.
+//! Not from Windows beyond the name and the place in the tree: Explorer's
+//! Network Neighborhood listed SMB computers and shares, this one lists
+//! LocalSend and AirLynx apps.
 //!
-//! The protocol is the `localsend` crate; this module is the glue: the
+//! The protocols are the `localsend` crate and `airlynx-core` ([`airlynx`]
+//! has the AirLynx side); this module is the glue: the
 //! rows (drawn like the tree's own, with `app::paint_branch`), the Send To
 //! submenu, drops on a device, the "Sending..." and "Receiving..." progress
 //! dialogs, the Receive Files question ([`offer_dialog`]) and the worker
@@ -20,19 +21,28 @@
 //! - Items dropped on a device, or sent with Send To, go there: the device
 //!   asks its user to accept, and the dialog waits until they do.
 //!
-//! Devices carry LocalSend's own logo (`assets/localsend`), not a Windows
-//! icon: they are LocalSend apps, whatever they run on.
+//! Devices carry their app's own logo (`assets/localsend`, `assets/airlynx`),
+//! not a Windows icon: they are LocalSend or AirLynx apps, whatever they run
+//! on.
+//!
+//! AirLynx devices differ in one way: nothing asks. A device takes files
+//! from its favorites, so a device's menu has Add to Favorites (what lets it
+//! send here) and sending needs the device to have added this computer. The
+//! list shows both kinds, by name.
 //!
 //! - Receive Files (Network Neighborhood's menu, or the computer pane of
 //!   the status bar) lets nearby devices send files here. It is off until
 //!   turned on, remembered in `settings.json` and shared by all windows.
-//!   Each offer asks first; accepted files go to Downloads. While it is
+//!   Each LocalSend offer asks first; accepted files go to Downloads, as
+//!   do the files of AirLynx favorites, which arrive without a question and
+//!   show in the status bar. While it is
 //!   on, this computer is shown shared: Windows 2000's sharing hand under
 //!   Network Neighborhood's icon and the status bar's computer, whose
 //!   tooltip says under what name others see it. Scans only announce this
 //!   side while it receives, so a computer that doesn't take files stays
 //!   off the other devices' lists.
 
+mod airlynx;
 mod offer_dialog;
 mod receiving;
 
@@ -42,6 +52,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
+use airlynx_core::{Peer, receive::ReceiveEvent};
 use eframe::egui;
 use egui::{RichText, Sense, Ui};
 
@@ -88,6 +99,8 @@ pub enum NetAction {
     ToggleReceive,
     /// "Open Downloads", where received files go.
     OpenDownloads,
+    /// An AirLynx device's menu: add it to the favorites, or take it off.
+    ToggleFavorite(String),
 }
 
 /// The identity kept between runs, so other devices know this computer
@@ -100,6 +113,31 @@ type SendDone = (u64, String, Result<Sent, SendError>);
 
 /// The outcome of telling a device about this computer, with its name.
 type Introduced = (String, Result<(), SendError>);
+
+/// An AirLynx send's outcome, tagged with its dialog and the device's name.
+type AirSendDone = (u64, String, Result<airlynx::Sent, airlynx::SendError>);
+
+/// A device found, of either kind.
+enum Found<'a> {
+    Local(&'a Device),
+    Air(&'a Peer),
+}
+
+impl Found<'_> {
+    fn key(&self) -> String {
+        match self {
+            Found::Local(d) => d.key(),
+            Found::Air(p) => airlynx::key(p),
+        }
+    }
+
+    fn alias(&self) -> &str {
+        match self {
+            Found::Local(d) => d.alias(),
+            Found::Air(p) => &p.name,
+        }
+    }
+}
 
 pub struct Network {
     me: Me,
@@ -115,6 +153,17 @@ pub struct Network {
     scan_until: f64,
     found_tx: Sender<Device>,
     found_rx: Receiver<Device>,
+    /// AirLynx: this computer's identity and favorites, the devices found,
+    /// the scan for them and the sends under way.
+    air: airlynx::Air,
+    peers: Vec<Peer>,
+    air_scan: Option<airlynx::Scan>,
+    air_found_tx: Sender<Peer>,
+    air_found_rx: Receiver<Peer>,
+    air_done_tx: Sender<AirSendDone>,
+    air_done_rx: Receiver<AirSendDone>,
+    /// Files AirLynx favorites sent in this session, for the status bar.
+    air_saved: usize,
     /// Where devices were found before, from the settings; the next scan
     /// asks there first.
     remembered: Vec<Ipv4Addr>,
@@ -128,8 +177,10 @@ pub struct Network {
     status: Option<Status>,
     /// Tests: never touch the network.
     offline: bool,
-    /// LocalSend's logo, which every device row and menu item shows.
+    /// LocalSend's logo, which its device rows and menu items show, and
+    /// AirLynx's, for the other kind.
     logo: egui::TextureHandle,
+    air_logo: egui::TextureHandle,
     /// Runs the receiver while Receive Files is on; `None` in tests.
     supervisor: Option<Supervisor>,
     msg_rx: Receiver<Msg>,
@@ -147,10 +198,13 @@ impl Network {
         let (found_tx, found_rx) = channel();
         let (done_tx, done_rx) = channel();
         let (introduced_tx, introduced_rx) = channel();
+        let (air_found_tx, air_found_rx) = channel();
+        let (air_done_tx, air_done_rx) = channel();
         let alias = alias.strip_suffix(".local").unwrap_or(alias);
         let me = Me::with_identity(alias, Some("Macsplorer".into()), identity());
         let (msg_tx, msg_rx) = channel();
-        let supervisor = (!cfg!(test)).then(|| Supervisor::start(me.clone(), msg_tx, ctx.clone()));
+        let air = airlynx::Air::load(alias);
+        let supervisor = (!cfg!(test)).then(|| Supervisor::start(me.clone(), air.me.clone(), air.favorites.clone(), msg_tx, ctx.clone()));
         Self {
             me,
             devices: Devices::default(),
@@ -161,6 +215,14 @@ impl Network {
             scan_until: 0.0,
             found_tx,
             found_rx,
+            air,
+            peers: Vec::new(),
+            air_scan: None,
+            air_found_tx,
+            air_found_rx,
+            air_done_tx,
+            air_done_rx,
+            air_saved: 0,
             remembered: if cfg!(test) { Vec::new() } else { Preferences::load().devices },
             dialogs: Vec::new(),
             send_count: 0,
@@ -171,6 +233,7 @@ impl Network {
             status: None,
             offline: false,
             logo: load_logo(&ctx),
+            air_logo: load_air_logo(&ctx),
             supervisor,
             msg_rx,
             receive_wanted: false,
@@ -198,11 +261,11 @@ impl Network {
         let name = &self.me.alias;
         match &self.receive_state {
             State::On(_) | State::Elsewhere => format!(
-                "Receiving files: nearby devices with LocalSend see this computer as \"{name}\" and can offer it files, which go to {} once you accept them.",
+                "Receiving files: nearby devices with LocalSend or AirLynx see this computer as \"{name}\". LocalSend devices can offer it files, which go to {} once you accept them, and AirLynx favorites can send them right away.",
                 folder_name(&receiving::downloads())
             ),
             State::Failed(e) => format!("Receive Files is on, but this computer can't receive: {e}"),
-            State::Off => "Not receiving files. Click to let nearby devices with LocalSend send files to this computer.".into(),
+            State::Off => "Not receiving files. Click to let nearby devices with LocalSend or AirLynx send files to this computer.".into(),
         }
     }
 
@@ -233,6 +296,12 @@ impl Network {
         self.selected = selected.map(Some);
     }
 
+    /// Tests: shows `peers` as AirLynx devices found.
+    #[cfg(test)]
+    pub fn fake_air(&mut self, peers: impl IntoIterator<Item = Peer>) {
+        self.peers.extend(peers);
+    }
+
     /// Whether a network row has the tree's selection, which the folder
     /// rows then don't show.
     pub fn has_selection(&self) -> bool {
@@ -253,8 +322,19 @@ impl Network {
     pub fn poll(&mut self) {
         let now = self.now();
         while let Ok(device) = self.found_rx.try_recv() {
-            self.remember(&device);
+            self.remember(device.ip);
             self.devices.insert(device);
+        }
+        let mut peers = false;
+        while let Ok(peer) = self.air_found_rx.try_recv() {
+            self.remember(peer.addr.ip());
+            self.peers.retain(|p| p.id != peer.id);
+            self.peers.push(peer);
+            peers = true;
+        }
+        if peers {
+            // A favorite may have been added or removed in another window.
+            self.air.refresh();
         }
         while let Ok(msg) = self.msg_rx.try_recv() {
             self.receive_msg(msg);
@@ -274,6 +354,26 @@ impl Network {
                 Err(e) => Status::error(format!("Couldn't tell {alias} about this computer: {e}")),
             });
         }
+        while let Ok((id, name, result)) = self.air_done_rx.try_recv() {
+            for d in &mut self.dialogs {
+                d.finished |= d.id == id;
+            }
+            self.status = Some(match result {
+                Ok(airlynx::Sent { files, failed: 0, skipped: 0 }) => Status::note(format!("Sent {files} file(s) to {name}")),
+                Ok(airlynx::Sent { files, failed, skipped }) => {
+                    let mut text = format!("Sent {files} file(s) to {name}");
+                    if failed > 0 {
+                        text.push_str(&format!("; {failed} arrived damaged and were refused"));
+                    }
+                    if skipped > 0 {
+                        text.push_str(&format!("; {skipped} folder(s) weren't sent, AirLynx sends files only"));
+                    }
+                    if failed > 0 { Status::error(text) } else { Status::note(text) }
+                }
+                Err(airlynx::SendError::Cancelled) => Status::note(format!("Sending to {name} was cancelled")),
+                Err(e) => Status::error(format!("Couldn't send to {name}: {e}")),
+            });
+        }
         while let Ok((id, alias, result)) = self.done_rx.try_recv() {
             for d in &mut self.dialogs {
                 d.finished |= d.id == id;
@@ -286,7 +386,7 @@ impl Network {
             });
         }
         if self.scan.is_some() && !self.expanded && now > self.scan_until {
-            self.scan = None;
+            self.stop_scans();
         }
         if self.searching() {
             self.ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -305,7 +405,7 @@ impl Network {
                 }
                 // The next scan announces this side, or no longer does.
                 if state.receiving() != self.receive_state.receiving() && !self.expanded {
-                    self.scan = None;
+                    self.stop_scans();
                 }
                 self.receive_wanted = wanted;
                 self.receive_state = state;
@@ -333,7 +433,46 @@ impl Network {
                 self.offer = Some((self.send_count, offer, view));
             }
             Msg::Event(Event::Done(received)) => self.received(received),
+            Msg::Air(event) => self.air_event(event),
+            Msg::AirUnavailable(why) => {
+                self.status = Some(Status::error(format!("AirLynx devices can't send files here: {why}")));
+            }
         }
+    }
+
+    /// What an AirLynx favorite sends in, as it happens: the status bar says
+    /// which file is coming and how it ended.
+    fn air_event(&mut self, event: ReceiveEvent) {
+        let folder = folder_name(&receiving::downloads());
+        let name_at = |peer: &str| {
+            let ip = peer.rsplit_once(':').map_or(peer, |(ip, _)| ip);
+            self.peers.iter().find(|p| p.addr.ip().to_string() == ip).map_or_else(|| "a device".to_owned(), |p| p.name.clone())
+        };
+        self.status = Some(match event {
+            ReceiveEvent::Refused { name, .. } => Status::error(format!(
+                "{name} tried to send files, but isn't one of your AirLynx favorites. Add it to the favorites in Network Neighborhood first."
+            )),
+            ReceiveEvent::Connected { peer, files } => Status::note(format!("Receiving {files} file(s) from {}...", name_at(&peer))),
+            ReceiveEvent::FileStarted { peer, name, .. } => Status::note(format!("Receiving '{name}' from {}...", name_at(&peer))),
+            ReceiveEvent::FileProgress { peer, name, received, size } => {
+                let percent = (received * 100).checked_div(size).unwrap_or(100);
+                Status::note(format!("Receiving '{name}' from {}: {percent}%", name_at(&peer)))
+            }
+            ReceiveEvent::FileSaved { path, .. } => {
+                airlynx::quarantine(&path);
+                self.air_saved += 1;
+                Status::note(format!("Received {} in {folder}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())))
+            }
+            ReceiveEvent::FileRejected { peer, name, reason } => Status::error(format!("'{name}' from {} was refused: {reason}", name_at(&peer))),
+            ReceiveEvent::SessionEnded { peer, error: Some(e) } => Status::error(format!("Receiving from {} stopped: {e}", name_at(&peer))),
+            ReceiveEvent::SessionEnded { peer, error: None } => {
+                let n = std::mem::take(&mut self.air_saved);
+                if n == 0 {
+                    return;
+                }
+                Status::note(format!("Received {n} file(s) from {} in {folder}", name_at(&peer)))
+            }
+        });
     }
 
     /// A transfer in is over: its dialog closes, the status bar says how it went.
@@ -389,7 +528,7 @@ impl Network {
                 if self.expanded {
                     self.ensure_scan();
                 } else {
-                    self.scan = None;
+                    self.stop_scans();
                     if self.selected.as_ref().is_some_and(Option::is_some) {
                         self.selected = Some(None);
                     }
@@ -397,7 +536,8 @@ impl Network {
             }
             NetAction::Rescan => {
                 self.devices.clear();
-                self.scan = None;
+                self.peers.clear();
+                self.stop_scans();
                 self.expanded = true;
                 self.ensure_scan();
             }
@@ -412,9 +552,10 @@ impl Network {
                 self.ensure_scan();
             }
             NetAction::Select(key) => {
-                self.status = key.as_deref().and_then(|k| self.devices.get(k)).map(|d| Status::note(describe(d)));
+                self.status = key.as_deref().and_then(|k| self.found().into_iter().find(|f| f.key() == k)).map(|f| Status::note(self.describe(&f)));
                 self.selected = Some(key);
             }
+            NetAction::ToggleFavorite(key) => self.toggle_favorite(&key),
             NetAction::SendSelection(key) => self.send(&key, selection),
             NetAction::ToggleReceive => {
                 self.receive_wanted = !self.receive_wanted;
@@ -430,8 +571,8 @@ impl Network {
     /// Keeps the address of a device found over IPv4 in the settings, so the
     /// next scan looks there first. Addresses of this computer (a LocalSend
     /// app on it) aren't worth keeping.
-    fn remember(&mut self, device: &Device) {
-        let IpAddr::V4(ip) = device.ip else { return };
+    fn remember(&mut self, ip: IpAddr) {
+        let IpAddr::V4(ip) = ip else { return };
         if cfg!(test) || self.remembered.first() == Some(&ip) || local_ipv4().iter().any(|i| i.ip == ip) {
             return;
         }
@@ -452,7 +593,52 @@ impl Network {
                 }
             }));
             self.scan_started = self.now();
+            let (tx, ctx) = (self.air_found_tx.clone(), self.ctx.clone());
+            self.air_scan = Some(airlynx::Scan::start(self.air.me.clone(), move |p| {
+                if tx.send(p).is_ok() {
+                    ctx.request_repaint();
+                }
+            }));
         }
+    }
+
+    /// Ends the search for both kinds of device.
+    fn stop_scans(&mut self) {
+        self.scan = None;
+        self.air_scan = None;
+    }
+
+    /// Every device found, by name.
+    fn found(&self) -> Vec<Found<'_>> {
+        let mut all: Vec<Found> = self.devices.iter().map(Found::Local).chain(self.peers.iter().map(Found::Air)).collect();
+        all.sort_by_cached_key(|f| f.alias().to_lowercase());
+        all
+    }
+
+    /// A device's tooltip and status bar text.
+    fn describe(&self, found: &Found) -> String {
+        match found {
+            Found::Local(d) => describe(d),
+            Found::Air(p) => airlynx::describe(p, self.air.is_favorite(p.id)),
+        }
+    }
+
+    fn logo_of(&self, found: &Found) -> egui::TextureId {
+        match found {
+            Found::Local(_) => self.logo.id(),
+            Found::Air(_) => self.air_logo.id(),
+        }
+    }
+
+    /// Adds an AirLynx device to the favorites, or takes it off.
+    fn toggle_favorite(&mut self, key: &str) {
+        let Some(peer) = self.peers.iter().find(|p| airlynx::key(p) == key).cloned() else { return };
+        self.status = Some(match self.air.toggle_favorite(&peer) {
+            Ok(true) if peer.mutual => Status::note(format!("{} is a favorite now: files can go either way", peer.name)),
+            Ok(true) => Status::note(format!("{} is a favorite now and can send files here. To send to it, it has to add this computer too.", peer.name)),
+            Ok(false) => Status::note(format!("{} is no longer a favorite, so it can't send files here", peer.name)),
+            Err(e) => Status::error(format!("Couldn't change the favorites: {e}")),
+        });
     }
 
     /// What the search says while it goes: the part of the network being
@@ -473,10 +659,13 @@ impl Network {
     /// Sends `paths` to the device `key` on a worker thread, with the
     /// progress dialog.
     pub fn send(&mut self, key: &str, paths: Vec<PathBuf>) {
-        let Some(device) = self.devices.get(key).cloned() else { return };
         if paths.is_empty() {
             return;
         }
+        if key.starts_with(airlynx::KEY_PREFIX) {
+            return self.send_air(key, paths);
+        }
+        let Some(device) = self.devices.get(key).cloned() else { return };
         self.send_count += 1;
         let id = self.send_count;
         let progress = Arc::new(Sending { progress: Progress::default(), alias: device.alias().to_owned(), from: paths[0].clone() });
@@ -486,6 +675,24 @@ impl Network {
         thread::spawn(move || {
             let result = send::send(&me, &device, &paths, None, &progress.progress);
             if tx.send((id, device.alias().to_owned(), result)).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// `send` for an AirLynx device: no question to wait for, so the dialog
+    /// shows the files going at once.
+    fn send_air(&mut self, key: &str, paths: Vec<PathBuf>) {
+        let Some(peer) = self.peers.iter().find(|p| airlynx::key(p) == key).cloned() else { return };
+        self.send_count += 1;
+        let id = self.send_count;
+        let progress = Arc::new(airlynx::Sending::new(&peer.name, paths[0].clone()));
+        self.dialogs.push(ProgressDialog::new(id, progress.clone(), Kind::Send));
+        self.status = Some(Status::note(format!("Sending to {}...", peer.name)));
+        let (me, tx, ctx) = (self.air.me.clone(), self.air_done_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let result = airlynx::send_to(&peer, &me, &paths, &progress);
+            if tx.send((id, peer.name.clone(), result)).is_ok() {
                 ctx.request_repaint();
             }
         });
@@ -541,11 +748,12 @@ impl Network {
         // While the sweep goes on, a last row says which part of the network
         // it is at, whether or not devices were found already.
         let sweep = self.scan.as_ref().and_then(Scan::progress).map(|p| progress_text(&p));
-        if self.devices.is_empty() {
+        let found = self.found();
+        if found.is_empty() {
             let text = match sweep {
                 Some(text) => text,
                 None if self.searching() => "Searching...".to_owned(),
-                None => "No LocalSend devices found".to_owned(),
+                None => "No LocalSend or AirLynx devices found".to_owned(),
             };
             let searching = self.searching();
             let resp = note_row(ui, &text);
@@ -555,23 +763,32 @@ impl Network {
             return;
         }
         let receiving = self.receiving();
-        let count = self.devices.len() + usize::from(sweep.is_some());
-        for (i, device) in self.devices.iter().enumerate() {
+        let count = found.len() + usize::from(sweep.is_some());
+        for (i, device) in found.iter().enumerate() {
             let key = device.key();
             let guide = Guide { ancestors: vec![false], has_next: i + 1 < count, has_prev: true };
             let mark = Mark::Device(key.clone());
             let marked = drag.is_some_and(|d| d.marks(&mark));
             let selected = self.selected.as_ref().is_some_and(|s| s.as_deref() == Some(key.as_str()));
-            let resp = row(ui, 1, &guide, RowIcon::Image(self.logo.id()), device.alias(), false, false, selected || marked, focused || marked, true, actions);
+            let resp = row(ui, 1, &guide, RowIcon::Image(self.logo_of(device)), device.alias(), false, false, selected || marked, focused || marked, true, actions);
             frame.device(ui.clip_rect(), resp.rect, &key);
             if resp.clicked() {
                 actions.push(NetAction::Select(Some(key.clone())));
             }
-            let resp = resp.on_hover_text(describe(device));
+            let resp = resp.on_hover_text(self.describe(device));
             egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| {
                 let send = egui_classic_menu::item(ui, RichText::new("Send Selected Items").font(theme::bold(theme::FONT_SIZE)), None);
                 if ui.add_enabled(can_send, send).clicked() {
                     actions.push(NetAction::SendSelection(key.clone()));
+                }
+                if let Found::Air(peer) = device {
+                    let favorite = self.air.is_favorite(peer.id);
+                    let label = if favorite { "Remove from Favorites" } else { "Add to Favorites" };
+                    if ui.add(egui_classic_menu::item(ui, label, None)).clicked() {
+                        actions.push(NetAction::ToggleFavorite(key.clone()));
+                        ui.close();
+                    }
+                    return;
                 }
                 let visible = egui_classic_menu::item(ui, "Let Device Find This Computer", None);
                 let resp = ui.add_enabled(receiving, visible);
@@ -595,14 +812,15 @@ impl Network {
         if self.scan.is_none() && !self.offline {
             actions.push(NetAction::Scan);
         }
-        if self.devices.is_empty() {
-            let text = if self.scan.is_none() || self.searching() { self.searching_text() } else { "No LocalSend devices found".to_owned() };
+        let found = self.found();
+        if found.is_empty() {
+            let text = if self.scan.is_none() || self.searching() { self.searching_text() } else { "No LocalSend or AirLynx devices found".to_owned() };
             ui.add_enabled(false, egui::Button::new(text));
             return;
         }
-        for device in self.devices.iter() {
-            let button = egui::Button::image_and_text(egui::Image::new((self.logo.id(), egui::vec2(16.0, 16.0))), device.alias());
-            if ui.add(button).on_hover_text(describe(device)).clicked() {
+        for device in &found {
+            let button = egui::Button::image_and_text(egui::Image::new((self.logo_of(device), egui::vec2(16.0, 16.0))), device.alias());
+            if ui.add(button).on_hover_text(self.describe(device)).clicked() {
                 actions.push(NetAction::SendSelection(device.key()));
             }
         }
@@ -676,11 +894,19 @@ enum RowIcon {
 
 /// LocalSend's logo as a texture, 32 pixels for the 16 point icon.
 fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
-    let png = include_bytes!("../../../../assets/localsend/logo-32.png");
-    let rgba = image::load_from_memory_with_format(png, image::ImageFormat::Png).expect("the embedded LocalSend logo is a PNG").into_rgba8();
+    load_png(ctx, "localsend-logo", include_bytes!("../../../../assets/localsend/logo-32.png"))
+}
+
+/// AirLynx's logo, the same size.
+fn load_air_logo(ctx: &egui::Context) -> egui::TextureHandle {
+    load_png(ctx, "airlynx-logo", include_bytes!("../../../../assets/airlynx/logo-32.png"))
+}
+
+fn load_png(ctx: &egui::Context, name: &str, png: &[u8]) -> egui::TextureHandle {
+    let rgba = image::load_from_memory_with_format(png, image::ImageFormat::Png).expect("the embedded logo is a PNG").into_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-    ctx.load_texture("localsend-logo", image, egui::TextureOptions::LINEAR)
+    ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
 }
 
 /// The kept identity (with TLS), or none for a fingerprint new to this run.
@@ -826,6 +1052,19 @@ pub mod tests {
             download: Some(false),
         };
         Device::new(info, IpAddr::V4(Ipv4Addr::new(192, 168, 1, last)), 53317, Protocol::Https)
+    }
+
+    /// An AirLynx device as a scan would report it.
+    pub fn air_peer(name: &str, kind: airlynx_core::DeviceKind, mutual: bool, last: u8) -> airlynx_core::Peer {
+        let mut id = [0u8; 16];
+        id[15] = last;
+        airlynx_core::Peer {
+            addr: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, last)), 47800),
+            id: airlynx_core::DeviceId::from_bytes(id),
+            name: name.into(),
+            mutual,
+            kind,
+        }
     }
 
     #[test]

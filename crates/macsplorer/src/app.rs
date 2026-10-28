@@ -6809,6 +6809,7 @@ mod screenshot {
         use localsend::DeviceType;
         let devices = [device("Mystic Blackberry", DeviceType::Desktop, 20), device("Jan's Pixel", DeviceType::Mobile, 31)];
         app.network.fake(devices, true, selected.map(str::to_owned));
+        app.network.fake_air([crate::network::tests::air_peer("Living Room Mac", airlynx_core::DeviceKind::Desktop, true, 44)]);
         // Collapse the disk so the Network section is in sight.
         let disk = app.tree.rows().into_iter().find(|r| r.section == Section::Locations && r.depth == 0).map(|r| r.key);
         if let Some(key) = disk {

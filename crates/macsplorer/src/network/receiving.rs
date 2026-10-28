@@ -1,6 +1,8 @@
-//! The worker that owns the LocalSend receiver: it runs it while Receive
-//! Files is on (`preferences::receive`) and this window holds the lock, and
-//! passes on what the receiver tells.
+//! The worker that owns the receivers, LocalSend's and AirLynx's: it runs
+//! them while Receive Files is on (`preferences::receive`) and this window
+//! holds the lock, and passes on what they tell. AirLynx's is a side line:
+//! it listens on its own ports (47800 and 47801), which the AirLynx app may
+//! hold, and when it can't start LocalSend goes on without it.
 //!
 //! Every window is its own process, and only one of them can take the port
 //! and answer for this computer, so the receiver goes with a lock file next
@@ -16,6 +18,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread;
 use std::time::Duration;
 
+use airlynx_core::receive::{self as air, ReceiveEvent, ReceiverConfig, ReceiverHandle};
+use airlynx_core::{Favorites, Identity};
 use eframe::egui;
 use localsend::Me;
 use localsend::receive::{self, Event, Options};
@@ -48,6 +52,17 @@ pub enum Msg {
     /// Receive Files as set, and where that stands.
     State { wanted: bool, state: State },
     Event(Event),
+    /// An AirLynx favorite is sending.
+    Air(ReceiveEvent),
+    /// The AirLynx receiver couldn't start, and why.
+    AirUnavailable(String),
+}
+
+/// This computer for AirLynx: who it is and who may send.
+#[derive(Clone)]
+struct Air {
+    me: Identity,
+    favorites: Favorites,
 }
 
 pub struct Supervisor {
@@ -56,9 +71,10 @@ pub struct Supervisor {
 
 impl Supervisor {
     /// Starts the worker; `tx` gets what it tells, with a repaint.
-    pub fn start(me: Me, tx: Sender<Msg>, ctx: egui::Context) -> Self {
+    pub fn start(me: Me, air_me: Identity, favorites: Favorites, tx: Sender<Msg>, ctx: egui::Context) -> Self {
         let (turn, turns) = channel();
-        thread::spawn(move || run(&me, &tx, &turns, &ctx));
+        let air = Air { me: air_me, favorites };
+        thread::spawn(move || run(&me, &air, &tx, &turns, &ctx));
         Self { turn }
     }
 
@@ -73,13 +89,13 @@ pub fn downloads() -> PathBuf {
     dirs::download_dir().or_else(|| dirs::home_dir().map(|h| h.join("Downloads"))).unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn run(me: &Me, tx: &Sender<Msg>, turns: &Receiver<Option<bool>>, ctx: &egui::Context) {
+fn run(me: &Me, air: &Air, tx: &Sender<Msg>, turns: &Receiver<Option<bool>>, ctx: &egui::Context) {
     let send = |msg: Msg| {
         let ok = tx.send(msg).is_ok();
         ctx.request_repaint();
         ok
     };
-    let mut running: Option<(receive::Receiver, File)> = None;
+    let mut running: Option<(receive::Receiver, File, Option<ReceiverHandle>)> = None;
     let mut last: Option<(bool, State)> = None;
     loop {
         let wanted = Preferences::load().receive;
@@ -87,9 +103,9 @@ fn run(me: &Me, tx: &Sender<Msg>, turns: &Receiver<Option<bool>>, ctx: &egui::Co
             running = None;
         }
         let state = match &running {
-            Some((r, _)) => State::On(Box::new(r.me().clone())),
+            Some((r, ..)) => State::On(Box::new(r.me().clone())),
             None if !wanted => State::Off,
-            None => match start(me, tx, ctx) {
+            None => match start(me, air, tx, ctx) {
                 Ok(Some(started)) => {
                     let state = State::On(Box::new(started.0.me().clone()));
                     running = Some(started);
@@ -115,7 +131,7 @@ fn run(me: &Me, tx: &Sender<Msg>, turns: &Receiver<Option<bool>>, ctx: &egui::Co
 
 /// Takes the lock and starts the receiver; `None` while another window
 /// holds the lock.
-fn start(me: &Me, tx: &Sender<Msg>, ctx: &egui::Context) -> std::io::Result<Option<(receive::Receiver, File)>> {
+fn start(me: &Me, air: &Air, tx: &Sender<Msg>, ctx: &egui::Context) -> std::io::Result<Option<(receive::Receiver, File, Option<ReceiverHandle>)>> {
     let dir = preferences::config_dir().ok_or_else(|| std::io::Error::other("no config folder"))?;
     std::fs::create_dir_all(&dir)?;
     let lock = File::options().create(true).truncate(false).write(true).open(dir.join(LOCK_FILE))?;
@@ -126,12 +142,32 @@ fn start(me: &Me, tx: &Sender<Msg>, ctx: &egui::Context) -> std::io::Result<Opti
     }
     let folder = downloads();
     std::fs::create_dir_all(&folder)?;
-    let options = Options { quarantine: Some("Macsplorer".into()), ..Options::new(folder) };
-    let (tx, ctx) = (tx.clone(), ctx.clone());
+    let options = Options { quarantine: Some("Macsplorer".into()), ..Options::new(folder.clone()) };
+    let (event_tx, event_ctx) = (tx.clone(), ctx.clone());
     let receiver = receive::Receiver::start(me, options, move |event| {
-        if tx.send(Msg::Event(event)).is_ok() {
-            ctx.request_repaint();
+        if event_tx.send(Msg::Event(event)).is_ok() {
+            event_ctx.request_repaint();
         }
     })?;
-    Ok(Some((receiver, lock)))
+    let config = ReceiverConfig {
+        dir: folder,
+        port: airlynx_core::DEFAULT_TCP_PORT,
+        identity: air.me.clone(),
+        favorites: air.favorites.clone(),
+        poll_interval: air::DEFAULT_POLL_INTERVAL,
+    };
+    let (event_tx, event_ctx) = (tx.clone(), ctx.clone());
+    let airlynx = match air::start(config, move |event| {
+        if event_tx.send(Msg::Air(event)).is_ok() {
+            event_ctx.request_repaint();
+        }
+    }) {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            let _ = tx.send(Msg::AirUnavailable(e.to_string()));
+            ctx.request_repaint();
+            None
+        }
+    };
+    Ok(Some((receiver, lock, airlynx)))
 }

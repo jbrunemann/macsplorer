@@ -329,6 +329,15 @@ Sending can't be undone: the files are on the other device.
 
 The first time, your Mac may ask whether Macsplorer may find devices on your local network. Choose **Allow**; if you said no, switch Macsplorer on in **System Settings › Privacy & Security › Local Network**.
 
+#### AirLynx devices
+
+Network Neighborhood also lists devices that run AirLynx, a small file-transfer app for Android and Mac. They show up in the same list, sorted by name, with the AirLynx logo instead of LocalSend's. Sending to one works the same way (drag, Send To, or **Send Selected Items**), with two differences:
+
+- AirLynx never asks the other side. A device only takes files from its **favorites**, so sending works once the other device has added your Mac as a favorite, and files from it only arrive once you have added it. Right-click the device and choose **Add to Favorites** (or **Remove from Favorites**). Point at a device to see where things stand: whether it is a favorite here, and whether it has added your Mac. If it hasn't, Macsplorer says so when you try to send.
+- AirLynx sends files, not folders. A folder among the selected items is left out, and the status bar says so.
+
+Receiving works the same switch as for LocalSend: with **Receive Files** on, AirLynx favorites can send files to your Mac, which go to your **Downloads** folder without a question, and the status bar tells you what arrives. A device that isn't a favorite is turned away, and the status bar says who tried. If the AirLynx app itself is open on the same Mac it keeps its ports to itself, and Macsplorer tells you that AirLynx devices can't send here; LocalSend keeps working.
+
 ### Receiving files from a phone or computer nearby
 
 Macsplorer can also take files that a phone, tablet or computer sends with LocalSend. This is off until you turn it on: right-click **Network Neighborhood** and choose **Receive Files**, or click your computer's name at the right end of the status bar and choose it there. Macsplorer remembers it, in every window, until you turn it off the same way.
@@ -567,7 +576,7 @@ Both need Git to be installed on your Mac. Macsplorer looks for it when it start
 Check that **Receive Files** is on: Network Neighborhood's icon has a hand under it, and the menu of the computer at the right end of the status bar shows a check mark by it. Then refresh the list in LocalSend on the phone. Both have to be on the same network, as for sending.
 
 **My phone doesn't show up in Network Neighborhood.**
-Check that LocalSend is open on it and that both are on the same network (guest Wi-Fi networks often keep devices apart). Then right-click Network Neighborhood and choose **Search Again**. If your Mac asked about finding devices on your local network and you said no, see [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).
+Check that LocalSend (or AirLynx) is open on it and that both are on the same network (guest Wi-Fi networks often keep devices apart). Then right-click Network Neighborhood and choose **Search Again**. If your Mac asked about finding devices on your local network and you said no, see [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby).
 
 **Which version do I have?**
 Choose **Help › About Macsplorer**. A small window shows the app icon, the version, the locale (the region that dates and numbers follow, and the language names are sorted by) and the font the text is set in. When the font comes from a file, its location is a link: click it and the window closes and the font's folder opens with the file selected. Press OK, Return or Escape to close the window.

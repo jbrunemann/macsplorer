@@ -11,6 +11,7 @@ egui_extras = "0.36.2"
 egui-classic-menu = { version = "2.0.0", path = "../egui-classic-menu" }
 macsplorer-core = { version = "2.0.0", path = "../macsplorer-core" }
 update-check = { version = "2.0.0", path = "../update-check" }
+airlynx-core = { version = "2.0.0", path = "../airlynx-core" }
 localsend = { version = "2.0.0", path = "../localsend", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
