@@ -344,6 +344,10 @@ Receiving works the same switch as for LocalSend: with **Receive Files** on, Air
 
 Macsplorer can also take files that a phone, tablet or computer sends with LocalSend. This is off until you turn it on: right-click **Network Neighborhood** and choose **Receive Files**, or click your computer's name at the right end of the status bar and choose it there. Macsplorer remembers it, in every window, until you turn it off the same way.
 
+Click **Network Neighborhood**, **LocalSend** or **AirLynx**, or one of their devices, to see what has arrived: the right pane then lists the files received from every device, from every device of that app, or from that one device, and the address bar reads **Network Neighborhood/LocalSend**. The files stay where they were saved (in Downloads); this is only a list of them, and it starts empty again when you close Macsplorer. A file you delete or move away, even in Finder, drops out of the list by itself. A folder that arrived is one item of the list. Because the list isn't a folder, Paste, New Folder and drops are refused there until you open a folder. Click any folder in the Folders pane to leave it.
+
+<img src="images/received-files.png" alt="The LocalSend row selected, and the right pane listing the files received" width="560">
+
 While it is on, other devices list your Mac in LocalSend under the name in the status bar, and a hand under Network Neighborhood's icon shows that your Mac is open to them, the way Windows showed a shared folder. Point at the computer to see the name the others see.
 
 <img src="images/receiving.png" alt="Network Neighborhood's icon with the sharing hand, and the status bar computer's menu with Receive Files checked" width="560">

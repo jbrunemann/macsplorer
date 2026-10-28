@@ -136,6 +136,7 @@ struct ArchiveDone {
 /// The largest selection a drag takes out of an archive. The items are
 /// extracted while the pointer leaves the window, which holds the window up.
 const DRAG_OUT_LIMIT: u64 = 64 << 20;
+const NO_FOLDER: &str = "This list shows the files received from several places. Open a folder first.";
 const READ_ONLY: &str = "Items in an archive can't be changed. Use Extract All to get a copy you can change.";
 
 /// Search-filtered rows and the (entries version, extensions shown, needle) they came from.
@@ -458,6 +459,10 @@ pub struct Explorer {
     address_peeking: bool,
     /// The folder the view lists instead of the open one while peeking.
     peek_dir: Option<PathBuf>,
+    /// The files the view lists instead of the open folder's while a
+    /// LocalSend or AirLynx row or device of Network Neighborhood is selected:
+    /// what was received from it. The open folder is still the one before.
+    received_shown: Option<Vec<PathBuf>>,
     folders_tx: Sender<(PathBuf, Option<Vec<Folder>>)>,
     folders_rx: Receiver<(PathBuf, Option<Vec<Folder>>)>,
     search: String,
@@ -603,6 +608,7 @@ impl Explorer {
             address_predicting: false,
             address_peeking: false,
             peek_dir: None,
+            received_shown: None,
             folders_tx,
             folders_rx,
             search: String::new(),
@@ -1174,7 +1180,7 @@ impl Explorer {
     /// folder, moved when they are on the same disk and copied otherwise, like
     /// a drop on the folder without keys.
     fn drop_files(&mut self, paths: Vec<PathBuf>) {
-        let dest = self.current().to_path_buf();
+        let Some(dest) = self.target_folder() else { return };
         match dragdrop::drop_effect(&paths, &dest, None, Allowed::ALL) {
             Some(Effect::Copy) => self.transfer(paths, dest, false),
             Some(Effect::Move) => self.transfer(paths, dest, true),
@@ -1377,10 +1383,16 @@ impl Explorer {
         let current = self.tree_folder();
         let mut dirs: BTreeSet<PathBuf> = self.tree.expanded_folders().map(Path::to_path_buf).collect();
         dirs.insert(current.clone());
+        // While the view lists received files, the folders they are in too,
+        // so one that is deleted or renamed from outside leaves the list.
+        let received: BTreeSet<PathBuf> = self.received_shown.iter().flatten().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
+        dirs.extend(received.iter().cloned());
         self.watcher.watch_only(&dirs);
         for dir in self.watcher.poll(now) {
             if dir == current {
                 self.reload();
+            } else if received.contains(&dir) {
+                self.reload_list();
             }
             if let Some(path) = self.tree.refresh_path(&dir) {
                 self.load([path]);
@@ -1438,12 +1450,19 @@ impl Explorer {
         self.list_branches = self.columns.is_visible(Column::Branch);
         let dir = self.peek_dir.clone().unwrap_or_else(|| self.current().to_path_buf());
         let (request, show_hidden, branches) = (self.list_request, self.settings.show_hidden, self.list_branches);
+        let received = self.received_shown.clone();
+        let from_received = received.is_some();
         let (tx, ctx) = (self.list_tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let listed = archive::list(&dir, show_hidden).unwrap_or_else(|| list_dir_with(&dir, show_hidden, branches));
+            let listed = match received {
+                // What came in, from wherever it was saved; what is gone since is left out.
+                Some(paths) => Ok(paths.iter().filter_map(|p| entry_at(p)).collect()),
+                None => archive::list(&dir, show_hidden).unwrap_or_else(|| list_dir_with(&dir, show_hidden, branches)),
+            };
             let result = listed.map_err(|e| platform::open_error(&dir, &e));
+            // What was received isn't in one folder, so no volume has the free space.
             #[cfg(unix)]
-            let free = free_space(&dir);
+            let free = if from_received { None } else { free_space(&dir) };
             #[cfg(not(unix))]
             let free = None;
             if tx.send((request, result, free)).is_ok() {
@@ -1588,6 +1607,7 @@ impl Explorer {
     fn after_navigation(&mut self) {
         self.archive_open = archive::split(self.current()).map(|(a, _)| a);
         self.network.deselect();
+        self.received_shown = None;
         self.address_peeking = false;
         self.peek_dir = None;
         self.selection.clear();
@@ -1614,6 +1634,31 @@ impl Explorer {
             self.tree.take_open();
             self.sync_tree();
         }
+    }
+
+    /// Makes the view list what the selected network row has received, or the
+    /// open folder again when none does, and again when more has arrived.
+    fn sync_received(&mut self) {
+        let want = self.network.received_files();
+        if want != self.received_shown {
+            self.received_shown = want;
+            self.reload_list();
+        }
+    }
+
+    /// The view lists received files, which don't belong to one folder.
+    fn viewing_received(&self) -> bool {
+        self.received_shown.is_some()
+    }
+
+    /// The folder that pastes, new folders and drops go into: the open one,
+    /// unless the view lists received files.
+    fn target_folder(&mut self) -> Option<PathBuf> {
+        if self.viewing_received() {
+            self.status = Some(Status::error(NO_FOLDER));
+            return None;
+        }
+        Some(self.current().to_path_buf())
     }
 
     /// Lists `dir` in the view instead of the open folder, or the open folder
@@ -1647,7 +1692,8 @@ impl Explorer {
             self.status = Some(Status::error(READ_ONLY));
             return;
         }
-        let path = fileops::new_folder_name(self.current());
+        let Some(folder) = self.target_folder() else { return };
+        let path = fileops::new_folder_name(&folder);
         match std::fs::create_dir(&path) {
             Ok(()) => {
                 self.status = None;
@@ -2279,12 +2325,14 @@ impl Explorer {
                 Action::Copy => self.set_clipboard(false),
                 Action::CopyAsPath => self.copy_as_path(),
                 Action::Paste(dir) => {
-                    let dir = dir.unwrap_or_else(|| self.current().to_path_buf());
-                    self.paste(dir, false);
+                    if let Some(dir) = dir.or_else(|| self.target_folder()) {
+                        self.paste(dir, false);
+                    }
                 }
                 Action::MoveHere(dir) => {
-                    let dir = dir.unwrap_or_else(|| self.current().to_path_buf());
-                    self.paste(dir, true);
+                    if let Some(dir) = dir.or_else(|| self.target_folder()) {
+                        self.paste(dir, true);
+                    }
                 }
                 Action::Delete => self.delete_selection(),
                 Action::DeleteFolder(path) => self.delete_folder(path),
@@ -2315,6 +2363,10 @@ impl Explorer {
                 Action::Properties(path) => self.open_properties(path),
                 Action::ItemProperties(path) => self.open_item_properties(path),
                 Action::Network(action) => {
+                    // A device's description takes the status bar from an older message.
+                    if matches!(action, NetAction::Select(crate::network::Node::Device(_))) {
+                        self.status = None;
+                    }
                     let selection = match action {
                         NetAction::SendSelection(_) => self.entries.iter().filter(|e| self.selection.contains(&e.path)).map(|e| e.path.clone()).collect(),
                         _ => Vec::new(),
@@ -2654,10 +2706,10 @@ impl Explorer {
                 if ui.add_enabled(has_selection, gutter_item(ui, "Copy as Path", platform::shortcut(true, "C"))).clicked() {
                     actions.push(Action::CopyAsPath);
                 }
-                if ui.add_enabled(writable && self.can_paste(), gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
+                if ui.add_enabled(writable && self.can_paste() && !self.viewing_received(), gutter_item(ui, "Paste", platform::shortcut(false, "V"))).clicked() {
                     actions.push(Action::Paste(None));
                 }
-                if ui.add_enabled(writable && self.can_paste(), gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
+                if ui.add_enabled(writable && self.can_paste() && !self.viewing_received(), gutter_item(ui, "Move Here", platform::shortcut(true, "V"))).clicked() {
                     actions.push(Action::MoveHere(None));
                 }
                 ui.separator();
@@ -2970,7 +3022,15 @@ impl Explorer {
         let (icon, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
         // Anywhere inside an archive, the folder with the zipper.
         let zipped = archive::split(self.current()).is_some();
-        theme::paint_icon(ui.painter(), icon, if zipped { Icon::CompressedFolder } else { Icon::Folder }, true);
+        let received = self.network.place();
+        let kind = if received.is_some() {
+            Icon::Network
+        } else if zipped {
+            Icon::CompressedFolder
+        } else {
+            Icon::Folder
+        };
+        theme::paint_icon(ui.painter(), icon, kind, true);
         if self.address_edit.is_some() {
             self.edit_address(ui, actions);
             return;
@@ -2987,11 +3047,12 @@ impl Explorer {
         // The path as it is typed back. A click anywhere in the field edits it
         // (see `address_bar`). When it is too long the front is cut off and the
         // end, the open folder, stays.
-        let shown = self.address_text();
+        // Showing what a network row received: Network Neighborhood/LocalSend.
+        let shown = received.as_ref().map_or_else(|| self.address_text(), |place| place.join("/"));
         let chars: Vec<char> = shown.chars().collect();
         // Inside an archive the archive's name is in its list color, so the
         // odd step in the path stands out (not from Explorer).
-        let archive = archive::split(self.current()).filter(|_| self.settings.color_names).map(|(file, _)| {
+        let archive = archive::split(self.current()).filter(|_| self.settings.color_names && received.is_none()).map(|(file, _)| {
             let end = self.shown(&file).chars().count();
             let len = file.file_name().map_or(0, |n| n.to_string_lossy().chars().count());
             end - len..end
@@ -3116,7 +3177,8 @@ impl Explorer {
     fn item_view(&mut self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
         // Empty space in the view drops into the open folder.
         let rect = ui.available_rect_before_wrap();
-        self.drag_frame.zone(ui.clip_rect(), rect, Some(self.current().to_path_buf()), None, None);
+        let folder = (!self.viewing_received()).then(|| self.current().to_path_buf());
+        self.drag_frame.zone(ui.clip_rect(), rect, folder, None, None);
         match self.settings.view {
             ViewMode::LargeIcons => self.icons_view(ui, visible, actions),
             ViewMode::List => self.list_view(ui, visible, actions),
@@ -3147,6 +3209,7 @@ impl Explorer {
         let focused = self.focus == Pane::List && window_focused(ui) && !text_field_focused(ui);
         let cue = focused && self.show_focus;
         let can_paste = self.can_paste();
+        let paste_here = can_paste && !self.viewing_received();
         let folder = self.current().to_path_buf();
         let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
@@ -3169,7 +3232,7 @@ impl Explorer {
             }
             actions.push(Action::Focus(Pane::List));
         }
-        egui::Popup::context_menu(&bg).style(theme::menu_style).show(|ui| background_menu(ui, &folder, can_paste, actions));
+        egui::Popup::context_menu(&bg).style(theme::menu_style).show(|ui| background_menu(ui, &folder, paste_here, actions));
 
         let header = |ui: &mut Ui, column: Column, actions: &mut Vec<Action>| {
             let label = column.caption();
@@ -3363,7 +3426,7 @@ impl Explorer {
                     }
                     egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                         Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, network, actions),
-                        None => background_menu(ui, &folder, can_paste, actions),
+                        None => background_menu(ui, &folder, paste_here, actions),
                     });
                 });
             })
@@ -3495,6 +3558,7 @@ impl Explorer {
         let focused = self.focus == Pane::List && window_focused(ui) && !text_field_focused(ui);
         let cue = focused && self.show_focus;
         let can_paste = self.can_paste();
+        let paste_here = can_paste && !self.viewing_received();
         let folder = self.current().to_path_buf();
         let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
@@ -3617,7 +3681,7 @@ impl Explorer {
                 item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
                 egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                     Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, network, actions),
-                    None => background_menu(ui, &folder, can_paste, actions),
+                    None => background_menu(ui, &folder, paste_here, actions),
                 });
             });
         bars.end(ui, &out);
@@ -3661,6 +3725,7 @@ impl Explorer {
         let focused = self.focus == Pane::List && window_focused(ui) && !text_field_focused(ui);
         let cue = focused && self.show_focus;
         let can_paste = self.can_paste();
+        let paste_here = can_paste && !self.viewing_received();
         let folder = self.current().to_path_buf();
         let cut = cut_paths(&self.clipboard);
         let reveal = self.reveal.take().and_then(|r| visible.iter().position(|&v| v == r));
@@ -3777,13 +3842,16 @@ impl Explorer {
                 item_clicks(ui, &resp, hit.map(|p| (visible[p], &entries[visible[p]])), on_label, selection, menu_id, actions);
                 egui::Popup::context_menu(&resp).style(theme::menu_style).show(|ui| match ui.data(|d| d.get_temp::<Option<usize>>(menu_id)).flatten() {
                     Some(i) => item_menu(ui, &entries[i], can_paste, open_with, icons, network, actions),
-                    None => background_menu(ui, &folder, can_paste, actions),
+                    None => background_menu(ui, &folder, paste_here, actions),
                 });
             });
         bars.end(ui, &out);
     }
 
-    fn status_bar(&self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
+    /// The status bar's left pane, and the size pane's bytes: a message, else
+    /// what the selected network device is, else how many objects there are
+    /// (and, for a folder, the free space) or are selected.
+    fn status_summary(&self, visible: &[usize]) -> (String, u64) {
         let selected: Vec<&Entry> = self.entries.iter().filter(|e| self.selection.contains(&e.path)).collect();
         let (objects, bytes) = if selected.is_empty() {
             let n = visible.len();
@@ -3794,7 +3862,14 @@ impl Explorer {
         } else {
             (format!("{} object(s) selected", selected.len()), selected.iter().filter_map(|e| e.size).sum())
         };
-        let text = self.status.as_ref().map_or(objects, |s| s.text.clone());
+        // A message wins; else the selected device says what it is, where nothing in the view is selected.
+        let device = self.network.selection_text().filter(|_| selected.is_empty());
+        let text = self.status.as_ref().map_or_else(|| device.unwrap_or(objects), |s| s.text.clone());
+        (text, bytes)
+    }
+
+    fn status_bar(&self, ui: &mut Ui, visible: &[usize], actions: &mut Vec<Action>) {
+        let (text, bytes) = self.status_summary(visible);
         let size = format_byte_size(bytes);
 
         let full = ui.available_rect_before_wrap();
@@ -3805,7 +3880,8 @@ impl Explorer {
         let font = egui::TextStyle::Body.resolve(ui.style());
         // The Git summary gets a pane of its own, sized to its text, while the
         // open folder is in a working tree.
-        let git = self.git.as_ref().map(|g| {
+        // It is the open folder's, which the view isn't listing while it shows received files.
+        let git = self.git.as_ref().filter(|_| !self.viewing_received()).map(|g| {
             let segments = g.segments();
             let text_w: f32 = ui.fonts_mut(|f| {
                 segments.iter().map(|s| f.layout_no_wrap(s.text.clone(), font.clone(), theme::color::text()).size().x).sum()
@@ -3904,6 +3980,7 @@ impl eframe::App for Explorer {
         if let Some(status) = self.network.take_status() {
             self.status = Some(status);
         }
+        self.sync_received();
         self.poll_watcher();
         self.open_due_tree_selection();
         self.refresh_clipboard();
@@ -3925,7 +4002,7 @@ impl eframe::App for Explorer {
 
         egui::Panel::top("chrome").frame(plain).show_separator_line(false).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
-            theme::title_bar(ui, &place_label(self.current()));
+            theme::title_bar(ui, &self.network.place().and_then(|p| p.last().cloned()).unwrap_or_else(|| place_label(self.current())));
             self.menu_bar(ui, &mut actions);
             theme::etched_hline(ui);
             self.toolbar(ui, &mut actions);
@@ -5028,6 +5105,94 @@ mod clipboard {
         (app, dir)
     }
 
+    /// The status bar's left pane in a folder, a received list and with a
+    /// device selected.
+    #[test]
+    fn the_status_bar_follows_the_view() {
+        use crate::network::{NetAction, Node, Service};
+        let (mut app, dir) = explorer("status");
+        fs::write(dir.join("sub/got.txt"), "1").unwrap();
+        app.network.fake([crate::network::tests::device("Pixel", localsend::DeviceType::Mobile, 31)], true, None);
+        let key = crate::network::tests::device("Pixel", localsend::DeviceType::Mobile, 31).key();
+        app.network.fake_got(Service::LocalSend, &key, "Pixel", dir.join("sub/got.txt"));
+        let text = |app: &mut Explorer| {
+            app.sync_received();
+            app.finish_listing();
+            let visible = app.visible();
+            app.status_summary(&visible).0
+        };
+        app.free_space = Some(5_000_000_000);
+        assert_eq!(text(&mut app), format!("2 object(s) (Disk free space: {})", format_byte_size(5_000_000_000)));
+
+        // A received list is no folder: no free space, a count.
+        app.network.apply(NetAction::Select(Node::Service(Service::LocalSend)), Vec::new());
+        assert_eq!(text(&mut app), "1 object(s)");
+
+        // The device says what it is, until something in the view is selected.
+        app.network.apply(NetAction::Select(Node::Device(key.clone())), Vec::new());
+        assert!(text(&mut app).starts_with("Pixel: phone or tablet"), "{}", text(&mut app));
+        app.selection = BTreeSet::from([dir.join("sub/got.txt")]);
+        assert_eq!(text(&mut app), "1 object(s) selected");
+        app.selection.clear();
+
+        // A message wins, and the description doesn't outlive the selection.
+        app.status = Some(Status::note("Sent 1 file(s) to Pixel"));
+        assert_eq!(text(&mut app), "Sent 1 file(s) to Pixel");
+        app.status = None;
+        app.network.deselect();
+        assert!(text(&mut app).starts_with("2 object(s) (Disk free space: "), "the folder's free space is back");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A LocalSend or AirLynx row, or one of its devices, lists what it
+    /// received in the view; the open folder comes back with any other row.
+    #[test]
+    fn a_network_row_lists_what_it_received() {
+        use crate::network::{NetAction, Node, Service};
+        let (mut app, dir) = explorer("received");
+        fs::write(dir.join("sub/from-pixel.txt"), "1").unwrap();
+        fs::write(dir.join("sub/from-mac.txt"), "2").unwrap();
+        app.network.fake_got(Service::LocalSend, "fp-1", "Pixel", dir.join("sub/from-pixel.txt"));
+        app.network.fake_got(Service::AirLynx, "airlynx:9", "Mac", dir.join("sub/from-mac.txt"));
+        let names = |app: &mut Explorer| {
+            app.sync_received();
+            app.finish_listing();
+            app.entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>()
+        };
+        let select = |app: &mut Explorer, node| {
+            app.network.apply(NetAction::Select(node), Vec::new());
+        };
+        assert_eq!(names(&mut app), ["sub", "a.txt"]);
+
+        select(&mut app, Node::Root);
+        assert_eq!(names(&mut app), ["from-mac.txt", "from-pixel.txt"], "Network Neighborhood has what both brought");
+        assert_eq!(app.network.place(), Some(vec!["Network Neighborhood".to_owned()]));
+        select(&mut app, Node::Service(Service::LocalSend));
+        assert_eq!(names(&mut app), ["from-pixel.txt"]);
+        assert_eq!(app.network.place(), Some(vec!["Network Neighborhood".to_owned(), "LocalSend".to_owned()]));
+        select(&mut app, Node::Service(Service::AirLynx));
+        assert_eq!(names(&mut app), ["from-mac.txt"]);
+        select(&mut app, Node::Device("fp-1".into()));
+        assert_eq!(names(&mut app), ["from-pixel.txt"]);
+        assert_eq!(app.network.place().and_then(|p| p.last().cloned()).as_deref(), Some("Pixel"));
+        select(&mut app, Node::Device("fp-2".into()));
+        assert!(names(&mut app).is_empty());
+
+        // The files are listed from several places: nothing is pasted or made here.
+        select(&mut app, Node::Service(Service::LocalSend));
+        names(&mut app);
+        for action in [Action::Paste(None), Action::NewFolder] {
+            app.status = None;
+            app.apply(vec![action], &[]);
+            assert_eq!(app.status.as_ref().map(|s| s.text.as_str()), Some(NO_FOLDER));
+        }
+
+        // A folder row brings the open folder back.
+        app.network.deselect();
+        assert_eq!(names(&mut app), ["sub", "a.txt"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn the_address_bar_starts_editing_with_a_tilde_inside_the_home_folder() {
         let (mut app, dir) = explorer("tilde");
@@ -5153,6 +5318,37 @@ mod clipboard {
         // Focus and selection stay on a.txt, which moved down a row.
         assert_eq!(app.focus_item.map(|i| app.entries[i].name.as_str()), Some("a.txt"));
         assert_eq!(app.selection, BTreeSet::from([dir.join("a.txt")]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A received file deleted from outside leaves the list by itself, even
+    /// though its folder isn't the open one.
+    #[test]
+    fn a_received_file_deleted_outside_leaves_the_list() {
+        use crate::network::{NetAction, Node, Service};
+        let (mut app, dir) = explorer("received-watch");
+        let (keep, gone) = (dir.join("sub/keep.txt"), dir.join("sub/gone.txt"));
+        fs::write(&keep, "1").unwrap();
+        fs::write(&gone, "2").unwrap();
+        app.network.fake_got(Service::LocalSend, "fp-1", "Pixel", keep);
+        app.network.fake_got(Service::LocalSend, "fp-1", "Pixel", gone.clone());
+        app.network.apply(NetAction::Select(Node::Service(Service::LocalSend)), Vec::new());
+        app.sync_received();
+        app.finish_listing();
+        assert_eq!(app.entries.len(), 2);
+        app.poll_watcher_at(0.0);
+        // FSEvents may still report the fixture being made.
+        thread::sleep(std::time::Duration::from_millis(300));
+        app.poll_watcher_at(10.0);
+        app.finish_listing();
+        fs::remove_file(&gone).unwrap();
+        let start = std::time::Instant::now();
+        while app.entries.len() != 1 && start.elapsed().as_secs() < 10 {
+            thread::sleep(std::time::Duration::from_millis(20));
+            app.poll_watcher_at(20.0 + start.elapsed().as_secs_f64());
+            app.poll_lists();
+        }
+        assert_eq!(app.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["keep.txt"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -6851,6 +7047,27 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn network_neighborhood() {
         shoot("network-neighborhood", egui::vec2(900.0, 640.0), |app| fake_network(app, Some("fp-31")));
+    }
+
+    /// LocalSend's row selected: the right pane lists what it received.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn received_files() {
+        use crate::network::{NetAction, Node, Service};
+        shoot("received-files", egui::vec2(900.0, 640.0), |app| {
+            fake_network(app, None);
+            // Not in the fixture, which the other screenshots list.
+            let downloads = std::env::temp_dir().join("macsplorer-received-shot");
+            fs::create_dir_all(&downloads).unwrap();
+            for name in ["IMG_20241017_183205.jpg", "report.pdf", "Holiday video.mp4"] {
+                let path = downloads.join(name);
+                fs::write(&path, vec![0u8; 20_000]).unwrap();
+                app.network.fake_got(Service::LocalSend, "fp-31", "Jan's Pixel", path);
+            }
+            app.network.apply(NetAction::Select(Node::Service(Service::LocalSend)), Vec::new());
+            app.sync_received();
+            app.finish_listing();
+        });
     }
 
     /// Receive Files on: the sharing hand under Network Neighborhood and the

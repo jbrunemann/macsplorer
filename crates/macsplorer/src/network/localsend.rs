@@ -68,6 +68,9 @@ pub struct LocalSend {
     introduced_rx: Receiver<Introduced>,
     /// The offer being asked, with its dialog's id and what it shows.
     offer: Option<(u64, Offer, OfferView)>,
+    /// The fingerprint of the device whose accepted files are coming in (one
+    /// transfer at a time), for telling whose files they were.
+    sender: Option<String>,
     /// Tests: never touch the network.
     offline: bool,
     logo: egui::TextureHandle,
@@ -95,6 +98,7 @@ impl LocalSend {
             introduced_tx,
             introduced_rx,
             offer: None,
+            sender: None,
             offline: false,
             logo: load_png(&ctx, "localsend-logo", include_bytes!("../../../../assets/localsend/logo-32.png")),
             ctx,
@@ -307,6 +311,13 @@ impl LocalSend {
             d.finished |= d.kind() == Kind::Receive;
         }
         let folder = folder_name(&receiving::downloads());
+        let key = self.sender.take().filter(|k| !k.is_empty());
+        // A folder that came in is one item of the list, not all its files.
+        let downloads = receiving::downloads();
+        for path in &r.saved {
+            let top = path.strip_prefix(&downloads).ok().and_then(|p| p.components().next()).map_or_else(|| path.clone(), |c| downloads.join(c));
+            shared.got(Service::LocalSend, key.clone(), r.from.clone(), top);
+        }
         let (n, from) = (r.saved.len(), &r.from);
         shared.say(match r.end {
             End::Finished if r.missing == 0 => Status::note(format!("Received {n} file(s) from {from} in {folder}")),
@@ -325,6 +336,7 @@ impl LocalSend {
         {
             match answer {
                 offer_dialog::Answer::Accept => {
+                    self.sender = Some(offer.from.fingerprint.clone());
                     let progress = offer.accept();
                     let tracked = Arc::new(Receiving { progress, alias: view.from.clone(), folder: view.folder.clone() });
                     shared.dialogs.push(ProgressDialog::new(id, tracked, Kind::Receive));
@@ -369,6 +381,11 @@ impl LocalSend {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// A listed device's name.
+    pub fn alias(&self, key: &str) -> Option<String> {
+        self.devices.get(key).map(|d| d.alias().to_owned())
     }
 
     /// A device's tooltip and status bar text.

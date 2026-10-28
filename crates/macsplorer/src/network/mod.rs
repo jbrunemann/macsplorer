@@ -85,6 +85,13 @@ pub enum Service {
 }
 
 impl Service {
+    fn name(self) -> &'static str {
+        match self {
+            Service::LocalSend => "LocalSend",
+            Service::AirLynx => "AirLynx",
+        }
+    }
+
     /// The protocol a device key belongs to.
     fn of(key: &str) -> Self {
         if key.starts_with(airlynx::KEY_PREFIX) { Service::AirLynx } else { Service::LocalSend }
@@ -131,14 +138,27 @@ pub enum NetAction {
     Properties(String),
 }
 
+/// A file or folder that came in during this session, and from whom.
+struct Got {
+    service: Service,
+    /// The sender's device key, when it was known.
+    key: Option<String>,
+    /// The sender's name, to tell it by when there is no key.
+    name: String,
+    path: PathBuf,
+}
+
 /// What the protocols share: the message for the status bar and the
-/// progress dialogs, with the numbering of both.
+/// progress dialogs, with the numbering of both, and what was received.
 #[derive(Default)]
 struct Shared {
     /// A message for the status bar, taken by the app.
     status: Option<Status>,
     dialogs: Vec<ProgressDialog>,
     count: u64,
+    /// Everything received since the app started, oldest first. Not kept
+    /// between runs.
+    received: Vec<Got>,
 }
 
 impl Shared {
@@ -150,6 +170,13 @@ impl Shared {
     fn next_id(&mut self) -> u64 {
         self.count += 1;
         self.count
+    }
+
+    /// `path` arrived from the device `key` (or, with none, the one called `name`).
+    fn got(&mut self, service: Service, key: Option<String>, name: String, path: PathBuf) {
+        if !self.received.iter().any(|g| g.path == path && g.service == service) {
+            self.received.push(Got { service, key, name, path });
+        }
     }
 
     /// The transfer behind dialog `id` is over.
@@ -277,6 +304,56 @@ impl Network {
         self.shared.status.take()
     }
 
+    /// What the selected row stands for in the right pane: the files received
+    /// from every device (Network Neighborhood), from every device of a
+    /// protocol, or from one device. `None` while a folder is selected, and
+    /// the pane shows the open folder.
+    pub fn received_files(&self) -> Option<Vec<PathBuf>> {
+        let (service, device) = match self.selected.as_ref()? {
+            Node::Root => (None, None),
+            Node::Service(s) => (Some(*s), None),
+            Node::Device(key) => (Some(Service::of(key)), Some(key.as_str())),
+        };
+        let alias = device.and_then(|k| self.alias(k));
+        let from_it = |g: &Got| match device {
+            None => true,
+            Some(key) => g.key.as_deref() == Some(key) || (g.key.is_none() && Some(&g.name) == alias.as_ref()),
+        };
+        Some(self.shared.received.iter().filter(|g| service.is_none_or(|s| g.service == s) && from_it(g)).map(|g| g.path.clone()).collect())
+    }
+
+    /// Where the selected row's received files are, as an address and
+    /// window title have it: `Network Neighborhood`, `LocalSend`, and the
+    /// device's name. `None` when the pane shows the open folder.
+    pub fn place(&self) -> Option<Vec<String>> {
+        self.received_files()?;
+        let mut place = vec![TITLE.to_owned()];
+        match self.selected.as_ref()? {
+            Node::Root => {}
+            Node::Service(s) => place.push(s.name().to_owned()),
+            Node::Device(key) => {
+                place.push(Service::of(key).name().to_owned());
+                place.push(self.alias(key).unwrap_or_else(|| "Device".to_owned()));
+            }
+        }
+        Some(place)
+    }
+
+    /// A device's name: as listed now, or as it was when it sent files.
+    fn alias(&self, key: &str) -> Option<String> {
+        let listed = match Service::of(key) {
+            Service::LocalSend => self.local.alias(key),
+            Service::AirLynx => self.air.alias(key),
+        };
+        listed.or_else(|| self.shared.received.iter().find(|g| g.key.as_deref() == Some(key)).map(|g| g.name.clone()))
+    }
+
+    /// Tests: `path` was received from the device `key` called `name`.
+    #[cfg(test)]
+    pub fn fake_got(&mut self, service: Service, key: &str, name: &str, path: PathBuf) {
+        self.shared.got(service, Some(key.to_owned()), name.to_owned(), path);
+    }
+
     /// Whether the protocol's scan has a reason to run: its row can be seen.
     fn visible(&self, service: Service) -> bool {
         self.expanded
@@ -382,14 +459,7 @@ impl Network {
                 self.air.keep_until(until);
                 self.air.ensure_scan();
             }
-            NetAction::Select(node) => {
-                let text = match &node {
-                    Node::Device(key) => self.describe(key),
-                    Node::Root | Node::Service(_) => None,
-                };
-                self.shared.status = text.map(Status::note);
-                self.selected = Some(node);
-            }
+            NetAction::Select(node) => self.selected = Some(node),
             NetAction::ToggleFavorite(key) => self.air.toggle_favorite(&key, &mut self.shared),
             NetAction::Properties(key) => {
                 if !self.device_props.iter().any(|(k, _)| *k == key)
@@ -419,6 +489,15 @@ impl Network {
             Service::LocalSend => self.local.stop(),
             Service::AirLynx if visible => self.air.ensure_scan(),
             Service::AirLynx => self.air.stop(),
+        }
+    }
+
+    /// What the status bar says while a device is selected: what it is and
+    /// where. It goes with the selection.
+    pub fn selection_text(&self) -> Option<String> {
+        match self.selected.as_ref()? {
+            Node::Device(key) => self.describe(key),
+            Node::Root | Node::Service(_) => None,
         }
     }
 

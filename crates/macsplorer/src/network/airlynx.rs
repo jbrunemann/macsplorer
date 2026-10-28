@@ -295,14 +295,15 @@ impl AirLynx {
     /// file is coming and how it ended.
     pub fn event(&mut self, event: ReceiveEvent, shared: &mut Shared) {
         let folder = folder_name(&receiving::downloads());
-        let name_at = |peers: &[Peer], peer: &str| {
-            let ip = peer.rsplit_once(':').map_or(peer, |(ip, _)| ip);
-            peers.iter().find(|p| p.addr.ip().to_string() == ip).map_or_else(|| "a device".to_owned(), |p| p.name.clone())
+        let peer_at = |peers: &[Peer], peer: &str| {
+            let ip = peer.rsplit_once(':').map_or(peer, |(ip, _)| ip).to_owned();
+            peers.iter().find(|p| p.addr.ip().to_string() == ip).cloned()
         };
+        let name_at = |peers: &[Peer], peer: &str| peer_at(peers, peer).map_or_else(|| "a device".to_owned(), |p| p.name);
         let peers = &self.peers;
         let status = match event {
             ReceiveEvent::Refused { name, .. } => Status::error(format!(
-                "{name} tried to send files, but isn't one of your AirLynx favorites. Add it to the favorites in Network Neighborhood first."
+                "{name} tried to send files, but isn't one of your AirLynx favorites. Add it to the favorites under AirLynx in Network Neighborhood first."
             )),
             ReceiveEvent::Connected { peer, files } => Status::note(format!("Receiving {files} file(s) from {}...", name_at(peers, &peer))),
             ReceiveEvent::FileStarted { peer, name, .. } => Status::note(format!("Receiving '{name}' from {}...", name_at(peers, &peer))),
@@ -310,8 +311,10 @@ impl AirLynx {
                 let percent = (received * 100).checked_div(size).unwrap_or(100);
                 Status::note(format!("Receiving '{name}' from {}: {percent}%", name_at(peers, &peer)))
             }
-            ReceiveEvent::FileSaved { path, .. } => {
+            ReceiveEvent::FileSaved { peer, path, .. } => {
                 quarantine(&path);
+                let sender = peer_at(peers, &peer);
+                shared.got(Service::AirLynx, sender.as_ref().map(key), sender.map_or_else(|| "a device".to_owned(), |p| p.name), path.clone());
                 self.saved += 1;
                 Status::note(format!("Received {} in {folder}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())))
             }
@@ -345,6 +348,11 @@ impl AirLynx {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// A listed device's name.
+    pub fn alias(&self, key: &str) -> Option<String> {
+        self.find(key).map(|p| p.name.clone())
     }
 
     /// A device's tooltip and status bar text.
