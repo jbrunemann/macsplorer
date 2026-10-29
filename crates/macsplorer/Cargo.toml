@@ -8,9 +8,9 @@ chrono = "0.4.45"
 dirs = "7.0.0"
 eframe = "0.36.2"
 egui_extras = "0.36.2"
-egui-classic-menu = { version = "2.0.0", path = "../egui-classic-menu" }
-macsplorer-core = { version = "2.0.0", path = "../macsplorer-core" }
-update-check = { version = "2.0.0", path = "../update-check" }
+egui-classic-menu = { version = "2.0.1", path = "../egui-classic-menu" }
+macsplorer-core = { version = "2.0.1", path = "../macsplorer-core" }
+update-check = { version = "2.0.1", path = "../update-check" }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }

@@ -4,5 +4,5 @@ members = ["crates/macsplorer-core", "crates/macsplorer", "crates/egui-classic-m
 
 [workspace.package]
 edition = "2024"
-version = "2.0.0"
+version = "2.0.1"
 license = "MIT"
