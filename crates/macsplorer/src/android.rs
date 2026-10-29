@@ -2,13 +2,13 @@
 //! the "All files access" permission and the app's own folders. The activity's
 //! Java side is reached over JNI.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use android_activity::AndroidApp;
 use jni::JNIEnv;
-use jni::objects::JObject;
+use jni::objects::{JClass, JObject};
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
 
@@ -108,6 +108,39 @@ pub fn request_all_files_access() {
     });
     if let Err(e) = opened {
         log::warn!("all files access page: {e}");
+    }
+}
+
+/// Opens `path` in the app Android picks for its type: `Opener.open` in
+/// `crates/macsplorer-android/java` starts the intent, with the file handed over
+/// through the `Files` content provider (another app can't read a `file://`
+/// address). The error is the reason to show the user.
+pub fn open_file(path: &Path) -> Result<(), String> {
+    let result = with_activity(|env, activity| {
+        let loaded = (|| {
+            // NativeActivity's native thread only finds system classes; the app's own come from its class loader.
+            let loader = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+            let name = env.new_string("dev.macsplorer.ai.Opener")?;
+            let class = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[(&name).into()])?.l()?;
+            let path = env.new_string(path.to_string_lossy())?;
+            let reason = env.call_static_method(
+                JClass::from(class),
+                "open",
+                "(Landroid/app/Activity;Ljava/lang/String;)Ljava/lang/String;",
+                &[activity.into(), (&path).into()],
+            )?;
+            let reason = reason.l()?;
+            if reason.is_null() { Ok(None) } else { env.get_string(&reason.into()).map(|s| Some(String::from(s))) }
+        })();
+        if loaded.is_err() {
+            let _ = env.exception_clear();
+        }
+        loaded
+    });
+    match result {
+        Ok(None) => Ok(()),
+        Ok(Some(reason)) => Err(reason),
+        Err(e) => Err(e.to_string()),
     }
 }
 

@@ -45,10 +45,17 @@ the app's private folder. Memory cards show under Locations (`places::is_user_mo
 Listing every folder needs **All files access** (`MANAGE_EXTERNAL_STORAGE`): the system page for it opens at start
 until it is allowed. For a quick test: `adb shell appops set dev.macsplorer.ai MANAGE_EXTERNAL_STORAGE allow`.
 
+## Opening files
+
+`platform::open_default` calls `android::open_file`, which runs `Opener.open` (Java, `java/dev/macsplorer/ai`): an
+`ACTION_VIEW` intent for the type from the extension. Android refuses a `file://` address across apps, so the file goes
+through `Files`, a small content provider (`content://dev.macsplorer.ai.files/<path>`, read only, not exported, only
+for addresses the intent grants). cargo-apk can add neither a provider to the manifest nor a `classes.dex`, so
+`scripts/package-android.sh` (run by `build-android.sh`) compiles the Java with `javac` and `d8`, adds the provider to
+the manifest cargo-apk wrote, and packs, aligns and signs the APK again. It needs a JDK.
+
 ## Known gaps
 
-- Opening a file does nothing yet (`platform::open_default`): Android wants an intent with a content URI, which needs
-  Java (a `FileProvider`), as Nullamp's media service does.
 - Delete moves items to a `Trash` folder in the app's own folder (`trash.rs`); nothing empties it.
 - Show in File Manager, Open in Terminal, Eject and New Window don't work.
 - Dialogs other than Properties are still small windows in the middle, and their close box does nothing (use Cancel).

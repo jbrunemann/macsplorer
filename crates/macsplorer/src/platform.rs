@@ -128,11 +128,13 @@ pub fn open_error(dir: &Path, e: &io::Error) -> String {
 
 /// Opens `path` in its default application without waiting for it.
 pub fn open_default(path: &Path) -> io::Result<()> {
-    if cfg!(target_os = "android") {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, "opening files is not available on Android yet"));
+    #[cfg(target_os = "android")]
+    return crate::android::open_file(path).map_err(io::Error::other);
+    #[cfg(not(target_os = "android"))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        Command::new(opener).arg(path).spawn().map(drop)
     }
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    Command::new(opener).arg(path).spawn().map(drop)
 }
 
 /// Opens a web address in the default browser without waiting for it.

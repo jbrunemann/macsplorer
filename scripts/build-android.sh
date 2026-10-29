@@ -7,7 +7,7 @@
 # Signing: without CARGO_APK_RELEASE_KEYSTORE the APK is signed with Android Studio's debug key, which is fine for
 # trying it out but not for handing to anyone: an update signed with another key cannot replace it.
 #
-# Needs: the Android SDK with an NDK, `cargo install cargo-apk`, `rustup target add aarch64-linux-android`.
+# Needs: a JDK (opening files needs a Java content provider, see package-android.sh), the Android SDK with an NDK, `cargo install cargo-apk`, `rustup target add aarch64-linux-android`.
 set -e
 cd "$(dirname "$0")/.."
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
@@ -21,6 +21,7 @@ elif [ -z "$CARGO_APK_RELEASE_KEYSTORE_PASSWORD" ]; then
     exit 1
 fi
 cargo apk build -p macsplorer-android --release
+scripts/package-android.sh
 if [ "$1" = install ]; then
     "$ANDROID_HOME/platform-tools/adb" install -r target/release/apk/macsplorer.apk
 fi
