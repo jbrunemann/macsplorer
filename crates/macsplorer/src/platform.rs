@@ -1,6 +1,7 @@
 //! The few things that differ per OS: opening and revealing files, ejecting
 //! volumes, wording, and where fonts live. macOS uses `open`/`diskutil`,
-//! Linux the freedesktop tools.
+//! Linux the freedesktop tools. Android has neither yet: opening a file needs
+//! an intent with a content URI, which goes through Java.
 
 use std::io;
 use std::path::Path;
@@ -32,6 +33,27 @@ pub fn shortcut(alt: bool, key: &str) -> String {
     }
 }
 
+/// A phone or tablet: no pointer to hover with, a long press for the context
+/// menu, a drag that scrolls (never moves files or draws a selection band),
+/// and a window that fills the screen.
+pub const TOUCH: bool = cfg!(target_os = "android");
+
+/// How rows and the background of the views sense the pointer: a drag moves
+/// items or draws the marquee on a desktop, and scrolls on a touch screen.
+pub fn item_sense() -> egui::Sense {
+    if TOUCH { egui::Sense::click() } else { egui::Sense::click_and_drag() }
+}
+
+/// How far the status bar and the gesture bar cover the window, in points:
+/// (top, bottom). Zero on a desktop.
+#[cfg_attr(not(target_os = "android"), allow(unused_variables))]
+pub fn system_bar_insets(pixels_per_point: f32) -> (f32, f32) {
+    #[cfg(target_os = "android")]
+    return crate::android::system_bar_insets(pixels_per_point);
+    #[cfg(not(target_os = "android"))]
+    (0.0, 0.0)
+}
+
 /// Label of the context menu entry that reveals an item in the file manager.
 pub const REVEAL_LABEL: &str = if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in File Manager" };
 
@@ -48,6 +70,12 @@ pub const TAHOMA_BOLD: &[&str] = &["/System/Library/Fonts/Supplemental/Tahoma Bo
 pub const SYMBOL_FONT: &[&str] = &["/System/Library/Fonts/Apple Symbols.ttf"];
 #[cfg(not(target_os = "macos"))]
 pub const SYMBOL_FONT: &[&str] = &[];
+
+/// Android has no Tahoma: the bundled DejaVu stands in.
+#[cfg(target_os = "android")]
+pub const TAHOMA: &[&str] = &[];
+#[cfg(target_os = "android")]
+pub const TAHOMA_BOLD: &[&str] = &[];
 
 /// Linux has no Tahoma of its own: use one the user installed (fonts folder,
 /// Wine, a Windows partition).
@@ -71,8 +99,8 @@ pub const TAHOMA_BOLD: &[&str] = &[
 ];
 
 /// DejaVu Sans Condensed, the UI font when the system has no Tahoma. Built into
-/// the Linux binary only; macOS ships Tahoma (`assets/fonts`, license beside it).
-#[cfg(target_os = "linux")]
+/// the Linux and Android binaries only; macOS ships Tahoma (`assets/fonts`, license beside it).
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn bundled_ui_font(bold: bool) -> &'static [u8] {
     if bold {
         include_bytes!("../../../assets/fonts/DejaVuSansCondensed-Bold.ttf")
@@ -100,6 +128,9 @@ pub fn open_error(dir: &Path, e: &io::Error) -> String {
 
 /// Opens `path` in its default application without waiting for it.
 pub fn open_default(path: &Path) -> io::Result<()> {
+    if cfg!(target_os = "android") {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, "opening files is not available on Android yet"));
+    }
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     Command::new(opener).arg(path).spawn().map(drop)
 }
@@ -152,10 +183,12 @@ pub fn new_window(folder: &Path, frame: Option<egui::Rect>) -> io::Result<()> {
 }
 
 /// The frame a window opened by [`new_window`] should take: position and size.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub fn inherited_frame() -> Option<([f32; 2], [f32; 2])> {
     parse_frame(&std::env::var(WINDOW_ENV).ok()?)
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn parse_frame(text: &str) -> Option<([f32; 2], [f32; 2])> {
     let n: Vec<f32> = text.split(',').map(|v| v.trim().parse().ok()).collect::<Option<_>>()?;
     match n[..] {
@@ -166,7 +199,7 @@ fn parse_frame(text: &str) -> Option<([f32; 2], [f32; 2])> {
 
 /// Shows `path` selected in the file manager. Blocks briefly; call it off
 /// the UI thread.
-#[cfg_attr(not(unix), allow(unused_variables))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(unused_variables))]
 pub fn reveal(path: &Path) {
     #[cfg(target_os = "macos")]
     {
@@ -227,6 +260,11 @@ pub fn open_terminal(folder: &Path, preferred: Option<&str>) -> Result<(), Strin
         }
         Err("no terminal found; set $TERMINAL".into())
     }
+    #[cfg(target_os = "android")]
+    {
+        let _ = (folder, preferred);
+        Err("Android has no terminal to open".into())
+    }
 }
 
 /// Unmounts and ejects a mounted volume. Blocks; call it off the UI thread.
@@ -239,6 +277,9 @@ pub fn eject(volume: &Path) -> Result<(), String> {
     // removable drives without root; umount covers a plain mount.
     #[cfg(target_os = "linux")]
     let attempts: [(&str, &[&str]); 2] = [("gio", &["mount", "--eject"]), ("umount", &[])];
+    // Android unmounts a memory card in its own settings only.
+    #[cfg(target_os = "android")]
+    let attempts: [(&str, &[&str]); 0] = [];
 
     let mut last = String::from("no tool available to eject");
     for (tool, args) in attempts {

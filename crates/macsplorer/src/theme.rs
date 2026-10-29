@@ -194,7 +194,9 @@ pub fn install(ctx: &egui::Context) {
                 let found = system.ui_font(family != FontFamily::Proportional)?;
                 let origin = UiFont { label: found.family.clone(), path: found.path.map(Into::into) };
                 Some((FontData { index: found.index, ..FontData::from_owned(found.data) }, origin))
-            })
+            });
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let data = data
             .or_else(|| {
                 let origin = UiFont { label: "DejaVu Sans Condensed, built into Macsplorer".to_string(), path: None };
                 // Autohinted and on whole pixels: sharp at 12 px on a 1x screen (see `fonts::prefer_autohinter`).
@@ -488,13 +490,13 @@ pub fn tool_button(ui: &mut Ui, icon: Icon, label: Option<&str>, enabled: bool) 
 }
 
 /// A toolbar button that stays pushed in while `checked` (e.g. "Folders").
-pub fn tool_toggle(ui: &mut Ui, icon: Icon, label: &str, checked: bool) -> Response {
+pub fn tool_toggle(ui: &mut Ui, icon: Icon, label: Option<&str>, checked: bool) -> Response {
     if !checked {
-        return tool_button(ui, icon, Some(label), true);
+        return tool_button(ui, icon, label, true);
     }
     // Checked buttons get the classic light dither behind a sunken edge.
     let bg = ui.painter().add(egui::Shape::Noop);
-    let resp = tool_button(ui, icon, Some(label), true);
+    let resp = tool_button(ui, icon, label, true);
     ui.painter().set(bg, egui::Shape::rect_filled(resp.rect, 0.0, checked_face()));
     bevel(ui.painter(), resp.rect, Bevel::SunkenThin);
     resp
@@ -603,11 +605,16 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
 
 /// A dialog's caption: no icon and only a close button. Win2000 property
 /// sheets also have "?" (context help), left out as there is no help.
-pub fn dialog_title_bar(ui: &mut Ui, title: &str) {
-    caption(ui, title, true);
+/// `true` when the close button was clicked. On a desktop it also asks the
+/// viewport to close, which is all a dialog in its own window needs; on a
+/// touch screen the caller has to close the dialog.
+pub fn dialog_title_bar(ui: &mut Ui, title: &str) -> bool {
+    caption(ui, title, true)
 }
 
-fn caption(ui: &mut Ui, title: &str, dialog: bool) {
+/// On a touch screen the main window fills the screen: no buttons to
+/// minimize, maximize or close it, and nothing to drag.
+fn caption(ui: &mut Ui, title: &str, dialog: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::click_and_drag());
     let (active, maximized) = ui.ctx().input(|i| (i.viewport().focused.unwrap_or(true), i.viewport().maximized.unwrap_or(false)));
     let (left, right, text) = if active {
@@ -653,17 +660,27 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
 
     // A title too long for the caption ends in an ellipsis before the buttons.
     let text_left = icon.right() + 3.0;
-    let text_right = if dialog { close.left() } else { min.left() } - 4.0;
+    let text_right = match (dialog, platform::TOUCH) {
+        (true, _) => close.left(),
+        (false, true) => rect.right(),
+        (false, false) => min.left(),
+    } - 4.0;
     let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), bold(FONT_SIZE), text);
     job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - text_left).max(0.0));
     let galley = ui.fonts_mut(|f| f.layout_job(job));
     p.galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, text);
     let ctx = ui.ctx().clone();
     let buttons = [(min, Caption::Minimize), (max, if maximized { Caption::Restore } else { Caption::Maximize }), (close, Caption::Close)];
-    for (r, kind) in buttons.into_iter().skip(if dialog { 2 } else { 0 }) {
+    let mut closed = false;
+    for (r, kind) in buttons.into_iter().skip(if dialog { 2 } else if platform::TOUCH { 3 } else { 0 }) {
         let b = ui.interact(r, ui.id().with(("caption", kind as u8)), Sense::click());
         caption_button(ui.painter(), r, kind, b.is_pointer_button_down_on());
         if b.clicked() {
+            closed |= kind == Caption::Close;
+            // A phone's only window is the app's: the dialog's caller closes the dialog.
+            if platform::TOUCH {
+                continue;
+            }
             ctx.send_viewport_cmd(match kind {
                 Caption::Minimize => ViewportCommand::Minimized(true),
                 Caption::Maximize => ViewportCommand::Maximized(true),
@@ -673,12 +690,16 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
         }
     }
 
+    if platform::TOUCH {
+        return closed;
+    }
     if resp.drag_started_by(egui::PointerButton::Primary) {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
     }
     if resp.double_clicked() && !dialog {
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
+    closed
 }
 
 /// The macOS close button: red, gray while the window is inactive (unless the pointer is on it),
@@ -704,7 +725,7 @@ fn mac_close_dot(p: &egui::Painter, c: Pos2, active: bool, hovered: bool, presse
 /// borderless window, but on Linux the compositor gives it none, so the app
 /// asks for a resize drag itself. Does nothing on macOS or when maximized.
 pub fn resize_frame(ui: &Ui, outer: Rect) {
-    if cfg!(target_os = "macos") || ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false)) {
+    if cfg!(target_os = "macos") || platform::TOUCH || ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false)) {
         return;
     }
     use egui::viewport::ResizeDirection as Dir;
@@ -781,7 +802,7 @@ pub fn size_grip(ui: &Ui, area: Rect) {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Caption {
     Minimize,
     Maximize,

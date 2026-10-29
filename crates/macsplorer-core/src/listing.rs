@@ -336,7 +336,7 @@ pub fn comment(path: &Path) -> Option<String> {
 }
 
 /// The freedesktop.org comment attribute, which Dolphin and Nautilus edit.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn comment(path: &Path) -> Option<String> {
     let data = crate::xattr::read(path, c"user.xdg.comment")?;
     Some(String::from_utf8_lossy(&data).into_owned()).filter(|s| !s.is_empty())

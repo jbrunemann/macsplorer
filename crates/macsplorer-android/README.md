@@ -1,0 +1,56 @@
+# Macsplorer for Android (first draft)
+
+The desktop app in `crates/macsplorer`, run as a NativeActivity through eframe and wgpu (Vulkan). This crate is
+only the `cdylib` cargo-apk packs; everything else is the `macsplorer` library, which `run_android` starts. Built after
+Nullamp's Android port.
+
+## Build and run
+
+```sh
+rustup target add aarch64-linux-android
+cargo install cargo-apk
+sdkmanager --install "ndk;27.3.13750724"      # any recent NDK
+scripts/build-android.sh install               # builds target/release/apk/macsplorer.apk, installs it with adb
+adb shell am start -n dev.macsplorer.ai/android.app.NativeActivity
+```
+
+Debug logs: `adb logcat -s macsplorer`.
+
+## What differs from the desktop
+
+The layout is the desktop's, small buttons included. `platform::TOUCH` switches the few exceptions:
+
+- **The Folders pane is a drawer** over the window from the left (`Explorer::folders_drawer`), closed at the start.
+  Folders on the toolbar opens it; a tap on the dimmed part or picking a folder closes it.
+- **A long press is the right click**: egui reports it as `secondary_clicked`, so the desktop context menus open.
+- **A drag scrolls**: rows and the view background sense clicks only (`platform::item_sense`), so a swipe never
+  moves files or draws a selection band.
+- **Properties fills the screen** (an `Area` instead of its own window). Its close box closes the dialog only.
+- The window keeps clear of the status bar and the gesture bar (`android::system_bar_insets`) and has no caption
+  buttons or size grip.
+- **The back button** (and gesture) closes what is on top: a menu, a dialog (as Cancel), the drawer, an address being
+  typed. Otherwise it goes back in the history, and at the first page puts the app in the background
+  (`Explorer::back_button`).
+- **A sideways swipe** in the Details view scrolls the columns (`pan_sideways`).
+
+On a narrow window, on any system, Back, Folders, Refresh, Address and Go lose their text, the search box moves under
+the address field and the status bar drops the computer name (`TOOLBAR_LABELS_WIDTH` and the constants next to it).
+
+Dates and numbers follow the phone's region settings (`android::region`: date order, 12 or 24 hours, separators,
+sorting), formatted by chrono from the ICU patterns (`locale::icu_to_chrono`); month and day names stay English.
+
+The home folder `~` is the shared storage (`/storage/emulated/0`, shown as "Internal storage"); the settings stay in
+the app's private folder. Memory cards show under Locations (`places::is_user_mount`).
+
+Listing every folder needs **All files access** (`MANAGE_EXTERNAL_STORAGE`): the system page for it opens at start
+until it is allowed. For a quick test: `adb shell appops set dev.macsplorer.ai MANAGE_EXTERNAL_STORAGE allow`.
+
+## Known gaps
+
+- Opening a file does nothing yet (`platform::open_default`): Android wants an intent with a content URI, which needs
+  Java (a `FileProvider`), as Nullamp's media service does.
+- Delete moves items to a `Trash` folder in the app's own folder (`trash.rs`); nothing empties it.
+- Show in File Manager, Open in Terminal, Eject and New Window don't work.
+- Dialogs other than Properties are still small windows in the middle, and their close box does nothing (use Cancel).
+- The font is the bundled DejaVu Sans Condensed with no fallback for other scripts.
+- On the emulator's software renderer the first start can take half a minute.

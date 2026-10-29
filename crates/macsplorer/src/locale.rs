@@ -280,3 +280,140 @@ mod imp {
         if ["%r", "%I", "%l", "%p"].iter().any(|f| t_fmt.contains(f)) { "%-I:%M %p" } else { "%R" }
     }
 }
+
+/// Android's C library knows only the C locale: the phone's region settings
+/// come from Java once (`android::region`), and chrono formats with them.
+#[cfg(target_os = "android")]
+mod imp {
+    use std::sync::OnceLock;
+    use std::time::SystemTime;
+
+    use chrono::{DateTime, Local};
+
+    use super::{RelativeDay, icu_to_chrono};
+    use crate::android::Region;
+
+    static REGION: OnceLock<Option<Region>> = OnceLock::new();
+
+    fn region() -> Option<&'static Region> {
+        REGION.get_or_init(crate::android::region).as_ref()
+    }
+
+    pub fn kind_name(_path: &std::path::Path) -> Option<String> {
+        None
+    }
+
+    pub fn collation() -> String {
+        region().map(|r| r.tag.clone()).unwrap_or_default()
+    }
+
+    pub fn identifier() -> String {
+        region().map_or_else(|| "C".into(), |r| r.tag.clone())
+    }
+
+    pub fn separators() -> (String, String) {
+        region().map_or_else(|| (",".into(), ".".into()), |r| (r.group.clone(), r.decimal.clone()))
+    }
+
+    fn format(when: SystemTime, pattern: &str) -> String {
+        DateTime::<Local>::from(when).format(pattern).to_string()
+    }
+
+    /// Today and Yesterday take the weekday's place, as on the Mac.
+    pub fn long_date_time(when: SystemTime, relative: Option<RelativeDay>, with_time: bool) -> String {
+        let (date, time) = region().map_or(("%A, %x", "%X"), |r| (r.long_date.as_str(), r.long_time.as_str()));
+        let mut date = icu_to_chrono(date);
+        if let Some(day) = relative {
+            let word = match day {
+                RelativeDay::Today => "Today",
+                RelativeDay::Yesterday => "Yesterday",
+            };
+            date = if date.contains("%A") { date.replacen("%A", word, 1) } else { format!("{word}, {date}") };
+        }
+        let mut s = format(when, &date);
+        if with_time {
+            s = format!("{s}, {}", format(when, &icu_to_chrono(time)));
+        }
+        s
+    }
+
+    pub fn short_date_time(when: SystemTime) -> String {
+        match region() {
+            Some(r) => format(when, &format!("{} {}", icu_to_chrono(&r.short_date), icu_to_chrono(&r.short_time))),
+            None => format(when, "%x %R"),
+        }
+    }
+}
+
+/// An ICU date pattern (`dd.MM.y`, `h:mm a`, `EEEE, MMMM d, y`) as a chrono
+/// format string. Names come out in English, like every word of the app.
+/// Letters chrono has no counterpart for are left out.
+#[cfg(any(target_os = "android", test))]
+fn icu_to_chrono(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut quoted = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // '' is a quote, in or out of quoted text; a single ' starts or ends literal text.
+        if c == '\'' {
+            if chars.get(i + 1) == Some(&'\'') {
+                out.push('\'');
+                i += 2;
+            } else {
+                quoted = !quoted;
+                i += 1;
+            }
+            continue;
+        }
+        if quoted || !c.is_ascii_alphabetic() {
+            out.push_str(if c == '%' { "%%" } else { "" });
+            if c != '%' {
+                out.push(c);
+            }
+            i += 1;
+            continue;
+        }
+        let run = chars[i..].iter().take_while(|&&d| d == c).count();
+        out.push_str(match (c, run) {
+            ('y', 2) => "%y",
+            ('y', _) => "%Y",
+            ('M' | 'L', 1) => "%-m",
+            ('M' | 'L', 2) => "%m",
+            ('M' | 'L', 3) => "%b",
+            ('M' | 'L', _) => "%B",
+            ('d', 1) => "%-d",
+            ('d', _) => "%d",
+            ('E' | 'c', 4..) => "%A",
+            ('E' | 'c', _) => "%a",
+            ('H', 1) => "%-H",
+            ('H', _) => "%H",
+            ('h', 1) => "%-I",
+            ('h', _) => "%I",
+            ('m', _) => "%M",
+            ('s', _) => "%S",
+            ('a' | 'b' | 'B', _) => "%p",
+            _ => "",
+        });
+        i += run;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::icu_to_chrono;
+
+    #[test]
+    fn icu_patterns_become_chrono_formats() {
+        assert_eq!(icu_to_chrono("M/d/y"), "%-m/%-d/%Y");
+        assert_eq!(icu_to_chrono("dd.MM.y"), "%d.%m.%Y");
+        assert_eq!(icu_to_chrono("h:mm a"), "%-I:%M %p");
+        assert_eq!(icu_to_chrono("HH:mm:ss"), "%H:%M:%S");
+        assert_eq!(icu_to_chrono("EEEE, MMMM d, y"), "%A, %B %-d, %Y");
+        assert_eq!(icu_to_chrono("EEEE d MMMM y 'г'."), "%A %-d %B %Y г.");
+        assert_eq!(icu_to_chrono("d 'de' MMMM 'de' y"), "%-d de %B de %Y");
+        assert_eq!(icu_to_chrono("h 'o''clock' 100%"), "%-I o'clock 100%%");
+    }
+}

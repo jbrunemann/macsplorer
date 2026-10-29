@@ -145,10 +145,19 @@ pub fn computer_name() -> Option<String> {
 /// The label of the root of the file system.
 const ROOT_LABEL: &str = if cfg!(target_os = "macos") { "Macintosh HD" } else { "File System" };
 
+/// The first drive. Android lets an app list neither `/` nor `/storage`: the
+/// shared storage, the home folder there, stands in.
+fn root() -> Place {
+    match dirs::home_dir().filter(|_| cfg!(target_os = "android")) {
+        Some(path) => Place { label: "Internal storage".into(), path },
+        None => Place { label: ROOT_LABEL.into(), path: PathBuf::from("/") },
+    }
+}
+
 /// Mounted volumes, Explorer's "This PC" drives.
 pub fn volumes() -> Vec<Place> {
     #[allow(unused_mut)]
-    let mut out = vec![Place { label: ROOT_LABEL.into(), path: PathBuf::from("/") }];
+    let mut out = vec![root()];
     #[cfg(unix)]
     {
         let mut vols: Vec<Place> = mounted_volumes()
@@ -171,7 +180,7 @@ fn mounted_volumes() -> Vec<PathBuf> {
 
 /// Removable media and manual mounts, the places desktop file managers list:
 /// `/media/<user>/x`, `/run/media/<user>/x` (udisks) and `/mnt/x`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn mounted_volumes() -> Vec<PathBuf> {
     let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     parse_mounts(&mounts).into_iter().filter(|p| is_user_mount(p)).collect()
@@ -194,7 +203,7 @@ pub enum DriveKind {
 }
 
 /// What the system says about a mounted volume.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "android", test))]
 struct VolumeFacts {
     /// The file system's name as the kernel gives it (`apfs`, `cd9660`, `smbfs`).
     fs_type: String,
@@ -204,7 +213,7 @@ struct VolumeFacts {
     external: bool,
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "android", test))]
 fn classify(facts: &VolumeFacts) -> DriveKind {
     const OPTICAL: [&str; 4] = ["cd9660", "udf", "cddafs", "iso9660"];
     const NETWORK: [&str; 10] = ["smbfs", "nfs", "nfs4", "afpfs", "webdav", "cifs", "smb3", "davfs", "9p", "fuse.sshfs"];
@@ -226,7 +235,7 @@ pub fn drive_kind(path: &Path) -> DriveKind {
     {
         mac_facts(path).map_or(DriveKind::Fixed, |f| classify(&f))
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
         parse_mount_table(&mounts)
@@ -238,7 +247,7 @@ pub fn drive_kind(path: &Path) -> DriveKind {
                 classify(&VolumeFacts { fs_type, local: true, external })
             })
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
     {
         let _ = path;
         DriveKind::Fixed
@@ -286,7 +295,7 @@ pub fn is_ejectable(path: &Path) -> bool {
     {
         path.parent() == Some(Path::new("/Volumes")) && is_browsable_mount(path)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         is_user_mount(path) && mounted_volumes().iter().any(|v| v == path)
     }
@@ -294,13 +303,13 @@ pub fn is_ejectable(path: &Path) -> bool {
 
 /// Mount points from the text of `/proc/self/mounts`, in file order. Spaces
 /// and other odd bytes in paths are written as octal escapes (`\040`).
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "android", test))]
 fn parse_mounts(text: &str) -> Vec<PathBuf> {
     parse_mount_table(text).into_iter().map(|(path, _)| path).collect()
 }
 
 /// Mount points with their file system types, in file order.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "android", test))]
 fn parse_mount_table(text: &str) -> Vec<(PathBuf, String)> {
     text.lines()
         .filter_map(|line| {
@@ -311,7 +320,7 @@ fn parse_mount_table(text: &str) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "android", test))]
 fn unescape_mount(field: &str) -> String {
     let bytes = field.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -341,6 +350,14 @@ fn is_user_mount(path: &Path) -> bool {
     matches!(depth_under("/mnt"), Some(1))
         || matches!(depth_under("/media"), Some(1 | 2))
         || matches!(depth_under("/run/media"), Some(2))
+}
+
+/// True if `path` is a memory card or USB drive: `/storage/1A2B-3C4D`. The
+/// shared storage is `/storage/emulated/0` (with `/storage/self` pointing at
+/// it) and is the root drive already; the rest are the system's own mounts.
+#[cfg(target_os = "android")]
+fn is_user_mount(path: &Path) -> bool {
+    path.parent() == Some(Path::new("/storage")) && !path.ends_with("emulated") && !path.ends_with("self")
 }
 
 /// True if `path` is itself a mount point that Finder would show. Skips

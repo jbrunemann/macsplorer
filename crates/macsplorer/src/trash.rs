@@ -34,22 +34,41 @@ fn move_to_trash(path: &Path) -> io::Result<Option<std::path::PathBuf>> {
     Ok(resulting.and_then(|u| u.to_file_path()))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 fn restore(item: &Trashed) -> io::Result<()> {
     let from = item.in_trash.as_deref().ok_or_else(|| io::Error::other("the Trash didn't say where it put the item"))?;
     macsplorer_core::fileops::move_to(from, &item.original)
 }
 
+/// Android has no trash for arbitrary files (MediaStore's holds media only):
+/// items go to a `Trash` folder in the app's own folder on the shared storage.
+/// Android 11 and later mount that folder on its own, so the move may be a
+/// copy. Nothing empties it yet.
+#[cfg(target_os = "android")]
+fn move_to_trash(path: &Path) -> io::Result<Option<std::path::PathBuf>> {
+    let trash = crate::android::trash_dir().ok_or_else(|| io::Error::other("the app has no folder for the Trash"))?;
+    std::fs::create_dir_all(&trash)?;
+    let name = path.file_name().ok_or_else(|| io::Error::other("invalid path"))?;
+    // A second item of the same name gets the time it was trashed added.
+    let mut to = trash.join(name);
+    if to.symlink_metadata().is_ok() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        to = trash.join(format!("{} {stamp}", name.to_string_lossy()));
+    }
+    macsplorer_core::fileops::move_to(path, &to)?;
+    Ok(Some(to))
+}
+
 /// The freedesktop trash (`~/.local/share/Trash`, or a per-volume `.Trash-uid`).
 /// It doesn't report where the item went; `restore` looks it up by its
 /// original path.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
 fn move_to_trash(path: &Path) -> io::Result<Option<std::path::PathBuf>> {
     trash::delete(path).map(|()| None).map_err(|e| io::Error::other(e.to_string()))
 }
 
 /// Restores the most recently trashed item with this original path.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
 fn restore(item: &Trashed) -> io::Result<()> {
     use trash::os_limited;
 

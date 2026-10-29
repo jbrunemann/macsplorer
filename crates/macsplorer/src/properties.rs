@@ -143,6 +143,8 @@ struct Multi {
 
 pub struct Properties {
     viewport: egui::ViewportId,
+    /// On a touch screen the dialog fills the screen: its size there.
+    full_screen: Option<egui::Vec2>,
     entry: Entry,
     /// The name box. With extensions hidden it holds the stem only.
     name: String,
@@ -197,6 +199,7 @@ impl Properties {
         });
         Self {
             viewport: egui::ViewportId::from_hash_of(("properties", &entry.path, Instant::now())),
+            full_screen: None,
             name: entry.display_name(show_extensions).to_owned(),
             hidden_ext: entry.hidden_extension(show_extensions).map(str::to_owned),
             entry,
@@ -251,6 +254,7 @@ impl Properties {
         let (_, info_rx) = channel();
         Self {
             viewport: egui::ViewportId::from_hash_of(("properties", &entry.path, Instant::now())),
+            full_screen: None,
             name: entry.display_name(show_extensions).to_owned(),
             hidden_ext: None,
             entry,
@@ -299,6 +303,9 @@ impl Properties {
     }
 
     fn size(&self) -> egui::Vec2 {
+        if let Some(size) = self.full_screen {
+            return size;
+        }
         if self.multi.is_some() { size_for_multi() } else { size_for(&self.entry) }
     }
 
@@ -427,6 +434,14 @@ impl Properties {
         if (self.is_dir() || self.multi.is_some()) && !self.size.is_done() {
             ctx.request_repaint_after(SIZE_REFRESH);
         }
+        if crate::platform::TOUCH {
+            // A phone has one window: the dialog covers it, between the system bars.
+            let (top, bottom) = crate::platform::system_bar_insets(ctx.pixels_per_point());
+            let screen = ctx.content_rect();
+            let rect = Rect::from_min_max(screen.min + vec2(0.0, top), screen.max - vec2(0.0, bottom));
+            self.full_screen = Some(rect.size());
+            return egui::Area::new(egui::Id::new(self.viewport)).order(egui::Order::Middle).fixed_pos(rect.min).show(ctx, |ui| self.ui(ui, icons)).inner;
+        }
         let title = self.title();
         let builder = egui::ViewportBuilder::default()
             .with_title(&title)
@@ -464,7 +479,9 @@ impl Properties {
         theme::bevel(p, outer, Bevel::Raised);
         let inner = outer.shrink(FRAME);
         let mut caption = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
-        theme::dialog_title_bar(&mut caption, &title);
+        if theme::dialog_title_bar(&mut caption, &title) {
+            return Outcome::Close;
+        }
 
         let buttons_top = inner.bottom() - 7.0 - BUTTON.y;
         let tab_top = inner.top() + 18.0 + 6.0;
