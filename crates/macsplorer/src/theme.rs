@@ -857,6 +857,8 @@ pub enum Icon {
     Folders,
     Undo,
     Views,
+    /// A magnifying glass: the toolbar's Search button on a narrow window (not from Windows).
+    Search,
     Go,
     Folder,
     FolderOpen,
@@ -961,6 +963,12 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
                 p.rect_filled(Rect::from_min_max(at(x, y), at(x + 3.0, y + 3.0)), 0.0, gray(active_caption()));
                 p.hline(at(x + 3.5, 0.0).x..=at(x + 5.0, 0.0).x, at(0.0, y + 1.5).y, Stroke::new(1.0, gray(shadow())));
             }
+        }
+        Icon::Search => {
+            let lens = at(6.5, 6.5);
+            p.circle_filled(lens, 3.8 * s, gray(PAPER));
+            p.line_segment([at(9.4, 9.4), at(14.0, 14.0)], Stroke::new(2.4 * s, gray(dark())));
+            p.circle_stroke(lens, 3.8 * s, Stroke::new(1.6 * s, gray(active_caption())));
         }
         Icon::Folder | Icon::FolderOpen => folder(p, r, enabled),
         Icon::CompressedFolder => {

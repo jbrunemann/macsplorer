@@ -33,8 +33,9 @@ The layout is the desktop's, small buttons included. `platform::TOUCH` switches 
   (`Explorer::back_button`).
 - **A sideways swipe** in the Details view scrolls the columns (`pan_sideways`).
 
-On a narrow window, on any system, Back, Folders, Refresh, Address and Go lose their text, the search box moves under
-the address field and the status bar drops the computer name (`TOOLBAR_LABELS_WIDTH` and the constants next to it).
+On a narrow window, on any system, Back, Folders, Refresh, Address and Go lose their text, the search box becomes a magnifier
+button at the end of the toolbar that opens it under the address field (closed again by Esc, by leaving it empty or by
+tapping the button) and the status bar drops the computer name (`TOOLBAR_LABELS_WIDTH` and the constants next to it).
 
 Dates and numbers follow the phone's region settings (`android::region`: date order, 12 or 24 hours, separators,
 sorting), formatted by chrono from the ICU patterns (`locale::icu_to_chrono`); month and day names stay English.

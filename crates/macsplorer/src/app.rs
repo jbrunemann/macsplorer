@@ -440,6 +440,8 @@ pub struct Explorer {
     search: String,
     /// Give the search field the keyboard, its text selected, next frame.
     search_needs_focus: bool,
+    /// The search box is showing on its own row (a narrow window opens it from the toolbar's Search button).
+    search_open: bool,
     status: Option<String>,
     tree: FolderTree,
     /// Tree folder listings run on worker threads and report back here.
@@ -580,6 +582,7 @@ impl Explorer {
             folders_rx,
             search: String::new(),
             search_needs_focus: false,
+            search_open: false,
             status: None,
             tree: FolderTree::new(tree_roots()),
             drives: drive_kinds(),
@@ -1770,7 +1773,10 @@ impl Explorer {
                 }
                 self.address_needs_focus = true;
             }
-            Stop::Search => self.search_needs_focus = true,
+            Stop::Search => {
+                self.search_needs_focus = true;
+                self.search_open = true;
+            }
         }
     }
 
@@ -2727,6 +2733,7 @@ impl Explorer {
         // Win2000's "No text labels" toolbar option. The names stay in the tooltips.
         let label = |text| (ui.available_width() >= TOOLBAR_LABELS_WIDTH).then_some(text);
         let (back_label, folders_label, refresh_label) = (label("Back"), label("Folders"), label("Refresh"));
+        let search_collapsed = ui.available_width() < SEARCH_INLINE_WIDTH;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(2.0);
@@ -2776,6 +2783,19 @@ impl Explorer {
             // Windows 2000's Views button is all drop-down: a click anywhere opens the menu.
             let views = theme::tool_dropdown(ui, Icon::Views, "Views").on_hover_text("Views");
             egui::Popup::menu(&views).style(theme::menu_style).show(|ui| view_choices(ui, self.settings.view, actions));
+            // A narrow window keeps the search box off the address bar's row until asked for.
+            if search_collapsed {
+                let shown = self.search_open || !self.search.is_empty();
+                if theme::tool_toggle(ui, Icon::Search, None, shown).on_hover_text("Search this folder").clicked() {
+                    if shown {
+                        self.search.clear();
+                        self.search_open = false;
+                    } else {
+                        self.search_open = true;
+                        self.search_needs_focus = true;
+                    }
+                }
+            }
         });
     }
 
@@ -2814,7 +2834,7 @@ impl Explorer {
                 rect.left()
             })
             .inner;
-        if own_row {
+        if own_row && (self.search_open || !self.search.is_empty()) {
             ui.horizontal(|ui| {
                 ui.add_space(field_left - ui.cursor().left());
                 let width = ui.available_width() - 4.0;
@@ -2838,7 +2858,10 @@ impl Explorer {
         let resp = sui.add(TextEdit::singleline(&mut self.search).id(id).hint_text("Search this folder").frame(egui::Frame::NONE).desired_width(f32::INFINITY));
         if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
             self.search.clear();
+            self.search_open = false;
             actions.push(Action::FocusStop(Stop::View));
+        } else if resp.lost_focus() && self.search.is_empty() {
+            self.search_open = false;
         }
         if std::mem::take(&mut self.search_needs_focus) {
             resp.request_focus();
@@ -4030,7 +4053,7 @@ const TERMINAL_LABEL: &str = "Open in Terminal";
 
 /// Below this toolbar width Back, Folders and Refresh lose their text.
 const TOOLBAR_LABELS_WIDTH: f32 = 420.0;
-/// Below this width the search box moves under the address field.
+/// Below this width the search box is a toolbar button that opens it under the address field.
 const SEARCH_INLINE_WIDTH: f32 = 480.0;
 /// Below this width the status bar drops the computer name pane.
 const STATUS_COMPUTER_WIDTH: f32 = 480.0;
@@ -5777,6 +5800,17 @@ mod screenshot {
         shoot("window", egui::vec2(900.0, 560.0), |app| {
             let pick = app.entries.iter().find(|e| e.name == "main.rs").map(|e| e.path.clone());
             app.selection.extend(pick);
+        });
+    }
+
+    /// A phone held upright: Search is a toolbar button, closed and open.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn narrow_search() {
+        shoot("narrow-search-closed", egui::vec2(380.0, 320.0), |_| {});
+        shoot("narrow-search-open", egui::vec2(380.0, 320.0), |app| {
+            app.search_open = true;
+            app.search = "main".into();
         });
     }
 
