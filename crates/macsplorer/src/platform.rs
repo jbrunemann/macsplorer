@@ -199,10 +199,14 @@ fn parse_frame(text: &str) -> Option<([f32; 2], [f32; 2])> {
     }
 }
 
-/// Shows `path` selected in the file manager. Blocks briefly; call it off
-/// the UI thread.
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(unused_variables))]
+/// Shows `path` selected in the file manager (on Android its folder, in the
+/// Files app). Blocks briefly; call it off the UI thread.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux", target_os = "android")), allow(unused_variables))]
 pub fn reveal(path: &Path) {
+    #[cfg(target_os = "android")]
+    if let Err(e) = crate::android::reveal(path) {
+        log::warn!("show in file manager: {e}");
+    }
     #[cfg(target_os = "macos")]
     {
         let _ = Command::new("open").arg("-R").arg(path).status();

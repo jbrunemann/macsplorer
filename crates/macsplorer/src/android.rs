@@ -116,8 +116,18 @@ pub fn request_all_files_access() {
 /// through the `Files` content provider (another app can't read a `file://`
 /// address). The error is the reason to show the user.
 pub fn open_file(path: &Path) -> Result<(), String> {
+    call_opener("open", path)
+}
+
+/// Shows the folder holding `path` in the system's Files app (`Opener.reveal`).
+pub fn reveal(path: &Path) -> Result<(), String> {
+    call_opener("reveal", path)
+}
+
+/// Calls `Opener.<method>(activity, path)`, which answers `null` or the reason it failed.
+fn call_opener(method: &str, path: &Path) -> Result<(), String> {
     let result = with_activity(|env, activity| {
-        let loaded = (|| {
+        let called = (|| {
             // NativeActivity's native thread only finds system classes; the app's own come from its class loader.
             let loader = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
             let name = env.new_string("dev.macsplorer.ai.Opener")?;
@@ -125,17 +135,17 @@ pub fn open_file(path: &Path) -> Result<(), String> {
             let path = env.new_string(path.to_string_lossy())?;
             let reason = env.call_static_method(
                 JClass::from(class),
-                "open",
+                method,
                 "(Landroid/app/Activity;Ljava/lang/String;)Ljava/lang/String;",
                 &[activity.into(), (&path).into()],
             )?;
             let reason = reason.l()?;
             if reason.is_null() { Ok(None) } else { env.get_string(&reason.into()).map(|s| Some(String::from(s))) }
         })();
-        if loaded.is_err() {
+        if called.is_err() {
             let _ = env.exception_clear();
         }
-        loaded
+        called
     });
     match result {
         Ok(None) => Ok(()),

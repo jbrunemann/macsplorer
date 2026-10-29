@@ -57,7 +57,9 @@ the manifest cargo-apk wrote, and packs, aligns and signs the APK again. It need
 ## Known gaps
 
 - Delete moves items to a `Trash` folder in the app's own folder (`trash.rs`); nothing empties it.
-- Show in File Manager, Open in Terminal, Eject and New Window don't work.
+- Open in Terminal, Eject and New Window don't work. Show in File Manager opens the Files app on the item's folder
+  (`Opener.reveal`, a document address of the external storage provider), not on the item itself, and only for shared
+  storage and memory cards; a failure is only logged.
 - Dialogs other than Properties are still small windows in the middle, and their close box does nothing (use Cancel).
 - The font is the bundled DejaVu Sans Condensed with no fallback for other scripts.
 - On the emulator's software renderer the first start can take half a minute.
