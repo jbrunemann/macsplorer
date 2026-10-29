@@ -626,22 +626,15 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
     p.add(mesh);
 
     // On macOS, not Windows' system menu: the window icon turns into the red close dot while the
-    // pointer is on it, and a click closes the window. A dialog has no icon, so its dot stays.
+    // pointer is on it, and a click closes the window. A dialog has no icon, but keeps the same
+    // spot, empty until the pointer is on it.
     let mac = cfg!(target_os = "macos");
-    let icon_left = if mac && dialog { 16.0 } else { 2.0 };
-    let icon = Rect::from_min_size(pos2(rect.left() + icon_left, rect.top() + 1.0), vec2(if dialog { 0.0 } else { 16.0 }, 16.0));
-    if mac && dialog {
-        let close_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(icon.left(), rect.bottom()));
-        let b = ui.interact(close_area, ui.id().with("caption_icon"), Sense::click());
-        mac_close_dot(p, pos2(rect.left() + 8.0, rect.center().y), active, b.hovered(), b.is_pointer_button_down_on());
-        if b.clicked() {
-            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-        }
-    } else if mac {
+    let icon = Rect::from_min_size(pos2(rect.left() + 2.0, rect.top() + 1.0), vec2(if dialog && !mac { 0.0 } else { 16.0 }, 16.0));
+    if mac {
         let b = ui.interact(icon, ui.id().with("caption_icon"), Sense::click());
         if b.hovered() || b.is_pointer_button_down_on() {
             mac_close_dot(p, icon.center(), active, true, b.is_pointer_button_down_on());
-        } else {
+        } else if !dialog {
             paint_icon(p, icon, Icon::FolderOpen, true);
         }
         if b.clicked() {
