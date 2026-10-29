@@ -3792,8 +3792,28 @@ fn pointer_under_dialog(viewports: &egui::ViewportIdMap<egui::ViewportInfo>, poi
     })
 }
 
+/// Brings egui back from a Dock restore. The Minimize button sends `Minimized(true)`, which egui-winit
+/// records, but on macOS it never asks the window again (that can deadlock), so a restore from the
+/// Dock leaves `minimized` at true. egui then counts the window as not visible and eframe stops
+/// running its UI: the window is on screen, takes no clicks and can't be dragged. A window that
+/// regains focus or stops being occluded while egui still thinks it is minimized is not minimized.
+fn unstick_minimized(ctx: &egui::Context, raw: &egui::RawInput) {
+    thread_local!(static WAS_OCCLUDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    if raw.viewport_id != egui::ViewportId::ROOT {
+        return;
+    }
+    let Some(root) = raw.viewports.get(&egui::ViewportId::ROOT) else { return };
+    let occluded = root.occluded == Some(true);
+    let uncovered = WAS_OCCLUDED.replace(occluded) && !occluded;
+    let focused = raw.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)));
+    if root.minimized == Some(true) && (uncovered || focused) {
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Minimized(false));
+    }
+}
+
 impl eframe::App for Explorer {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        unstick_minimized(ctx, raw);
         let last = raw.events.iter().rev().find_map(|e| match e {
             egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => Some(Some(*pos)),
             egui::Event::PointerGone => Some(None),
