@@ -48,6 +48,9 @@ Macsplorer is a file browser for people who think better with a folder tree on t
 - **Hidden files and extensions on your terms.** Toggle both from the View
   menu. File extensions that could make an app pass for a document
   (`Invoice.pdf.app`) always stay visible.
+- **Files to the phone next to you.** Network Neighborhood lists the devices
+  nearby that run LocalSend or AirLynx, each app under its own row. Drag files
+  onto a device to send them, and see what came in right in the file list.
 - **Small, fast and open.** A single native Rust binary, no account, no
   telemetry, MIT licensed.
 - **Because it looks great.** Gradient caption bar, 3D bevels, classic scroll
@@ -130,6 +133,15 @@ every feature with screenshots, in plain language.
 - **Properties** (⌘I, File menu or right-click): the Windows 2000 General page in its own window, with name (editable, renames on OK or Apply), type (Finder's Kind, e.g. "Microsoft Excel Workbook"), location, size, and for folders the number of files and folders inside, counted in the background. Files also show created, modified and accessed dates, folders their created date. A Customize tab gives folders a color and an emblem, the way Finder stores them.
 - **Open in Terminal** starts Terminal on macOS; on Linux `$TERMINAL`, else the first common terminal found. Set `"terminal"` in `settings.json` (an app name such as `iTerm` or `Ghostty` on macOS, a command on Linux) to use another one.
 - Dates and numbers follow the system locale (macOS Language & Region settings).
+
+### Network Neighborhood
+
+The **Network** section of the Folders pane sends files to, and takes files from, phones, tablets and computers nearby, over [LocalSend](https://localsend.org) and AirLynx. Network Neighborhood holds one row for each app, and each expands on its own with a +: nothing looks for devices until you open its row, and it stops again when you close it. The two are separate in the code as well (`network/localsend.rs`, `network/airlynx.rs`), so either can be used or removed without the other.
+
+- **Send** by dragging items onto a device, with Send To, or with **Send Selected Items**. LocalSend devices ask their user first; AirLynx devices take files from their favorites without asking (files only, no folders).
+- **Receive Files** (off until turned on, in Network Neighborhood's menu or the status bar computer's) takes files into Downloads. A LocalSend offer asks first, with Decline as the default; files from AirLynx favorites arrive without a question. Received files are marked as downloaded.
+- Selecting Network Neighborhood, LocalSend, AirLynx or a device lists what was received since the app started in the right pane (the address bar reads `Network Neighborhood/LocalSend`). The files stay where they were saved, and one you delete or move away leaves the list by itself.
+- Right-click a device for **Properties**, or for **Add to Favorites** (AirLynx) or **Let Device Find This Computer** (LocalSend).
 
 ### Git
 

@@ -77,7 +77,7 @@ The tree on the left has three sections:
 
 - **Favorites**: your home folder, Desktop, Downloads, Documents, Pictures, Music, Movies, Applications and the Trash. Shortcuts (symbolic links) to folders that you keep directly in your home folder are listed too, just above the Trash.
 - **Locations**: your Mac, shown by its own name with a little monitor icon (it is only a label, nothing opens from it), then your Mac's disk, plus any USB sticks, external drives or network disks you have connected. As in Windows 2000's My Computer, each kind of drive has its own icon: a gray drive for the Mac's own disk, the same with a slot for USB sticks, external drives and mounted disk images, a disc over a drive for CDs and DVDs, and a drive with a cable for disks on the network.
-- **Network**: **Network Neighborhood**, the phones, tablets and computers nearby that you can send files to. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby) and [Receiving files from a phone or computer nearby](#receiving-files-from-a-phone-or-computer-nearby).
+- **Network**: **Network Neighborhood**, with a row each for **LocalSend** and **AirLynx**: the phones, tablets and computers nearby that you can send files to and receive files from. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby) and [Receiving files from a phone or computer nearby](#receiving-files-from-a-phone-or-computer-nearby).
 
 Click a folder's name to open it. Click the small **+** box (or double-click the name) to unfold the folders inside it without leaving where you are, and **−** to fold them away again. With the keyboard, the arrow keys move up and down, → unfolds and ← folds, + and − do the same without moving, Home and End jump to the first and last folder, and Page Up and Page Down move a pageful at a time. Typing the first letters of a folder's name jumps to it, among the folders you can see. When you move with the keys, the folder opens on the right half a second after you stop, so you can run through the tree quickly without waiting for every folder on the way.
 
@@ -206,7 +206,7 @@ The status bar shows how many items you have selected and how much space they ta
 | **Show in Finder** | Opens a Finder window with the item selected. |
 | **Open in Terminal** | For folders: opens a Terminal window in that folder. Also in the Folders pane's menu, and in the menu for empty space (for the open folder). |
 | **Eject** | For disks and drives: safely disconnects them. |
-| **Send To** | Sends the selected items to a phone or computer nearby that runs LocalSend. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby). |
+| **Send To** | Sends the selected items to a phone or computer nearby that runs LocalSend or AirLynx. See [Sending to a phone or computer nearby](#sending-to-a-phone-or-computer-nearby). |
 | **Cut**, **Copy**, **Copy as Path**, **Paste**, **Move Here** | See [Copying, moving and deleting](#8-copying-moving-and-deleting). |
 | **Delete** | Moves the item to the Trash. |
 | **Rename** | See [Renaming](#7-renaming). |
@@ -309,7 +309,7 @@ On Linux, files dragged from another file manager such as Nautilus go into the f
 
 ### Sending to a phone or computer nearby
 
-Macsplorer can send files to phones, tablets and computers on the same Wi-Fi or network that run [LocalSend](https://localsend.org), a free app for Android, iPhone, iPad, Windows, Mac and Linux. Nothing has to be set up: open LocalSend on the other device and leave it open.
+Macsplorer can send files to phones, tablets and computers on the same Wi-Fi or network that run [LocalSend](https://localsend.org), a free app for Android, iPhone, iPad, Windows, Mac and Linux, or AirLynx (see [AirLynx devices](#airlynx-devices)). Nothing has to be set up: open the app on the other device and leave it open.
 
 In the Folders pane, click the **+** next to **Network Neighborhood** under **Network**. It holds one row for each app, **LocalSend** and **AirLynx**, and each has its own **+**: Macsplorer only starts looking for an app's devices when you open its row, and stops when you close it again (or close Network Neighborhood). Click the **+** next to **LocalSend**. Macsplorer looks for LocalSend on your network, which takes a few seconds, and lists every device it finds by the name LocalSend gives it, with the LocalSend logo. Point at a device to see what kind of device it is and its network address. Click **−** to stop looking; right-click the LocalSend row and choose **Search Again** if a device you just started doesn't show up. While it looks, the last row under LocalSend says which part of the network it is asking, such as "Searching 10.11.46.x (38%)". Right-click that row and choose **Cancel** to stop looking; devices already found stay in the list, and ones that announce themselves are still added. Macsplorer looks first where it found devices before, then in your own range, as LocalSend does. Only if that finds nothing does it go through the whole network, which on a big network (a phone in another range than your Mac) can take a minute or more. **Search Again** always goes through the whole network.
 
@@ -329,6 +329,12 @@ The other device asks whether to accept the files, and the "Sending..." window w
 
 Sending can't be undone: the files are on the other device.
 
+**When Macsplorer looks for devices, and when it stops.** Each app is looked for on its own, and only while you can see its row:
+
+- Opening the **+** of **LocalSend** or **AirLynx** starts looking for that app's devices; **Search Again** on its row starts over. Closing that row stops it at once, and so does closing Network Neighborhood. Closing Macsplorer stops everything.
+- The **Send To** menu looks for devices of both apps by itself, so a device can appear in it even when the rows are closed. That search stops again after about half a minute, unless the row is open.
+- Looking is not the same as receiving. **Receive Files** (below) works whether or not any row is open, and it is what lets other devices find your Mac.
+
 The first time, your Mac may ask whether Macsplorer may find devices on your local network. Choose **Allow**; if you said no, switch Macsplorer on in **System Settings › Privacy & Security › Local Network**.
 
 #### AirLynx devices
@@ -342,9 +348,9 @@ Receiving works the same switch as for LocalSend: with **Receive Files** on, Air
 
 ### Receiving files from a phone or computer nearby
 
-Macsplorer can also take files that a phone, tablet or computer sends with LocalSend. This is off until you turn it on: right-click **Network Neighborhood** and choose **Receive Files**, or click your computer's name at the right end of the status bar and choose it there. Macsplorer remembers it, in every window, until you turn it off the same way.
+Macsplorer can also take files that a phone, tablet or computer sends with LocalSend, and files that your AirLynx favorites send (see [AirLynx devices](#airlynx-devices)). This is off until you turn it on: right-click **Network Neighborhood** and choose **Receive Files**, or click your computer's name at the right end of the status bar and choose it there. Macsplorer remembers it, in every window, until you turn it off the same way.
 
-Click **Network Neighborhood**, **LocalSend** or **AirLynx**, or one of their devices, to see what has arrived: the right pane then lists the files received from every device, from every device of that app, or from that one device, and the address bar reads **Network Neighborhood/LocalSend**. The files stay where they were saved (in Downloads); this is only a list of them, and it starts empty again when you close Macsplorer. A file you delete or move away, even in Finder, drops out of the list by itself. A folder that arrived is one item of the list. Because the list isn't a folder, Paste, New Folder and drops are refused there until you open a folder. Click any folder in the Folders pane to leave it.
+Click **Network Neighborhood**, **LocalSend** or **AirLynx**, or one of their devices, to see what has arrived: the right pane then lists the files received from every device, from every device of that app, or from that one device, and the address bar reads **Network Neighborhood/LocalSend**. The files stay where they were saved (in Downloads); this is only a list of them, and it starts empty again when you close Macsplorer. A file you delete or move away, even in Finder, drops out of the list by itself. A folder that arrived is one item of the list. While the list is up, the status bar counts its items; with a device selected and nothing in the list selected, it says what that device is. Because the list isn't a folder, Paste, New Folder and drops are refused there until you open a folder. Click any folder in the Folders pane to leave it.
 
 <img src="images/received-files.png" alt="The LocalSend row selected, and the right pane listing the files received" width="560">
 
@@ -364,7 +370,7 @@ Like files from a web browser, received files are marked as downloaded, so the f
 
 If a phone still doesn't list your Mac (some networks pass nothing between devices that the phone didn't ask for), right-click the phone in Network Neighborhood and choose **Let Device Find This Computer**. Macsplorer then tells the phone about your Mac directly, so it appears in LocalSend's list. This only works while Receive Files is on, and the item is gray until then.
 
-Only one Macsplorer window takes files for your Mac at a time; if you close it, another open window takes over within a few seconds. If LocalSend itself is open on the same Mac, both can receive; Macsplorer then uses another port, and a few devices may not find it until you close LocalSend. The first time, your Mac may ask whether Macsplorer may accept incoming network connections: choose **Allow**.
+Receiving starts when Macsplorer opens, if you left Receive Files on, and ends when you turn it off in any window or close the window that is receiving. Only one Macsplorer window takes files for your Mac at a time; if you close it, another open window takes over within a few seconds. If LocalSend itself is open on the same Mac, both can receive; Macsplorer then uses another port, and a few devices may not find it until you close LocalSend. The first time, your Mac may ask whether Macsplorer may accept incoming network connections: choose **Allow**.
 
 ### Between windows and Finder
 
