@@ -187,20 +187,20 @@ pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let mut bold_fonts = Vec::new();
     let mut ui_font = UiFont { label: "egui's built-in font".to_string(), path: None };
-    #[cfg(target_os = "linux")]
+    #[cfg(linux_desktop)]
     let system = crate::system_fonts::SystemFonts::scan();
     #[cfg(unix)]
     for (key, paths, family) in [("tahoma", platform::TAHOMA, FontFamily::Proportional), ("tahoma-bold", platform::TAHOMA_BOLD, bold_family())] {
         let data = paths.iter().find_map(|path| Some((FontData::from_owned(std::fs::read(path).ok()?), UiFont { label: "Tahoma".to_string(), path: Some(path.into()) })));
         // No Tahoma at the known paths: one elsewhere on the system, else the bundled DejaVu.
-        #[cfg(target_os = "linux")]
+        #[cfg(linux_desktop)]
         let data = data
             .or_else(|| {
                 let found = system.ui_font(family != FontFamily::Proportional)?;
                 let origin = UiFont { label: found.family.clone(), path: found.path.map(Into::into) };
                 Some((FontData { index: found.index, ..FontData::from_owned(found.data) }, origin))
             });
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(any(linux_desktop, android_app))]
         let data = data
             .or_else(|| {
                 let origin = UiFont { label: "DejaVu Sans Condensed, built into Macsplorer".to_string(), path: None };
@@ -221,7 +221,7 @@ pub fn install(ctx: &egui::Context) {
     }
     let _ = UI_FONT.set(ui_font);
     // Scripts and symbols the UI font lacks (file names hold anything), after egui's own fonts.
-    #[cfg(target_os = "linux")]
+    #[cfg(linux_desktop)]
     for (n, found) in system.fallbacks(&std::env::var("LANG").unwrap_or_default()).into_iter().enumerate() {
         let key = format!("system-{n}-{}", found.family);
         fonts.font_data.insert(key.clone(), Arc::new(FontData { index: found.index, ..FontData::from_owned(found.data) }));

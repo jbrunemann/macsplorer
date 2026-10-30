@@ -34,7 +34,7 @@ fn move_to_trash(path: &Path) -> io::Result<Option<std::path::PathBuf>> {
     Ok(resulting.and_then(|u| u.to_file_path()))
 }
 
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", android_app))]
 fn restore(item: &Trashed) -> io::Result<()> {
     let from = item.in_trash.as_deref().ok_or_else(|| io::Error::other("the Trash didn't say where it put the item"))?;
     macsplorer_core::fileops::move_to(from, &item.original)
@@ -44,7 +44,7 @@ fn restore(item: &Trashed) -> io::Result<()> {
 /// items go to a `Trash` folder in the app's own folder on the shared storage.
 /// Android 11 and later mount that folder on its own, so the move may be a
 /// copy. Nothing empties it yet.
-#[cfg(target_os = "android")]
+#[cfg(android_app)]
 fn move_to_trash(path: &Path) -> io::Result<Option<std::path::PathBuf>> {
     let trash = crate::android::trash_dir().ok_or_else(|| io::Error::other("the app has no folder for the Trash"))?;
     std::fs::create_dir_all(&trash)?;
@@ -62,13 +62,13 @@ fn move_to_trash(path: &Path) -> io::Result<Option<std::path::PathBuf>> {
 /// The freedesktop trash (`~/.local/share/Trash`, or a per-volume `.Trash-uid`).
 /// It doesn't report where the item went; `restore` looks it up by its
 /// original path.
-#[cfg(not(any(target_os = "macos", target_os = "android")))]
+#[cfg(not(any(target_os = "macos", android_app)))]
 fn move_to_trash(path: &Path) -> io::Result<Option<std::path::PathBuf>> {
     trash::delete(path).map(|()| None).map_err(|e| io::Error::other(e.to_string()))
 }
 
 /// Restores the most recently trashed item with this original path.
-#[cfg(not(any(target_os = "macos", target_os = "android")))]
+#[cfg(not(any(target_os = "macos", android_app)))]
 fn restore(item: &Trashed) -> io::Result<()> {
     use trash::os_limited;
 

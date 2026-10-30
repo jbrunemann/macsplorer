@@ -36,7 +36,7 @@ pub fn shortcut(alt: bool, key: &str) -> String {
 /// A phone or tablet: no pointer to hover with, a long press for the context
 /// menu, a drag that scrolls (never moves files or draws a selection band),
 /// and a window that fills the screen.
-pub const TOUCH: bool = cfg!(target_os = "android");
+pub const TOUCH: bool = cfg!(android_app);
 
 /// How rows and the background of the views sense the pointer: a drag moves
 /// items or draws the marquee on a desktop, and scrolls on a touch screen.
@@ -46,19 +46,19 @@ pub fn item_sense() -> egui::Sense {
 
 /// How far the status bar, the gesture bar and the on-screen keyboard cover the window, in
 /// points: (top, bottom). Zero on a desktop.
-#[cfg_attr(not(target_os = "android"), allow(unused_variables))]
+#[cfg_attr(not(android_app), allow(unused_variables))]
 pub fn system_bar_insets(pixels_per_point: f32) -> (f32, f32) {
-    #[cfg(target_os = "android")]
+    #[cfg(android_app)]
     return crate::android::system_bar_insets(pixels_per_point);
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(android_app))]
     (0.0, 0.0)
 }
 
 /// Asks for a repaint soon while the on-screen keyboard is up: when it goes away Android tells
 /// the UI nothing, and the window would stay small until the next tap.
-#[cfg_attr(not(target_os = "android"), allow(unused_variables))]
+#[cfg_attr(not(android_app), allow(unused_variables))]
 pub fn watch_keyboard(ctx: &egui::Context) {
-    #[cfg(target_os = "android")]
+    #[cfg(android_app)]
     if crate::android::keyboard_up() || ctx.egui_wants_keyboard_input() {
         ctx.request_repaint_after(crate::android::INSETS_POLL);
     }
@@ -82,14 +82,14 @@ pub const SYMBOL_FONT: &[&str] = &["/System/Library/Fonts/Apple Symbols.ttf"];
 pub const SYMBOL_FONT: &[&str] = &[];
 
 /// Android has no Tahoma: the bundled DejaVu stands in.
-#[cfg(target_os = "android")]
+#[cfg(android_app)]
 pub const TAHOMA: &[&str] = &[];
-#[cfg(target_os = "android")]
+#[cfg(android_app)]
 pub const TAHOMA_BOLD: &[&str] = &[];
 
 /// Linux has no Tahoma of its own: use one the user installed (fonts folder,
 /// Wine, a Windows partition).
-#[cfg(target_os = "linux")]
+#[cfg(linux_desktop)]
 pub const TAHOMA: &[&str] = &[
     "/usr/share/fonts/truetype/tahoma/tahoma.ttf",
     "/usr/share/fonts/truetype/msttcorefonts/Tahoma.ttf",
@@ -98,7 +98,7 @@ pub const TAHOMA: &[&str] = &[
     "/usr/share/wine/fonts/tahoma.ttf",
     "/usr/lib/wine/fonts/tahoma.ttf",
 ];
-#[cfg(target_os = "linux")]
+#[cfg(linux_desktop)]
 pub const TAHOMA_BOLD: &[&str] = &[
     "/usr/share/fonts/truetype/tahoma/tahomabd.ttf",
     "/usr/share/fonts/truetype/msttcorefonts/Tahoma_Bold.ttf",
@@ -110,7 +110,7 @@ pub const TAHOMA_BOLD: &[&str] = &[
 
 /// DejaVu Sans Condensed, the UI font when the system has no Tahoma. Built into
 /// the Linux and Android binaries only; macOS ships Tahoma (`assets/fonts`, license beside it).
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(linux_desktop, android_app))]
 pub fn bundled_ui_font(bold: bool) -> &'static [u8] {
     if bold {
         include_bytes!("../../../assets/fonts/DejaVuSansCondensed-Bold.ttf")
@@ -138,9 +138,9 @@ pub fn open_error(dir: &Path, e: &io::Error) -> String {
 
 /// Opens `path` in its default application without waiting for it.
 pub fn open_default(path: &Path) -> io::Result<()> {
-    #[cfg(target_os = "android")]
+    #[cfg(android_app)]
     return crate::android::open_file(path).map_err(io::Error::other);
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(android_app))]
     {
         let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
         Command::new(opener).arg(path).spawn().map(drop)
@@ -195,12 +195,12 @@ pub fn new_window(folder: &Path, frame: Option<egui::Rect>) -> io::Result<()> {
 }
 
 /// The frame a window opened by [`new_window`] should take: position and size.
-#[cfg_attr(target_os = "android", allow(dead_code))]
+#[cfg_attr(android_app, allow(dead_code))]
 pub fn inherited_frame() -> Option<([f32; 2], [f32; 2])> {
     parse_frame(&std::env::var(WINDOW_ENV).ok()?)
 }
 
-#[cfg_attr(target_os = "android", allow(dead_code))]
+#[cfg_attr(android_app, allow(dead_code))]
 fn parse_frame(text: &str) -> Option<([f32; 2], [f32; 2])> {
     let n: Vec<f32> = text.split(',').map(|v| v.trim().parse().ok()).collect::<Option<_>>()?;
     match n[..] {
@@ -211,9 +211,9 @@ fn parse_frame(text: &str) -> Option<([f32; 2], [f32; 2])> {
 
 /// Shows `path` selected in the file manager (on Android its folder, in the
 /// Files app). Blocks briefly; call it off the UI thread.
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux", target_os = "android")), allow(unused_variables))]
+#[cfg_attr(not(any(target_os = "macos", linux_desktop, android_app)), allow(unused_variables))]
 pub fn reveal(path: &Path) {
-    #[cfg(target_os = "android")]
+    #[cfg(android_app)]
     if let Err(e) = crate::android::reveal(path) {
         log::warn!("show in file manager: {e}");
     }
@@ -221,7 +221,7 @@ pub fn reveal(path: &Path) {
     {
         let _ = Command::new("open").arg("-R").arg(path).status();
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(linux_desktop)]
     {
         // The freedesktop FileManager1 interface selects the item; without
         // it (or without dbus-send), open the containing folder instead.
@@ -253,7 +253,7 @@ pub fn open_terminal(folder: &Path, preferred: Option<&str>) -> Result<(), Strin
         let out = Command::new("open").arg("-a").arg(preferred.unwrap_or("Terminal")).arg(folder).output().map_err(|e| e.to_string())?;
         if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) }
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(linux_desktop)]
     {
         // No single terminal on Linux: the settings file's, $TERMINAL, then the
         // Debian alternative, then the common ones. Most start in the
@@ -276,7 +276,7 @@ pub fn open_terminal(folder: &Path, preferred: Option<&str>) -> Result<(), Strin
         }
         Err("no terminal found; set $TERMINAL".into())
     }
-    #[cfg(target_os = "android")]
+    #[cfg(android_app)]
     {
         let _ = (folder, preferred);
         Err("Android has no terminal to open".into())
@@ -291,10 +291,10 @@ pub fn eject(volume: &Path) -> Result<(), String> {
     let attempts: [(&str, &[&str]); 1] = [("diskutil", &["eject"])];
     // gio goes through the desktop's mount service (udisks), so it works for
     // removable drives without root; umount covers a plain mount.
-    #[cfg(target_os = "linux")]
+    #[cfg(linux_desktop)]
     let attempts: [(&str, &[&str]); 2] = [("gio", &["mount", "--eject"]), ("umount", &[])];
     // Android unmounts a memory card in its own settings only.
-    #[cfg(target_os = "android")]
+    #[cfg(android_app)]
     let attempts: [(&str, &[&str]); 0] = [];
 
     let mut last = String::from("no tool available to eject");
@@ -311,7 +311,7 @@ pub fn eject(volume: &Path) -> Result<(), String> {
 }
 
 /// Percent-encodes a path for a `file://` URI, keeping `/`.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(linux_desktop, test))]
 fn percent_encode(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for b in path.bytes() {

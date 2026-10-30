@@ -3,6 +3,10 @@ name = "macsplorer-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# A build for Termux (target aarch64-linux-android with a desktop X11 window): behave as desktop Linux, not as the Android app.
+termux = []
+
 [dependencies]
 chrono = "0.4.45"
 dirs = "7.0.0"

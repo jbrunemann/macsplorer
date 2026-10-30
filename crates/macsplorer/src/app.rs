@@ -901,7 +901,7 @@ impl Explorer {
         } else if self.history.can_go_back() {
             actions.push(Action::Back);
         } else {
-            #[cfg(target_os = "android")]
+            #[cfg(android_app)]
             crate::android::to_background();
         }
     }

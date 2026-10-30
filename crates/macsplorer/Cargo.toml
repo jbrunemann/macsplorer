@@ -12,6 +12,12 @@ path = "src/lib.rs"
 name = "macsplorer"
 path = "src/main.rs"
 
+[features]
+# The Android app, built by crates/macsplorer-android.
+android-app = ["eframe/wgpu", "eframe/android-native-activity", "dep:android-activity", "dep:android_logger", "dep:jni", "dep:log"]
+# A desktop build for Termux (aarch64-linux-android, X11 window, OpenGL): see scripts/bundle-termux.sh.
+termux = ["macsplorer-core/termux", "eframe/glow", "eframe/x11", "dep:fontdb", "dep:trash"]
+
 [dependencies]
 chrono = "0.4.45"
 dirs = "7.0.0"
@@ -28,13 +34,17 @@ zip = { version = "8.6", default-features = false, features = ["deflate-flate2-z
 [target.'cfg(not(target_os = "android"))'.dependencies]
 eframe = "0.36.2"
 
+# On Android the program is either the Android app (`android-app`, native activity and wgpu) or, with `termux`, a
+# desktop program in a Termux X11 window. Both need winit patches: see scripts/bundle-termux.sh.
 [target.'cfg(target_os = "android")'.dependencies]
 libc = "0.2.190"
-eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu", "android-native-activity"] }
-android-activity = { version = "0.6", features = ["native-activity"] }
-android_logger = "0.15"
-jni = "0.21"
-log = "0.4"
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts"] }
+android-activity = { version = "0.6", features = ["native-activity"], optional = true }
+android_logger = { version = "0.15", optional = true }
+jni = { version = "0.21", optional = true }
+log = { version = "0.4", optional = true }
+fontdb = { version = "0.24.0", optional = true }
+trash = { version = "5.2.9", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

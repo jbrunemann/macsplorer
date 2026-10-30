@@ -1,7 +1,7 @@
 name: Release
 
-# Push a tag like v0.1.0 to build Macsplorer.app and the Linux tarball and attach
-# both to one GitHub release.
+# Push a tag like v0.1.0 to build Macsplorer.app, the Linux tarballs and the Termux
+# tarball and attach them to one GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -55,9 +55,27 @@ jobs:
           name: Macsplorer-linux-${{ matrix.arch }}
           path: Macsplorer-linux-${{ matrix.arch }}.tar.gz*
 
+  termux:
+    # Cross-compiled with the NDK that ubuntu-latest carries: for Termux:X11 on Android, see scripts/bundle-termux.sh.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Add Android target
+        run: rustup target add aarch64-linux-android
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Bundle
+        run: |
+          scripts/bundle-termux.sh
+          mv target/release/macsplorer-termux-aarch64.tar.gz Macsplorer-termux-aarch64.tar.gz
+          sha256sum Macsplorer-termux-aarch64.tar.gz > Macsplorer-termux-aarch64.tar.gz.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: Macsplorer-termux-aarch64
+          path: Macsplorer-termux-aarch64.tar.gz*
+
   release:
-    # Only when both builds succeeded, so a release never ships one platform.
-    needs: [macos, linux]
+    # Only when every build succeeded, so a release never ships one platform.
+    needs: [macos, linux, termux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

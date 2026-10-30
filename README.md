@@ -165,6 +165,25 @@ Pinning favorites and tabs. Dragging with the right button (Explorer's
 Copy Here / Move Here menu) and dropping onto an app. For file operations: no
 redo and no Shift+Delete. Small Icons and Thumbnails views are still to come.
 
+### Termux (experimental)
+
+For an Android device with a mouse, such as Samsung DeX, in plain Termux with no proot or glibc. Install
+[Termux](https://f-droid.org/packages/com.termux/) and the Termux:X11 app, download
+`Macsplorer-termux-aarch64.tar.gz` from the
+[latest release](https://github.com/jbrunemann/macsplorer/releases/latest), unpack it and run `./install.sh`
+(it installs the X11 libraries with `pkg`). Then start the X server and the program:
+
+```sh
+termux-x11 :0 &
+DISPLAY=:0 macsplorer [folder]
+```
+
+It is the desktop program (the Linux code and layout, with a mouse and no touch UI) built for Android's C library
+with an X11 window. Without a GPU driver Mesa draws in software; `README.txt` in the tarball says how to use the
+GPU. Dates use the `LANG` of the Termux session (the C library there only has the C locale), and the Linux
+differences above apply (Trash in `~/.local/share/Trash`, no Open With). For the touch app see the Android APK
+(`crates/macsplorer-android`).
+
 ## For developers
 
 ### Build from source
@@ -190,6 +209,13 @@ Ubuntu 22.04 container (needs Docker), into `target/linux-docker/`. The window's
 dock icon on Linux comes from the installed `.desktop` file, so run `install.sh`
 after unpacking. `cargo check --target x86_64-unknown-linux-gnu` cross-checks
 from a Mac (`rustup target add` first).
+
+`scripts/bundle-termux.sh` builds `target/release/macsplorer-termux-aarch64.tar.gz` for Termux:X11, cross-compiled with
+the Android NDK (`rustup target add aarch64-linux-android`), or natively inside Termux. winit, glutin and a few
+crates around them switch X11 off for every Android target, so the script patches copies of them
+(`scripts/termux-patch.py`, `cargo --config patch`: nothing in the workspace or `Cargo.lock` changes). The program
+itself is built with `--features termux`, which makes the `linux_desktop` cfg true on Android instead of
+`android_app` (see `build.rs` in `macsplorer` and `macsplorer-core`).
 
 ### Tests
 

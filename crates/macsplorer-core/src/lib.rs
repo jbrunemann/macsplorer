@@ -38,5 +38,5 @@ pub mod text_size;
 pub mod tree;
 pub mod undo;
 pub mod watch;
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "macos", linux_desktop, android_app))]
 mod xattr;

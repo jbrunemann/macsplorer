@@ -120,7 +120,7 @@ impl Entry {
 /// trailing `~` as well (an editor's backup file, which GLib and Nautilus hide).
 /// Folders can also list names in a `.hidden` file, see [`hidden_list`].
 pub fn is_hidden_name(name: &str) -> bool {
-    name.starts_with('.') || (cfg!(target_os = "linux") && is_backup_name(name))
+    name.starts_with('.') || (cfg!(linux_desktop) && is_backup_name(name))
 }
 
 /// A backup file's name ends in `~` (`notes.txt~`), like GLib's `is-backup`.
@@ -132,7 +132,7 @@ fn is_backup_name(name: &str) -> bool {
 /// hides without a leading dot. Only Linux honors it; Finder doesn't, so on
 /// macOS the list is always empty.
 pub fn hidden_list(dir: &Path) -> HashSet<String> {
-    if cfg!(target_os = "linux") { fs::read_to_string(dir.join(".hidden")).map(|t| parse_hidden_list(&t)).unwrap_or_default() } else { HashSet::new() }
+    if cfg!(linux_desktop) { fs::read_to_string(dir.join(".hidden")).map(|t| parse_hidden_list(&t)).unwrap_or_default() } else { HashSet::new() }
 }
 
 fn parse_hidden_list(text: &str) -> HashSet<String> {
@@ -336,7 +336,7 @@ pub fn comment(path: &Path) -> Option<String> {
 }
 
 /// The freedesktop.org comment attribute, which Dolphin and Nautilus edit.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(linux_desktop, android_app))]
 pub fn comment(path: &Path) -> Option<String> {
     let data = crate::xattr::read(path, c"user.xdg.comment")?;
     Some(String::from_utf8_lossy(&data).into_owned()).filter(|s| !s.is_empty())
@@ -579,7 +579,7 @@ mod tests {
         assert!(!is_hidden_name("notes.txt"));
         assert!(is_backup_name("notes.txt~") && !is_backup_name("~") && !is_backup_name("a~b"));
         // Only Linux hides backup files.
-        assert_eq!(is_hidden_name("notes.txt~"), cfg!(target_os = "linux"));
+        assert_eq!(is_hidden_name("notes.txt~"), cfg!(linux_desktop));
     }
 
     #[test]
@@ -596,7 +596,7 @@ mod tests {
         fs::write(dir.join("shown.txt"), "x").unwrap();
         fs::write(dir.join("old.txt~"), "x").unwrap();
         fs::write(dir.join(".hidden"), "Secret\n").unwrap();
-        let linux = cfg!(target_os = "linux");
+        let linux = cfg!(linux_desktop);
         let names = |show: bool| -> Vec<String> {
             let mut n: Vec<_> = list_dir(&dir, show).unwrap().into_iter().map(|e| e.name).collect();
             n.sort();

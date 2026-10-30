@@ -256,17 +256,17 @@ pub fn with_flags(mut info: [u8; 32], custom_icon: bool, color: Option<TagColor>
 }
 
 /// Whether folders can be customized here at all.
-pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux", target_os = "android"));
+pub const SUPPORTED: bool = cfg!(any(target_os = "macos", linux_desktop, android_app));
 /// Whether folders can have an emblem here (Linux has colors only).
 pub const EMBLEMS: bool = cfg!(target_os = "macos");
 
 #[cfg(target_os = "macos")]
 pub use self::mac::{may_be_customized, read, write};
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(linux_desktop, android_app))]
 pub use self::linux::{may_be_customized, read, write};
 
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "macos", linux_desktop, android_app)))]
 pub use self::unsupported::{may_be_customized, read, write};
 
 #[cfg(target_os = "macos")]
@@ -338,7 +338,7 @@ mod mac {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(linux_desktop, android_app))]
 mod linux {
     use std::ffi::CStr;
     use std::io;
@@ -368,7 +368,7 @@ mod linux {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "macos", linux_desktop, android_app)))]
 mod unsupported {
     use std::io;
     use std::path::Path;
@@ -470,7 +470,7 @@ mod tests {
 
     /// Linux keeps the color only. Skips where the temporary folder has no
     /// user attributes.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(linux_desktop, android_app))]
     #[test]
     fn writes_and_reads_a_color() {
         use std::fs;

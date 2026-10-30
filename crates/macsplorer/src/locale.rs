@@ -182,7 +182,7 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(linux_desktop)]
 mod imp {
     use std::ffi::{CStr, CString};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -193,8 +193,19 @@ mod imp {
         None
     }
 
+    /// What `LC_ALL`, `var` or `LANG` says, like "de_DE.UTF-8". Termux's C library (Bionic) knows only the C
+    /// locale, so `setlocale` can't be asked there.
+    #[cfg(target_os = "android")]
+    fn from_environment(var: &str) -> Option<String> {
+        ["LC_ALL", var, "LANG"].iter().find_map(|v| std::env::var(v).ok().filter(|l| !l.is_empty()))
+    }
+
     /// `LC_COLLATE` from the environment, like "sv_SE.UTF-8".
     pub fn collation() -> String {
+        #[cfg(target_os = "android")]
+        if let Some(name) = from_environment("LC_COLLATE") {
+            return name;
+        }
         // SAFETY: called at startup before other threads; the returned
         // string stays valid until the next setlocale.
         unsafe {
@@ -205,6 +216,10 @@ mod imp {
 
     /// `LC_TIME` from the environment, like "de_DE.UTF-8".
     pub fn identifier() -> String {
+        #[cfg(target_os = "android")]
+        if let Some(name) = from_environment("LC_TIME") {
+            return name;
+        }
         // SAFETY: called at startup before other threads; the returned
         // string stays valid until the next setlocale.
         unsafe {
@@ -271,19 +286,25 @@ mod imp {
     /// The locale's time without seconds: 12-hour where its time format
     /// is ("3:04 PM" in en_US), else 24-hour ("15:04").
     fn short_time_format() -> &'static str {
-        // SAFETY: nl_langinfo's string stays valid until the next setlocale,
-        // which only runs at startup.
-        let t_fmt = unsafe {
-            let p = libc::nl_langinfo(libc::T_FMT);
-            if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
-        };
-        if ["%r", "%I", "%l", "%p"].iter().any(|f| t_fmt.contains(f)) { "%-I:%M %p" } else { "%R" }
+        // Bionic has no nl_langinfo in the libc crate, and only the C locale: 24-hour.
+        #[cfg(target_os = "android")]
+        return "%R";
+        #[cfg(not(target_os = "android"))]
+        {
+            // SAFETY: nl_langinfo's string stays valid until the next setlocale,
+            // which only runs at startup.
+            let t_fmt = unsafe {
+                let p = libc::nl_langinfo(libc::T_FMT);
+                if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
+            };
+            if ["%r", "%I", "%l", "%p"].iter().any(|f| t_fmt.contains(f)) { "%-I:%M %p" } else { "%R" }
+        }
     }
 }
 
 /// Android's C library knows only the C locale: the phone's region settings
 /// come from Java once (`android::region`), and chrono formats with them.
-#[cfg(target_os = "android")]
+#[cfg(android_app)]
 mod imp {
     use std::sync::OnceLock;
     use std::time::SystemTime;
@@ -348,7 +369,7 @@ mod imp {
 /// An ICU date pattern (`dd.MM.y`, `h:mm a`, `EEEE, MMMM d, y`) as a chrono
 /// format string. Names come out in English, like every word of the app.
 /// Letters chrono has no counterpart for are left out.
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(android_app, test))]
 fn icu_to_chrono(pattern: &str) -> String {
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::new();

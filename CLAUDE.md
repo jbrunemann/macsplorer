@@ -17,6 +17,7 @@ never paste decompiled code into the source.
 | `tools/make-icon` | Renders `assets/icon.png` + `assets/macsplorer.icns` (tiny-skia). |
 | `tools/re` | PDB/disassembly helpers for the Windows analysis (see its README). |
 | `scripts/bundle-macos.sh` | Builds `target/release/Macsplorer.app`. |
+| `scripts/bundle-termux.sh` | Builds `target/release/macsplorer-termux-<arch>.tar.gz`: the desktop Linux program for Termux:X11 (Android's C library, an X11 window, no touch UI, no proot). Cross-compiles with the NDK or builds inside Termux. `scripts/termux-patch.py` copies winit, glutin and the crates around them (they turn X11 off for every `target_os = "android"`) out of the cargo registry with `android` never matching and `linux` also matching android, and the script hands them to cargo with `--config patch` (nothing in the workspace, `Cargo.lock` is restored). `--features termux` on `macsplorer` / `macsplorer-core` makes the cfg `linux_desktop` true on Android and `android_app` false; the Android app is `--features android-app`. If a dependency update breaks it, the CI `termux` job says so. |
 | `scripts/build-android.sh` | Builds `target/release/apk/macsplorer.apk` with cargo-apk (`install` also installs it with adb). The Android crate is not a default workspace member. |
 | `scripts/bundle-linux.sh` | Builds `target/release/macsplorer-linux-<arch>.tar.gz` (binary, `assets/macsplorer.desktop`, icons in the hicolor sizes, `install.sh`). The dock icon on Linux comes from the installed `.desktop` file matching the window's app id (`macsplorer`), not from `with_icon` (winit ignores that on Wayland), so run `install.sh` after unpacking. |
 | `scripts/build-linux-docker.sh` | Builds the same Linux tarball in an Ubuntu 22.04 Docker container (arm64 natively on Apple Silicon, or pass `linux/amd64`), into `target/linux-docker/`. |
@@ -72,6 +73,13 @@ frame. The fixture folder is built in `app.rs` `mod screenshot`.
 - English is the only UI language (no translations): dates, numbers and sort order follow the user's region and language settings (`locale.rs`, `natural`), but every word stays English. `Info.plist` lists `en` as the only localization so Foundation does the same.
 - The user-facing name is "Macsplorer" (capital M): window title, About, bundle
   name. Crate, binary, file names and bundle id stay lowercase `macsplorer`.
+
+## Platform cfgs
+
+Code is written against two cfgs from `build.rs` (in `macsplorer` and `macsplorer-core`), not `target_os`:
+`linux_desktop` (desktop Linux, or Android built with the `termux` feature) and `android_app` (the Android app,
+no `termux`). Use `target_os = "android"` only for what holds in Termux too (Bionic: no `nl_langinfo`, only the C
+locale, so `locale.rs` reads `LANG`). `target_os = "macos"` is unchanged.
 
 ## Linux port
 
