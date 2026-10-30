@@ -46,6 +46,10 @@ const GROUP_TOP: f32 = 9.0;
 const GROUP_BOTTOM: f32 = 6.0;
 /// Where each permission's check box starts, from the first one.
 const BOX_STEP: f32 = 76.0;
+/// The same on a page too narrow for the full words, which are cut to r, w and x.
+const BOX_STEP_NARROW: f32 = 44.0;
+/// The page width below which the permission names don't fit.
+const PERMISSION_NAMES_WIDTH: f32 = VALUE_X + 2.0 * BOX_STEP + 13.0 + 4.0 + 52.0 + 8.0;
 const FRAME: f32 = 4.0;
 const TAB_HEIGHT: f32 = 20.0;
 const ROW_HEIGHT: f32 = 22.0;
@@ -553,11 +557,13 @@ impl Properties {
                     }
                 }
                 Group::Permissions(bits) => {
+                    let narrow = page.width() < PERMISSION_NAMES_WIDTH;
+                    let step = if narrow { BOX_STEP_NARROW } else { BOX_STEP };
                     for (who, row_bits) in ["Owner:", "Group:", "Others:"].into_iter().zip(bits) {
                         let center = y + ROW_HEIGHT / 2.0;
                         ui.painter().text(pos2(left, center), egui::Align2::LEFT_CENTER, who, font.clone(), theme::color::text());
-                        for (n, (on, name)) in row_bits.into_iter().zip(["Read", "Write", "Execute"]).enumerate() {
-                            let check = Rect::from_min_size(pos2(page.left() + VALUE_X + n as f32 * BOX_STEP, center - 6.5), vec2(13.0, 13.0));
+                        for (n, (on, name)) in row_bits.into_iter().zip(if narrow { ["r", "w", "x"] } else { ["Read", "Write", "Execute"] }).enumerate() {
+                            let check = Rect::from_min_size(pos2(page.left() + VALUE_X + n as f32 * step, center - 6.5), vec2(13.0, 13.0));
                             theme::check_box(ui.painter(), check, on, editable);
                             let at = pos2(check.right() + 4.0, center);
                             let galley = ui.painter().layout_no_wrap(name.to_owned(), font.clone(), theme::color::text());

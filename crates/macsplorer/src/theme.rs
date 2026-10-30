@@ -617,8 +617,8 @@ pub fn dialog_title_bar(ui: &mut Ui, title: &str) -> bool {
     caption(ui, title, true)
 }
 
-/// On a touch screen the main window fills the screen: no buttons to
-/// minimize, maximize or close it, and nothing to drag.
+/// On a touch screen the main window fills the screen: only the close
+/// button (it quits the app), nothing to minimize, maximize or drag.
 fn caption(ui: &mut Ui, title: &str, dialog: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::click_and_drag());
     let (active, maximized) = ui.ctx().input(|i| (i.viewport().focused.unwrap_or(true), i.viewport().maximized.unwrap_or(false)));
@@ -667,7 +667,7 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) -> bool {
     let text_left = icon.right() + 3.0;
     let text_right = match (dialog, platform::TOUCH) {
         (true, _) => close.left(),
-        (false, true) => rect.right(),
+        (false, true) => close.left(),
         (false, false) => min.left(),
     } - 4.0;
     let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), bold(FONT_SIZE), text);
@@ -677,13 +677,13 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) -> bool {
     let ctx = ui.ctx().clone();
     let buttons = [(min, Caption::Minimize), (max, if maximized { Caption::Restore } else { Caption::Maximize }), (close, Caption::Close)];
     let mut closed = false;
-    for (r, kind) in buttons.into_iter().skip(if dialog { 2 } else if platform::TOUCH { 3 } else { 0 }) {
+    for (r, kind) in buttons.into_iter().skip(if dialog || platform::TOUCH { 2 } else { 0 }) {
         let b = ui.interact(r, ui.id().with(("caption", kind as u8)), Sense::click());
         caption_button(ui.painter(), r, kind, b.is_pointer_button_down_on());
         if b.clicked() {
             closed |= kind == Caption::Close;
             // A phone's only window is the app's: the dialog's caller closes the dialog.
-            if platform::TOUCH {
+            if platform::TOUCH && dialog {
                 continue;
             }
             ctx.send_viewport_cmd(match kind {

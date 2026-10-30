@@ -3062,7 +3062,8 @@ impl Explorer {
     // ---- folders pane ----------------------------------------------------
 
     /// The Folders pane on a phone: a drawer over the window from the left
-    /// edge, the rest dimmed. A tap on the dimmed part closes it, as does
+    /// edge, the rest dimmed, below the title bar and above the status bar
+    /// (`window` is the space between them). A tap on the dimmed part closes it, as does
     /// picking a folder (`Action::TreeSelect`).
     fn folders_drawer(&mut self, ctx: &egui::Context, window: egui::Rect, actions: &mut Vec<Action>) {
         const WIDTH: f32 = 300.0;
@@ -3989,11 +3990,13 @@ impl eframe::App for Explorer {
                 .size_range(120.0..=600.0)
                 .show(ui, |ui| self.folders_pane(ui, &mut actions));
         }
+        // What is left between the caption/toolbar and the status bar: the drawer covers only this.
+        let body = ui.available_rect_before_wrap();
         egui::CentralPanel::default()
             .frame(plain.inner_margin(egui::Margin { left: if self.settings.show_folders && !platform::TOUCH { 3 } else { 0 }, ..Default::default() }))
             .show(ui, |ui| self.item_view(ui, &visible, &mut actions));
         if self.settings.show_folders && platform::TOUCH {
-            self.folders_drawer(ui.ctx(), outer, &mut actions);
+            self.folders_drawer(ui.ctx(), body, &mut actions);
         }
 
         self.drag_step(ui, &mut actions);
