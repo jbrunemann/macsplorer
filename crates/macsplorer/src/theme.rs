@@ -70,6 +70,11 @@ pub mod color {
     pub fn selection_text() -> Color32 {
         pick(Color32::WHITE, rgb(0xF2, 0xF4, 0xF8))
     }
+    /// The Windows 2000 default desktop (COLOR_BACKGROUND, 58 110 165). Behind the window; on Android it
+    /// is what the status bar and the navigation bar sit on.
+    pub fn desktop() -> Color32 {
+        pick(rgb(0x3A, 0x6E, 0xA5), rgb(0x1E, 0x38, 0x52))
+    }
     pub fn active_caption() -> Color32 {
         pick(rgb(0x0A, 0x24, 0x6A), rgb(0x10, 0x1C, 0x38))
     }

@@ -26,8 +26,10 @@ The layout is the desktop's, small buttons included. `platform::TOUCH` switches 
 - **A drag scrolls**: rows and the view background sense clicks only (`platform::item_sense`), so a swipe never
   moves files or draws a selection band.
 - **Properties fills the screen** (an `Area` instead of its own window). Its close box closes the dialog only.
-- The window keeps clear of the status bar and the gesture bar (`android::system_bar_insets`) and has no caption
-  buttons or size grip.
+- The window keeps clear of the status bar, the gesture bar and the keyboard (`android::system_bar_insets`; the UI repaints
+  while the keyboard is up so the window grows back when it goes away), which sit on the Windows 2000
+  desktop color (`theme::color::desktop`), and has no caption buttons or size grip. Two taps count as a double tap
+  (open) up to 24 points apart (`TOUCH_CLICK_DISTANCE`).
 - **The back button** (and gesture) closes what is on top: a menu, a dialog (as Cancel), the drawer, an address being
   typed. Otherwise it goes back in the history, and at the first page puts the app in the background
   (`Explorer::back_button`).

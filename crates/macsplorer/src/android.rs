@@ -3,6 +3,7 @@
 //! Java side is reached over JNI.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -28,39 +29,69 @@ fn with_activity<T>(f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result
     f(&mut env, &activity)
 }
 
-/// How far the status bar and the gesture bar cover the window, in points:
-/// (top, bottom). Asked of the window twice a second at most:
-/// `AndroidApp::content_rect` reports a top that includes an action bar the
-/// app doesn't have.
-pub fn system_bar_insets(pixels_per_point: f32) -> (f32, f32) {
-    static LAST: Mutex<Option<(Instant, (i32, i32))>> = Mutex::new(None);
-    let Ok(mut last) = LAST.lock() else { return (0.0, 0.0) };
-    let (top, bottom) = match *last {
-        Some((at, px)) if at.elapsed() < Duration::from_millis(500) => px,
-        _ => {
-            let px = window_insets().unwrap_or_else(|e| {
-                log::warn!("window insets: {e}");
-                (0, 0)
-            });
-            *last = Some((Instant::now(), px));
-            px
-        }
-    };
-    (top as f32 / pixels_per_point, bottom as f32 / pixels_per_point)
+/// How far the system covers the window, in pixels.
+#[derive(Clone, Copy, Default)]
+struct Insets {
+    top: i32,
+    bottom: i32,
+    /// The on-screen keyboard is up (its height is in `bottom`).
+    keyboard: bool,
 }
 
-/// `activity.getWindow().getDecorView().getRootWindowInsets()`, top and bottom in pixels.
-fn window_insets() -> jni::errors::Result<(i32, i32)> {
+/// How far the status bar, the gesture bar and the on-screen keyboard cover the window, in
+/// points: (top, bottom). Asked of the window four times a second at most:
+/// `AndroidApp::content_rect` reports a top that includes an action bar the app doesn't have.
+pub fn system_bar_insets(pixels_per_point: f32) -> (f32, f32) {
+    static LAST: Mutex<Option<(Instant, Insets)>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return (0.0, 0.0) };
+    let insets = match *last {
+        Some((at, insets)) if at.elapsed() < INSETS_POLL => insets,
+        _ => {
+            let insets = window_insets().unwrap_or_else(|e| {
+                log::warn!("window insets: {e}");
+                Insets::default()
+            });
+            KEYBOARD_UP.store(insets.keyboard, Ordering::Relaxed);
+            *last = Some((Instant::now(), insets));
+            insets
+        }
+    };
+    (insets.top as f32 / pixels_per_point, insets.bottom as f32 / pixels_per_point)
+}
+
+/// How long the window's insets are remembered. Also the pace of the repaints while the keyboard
+/// is up, so the window grows back soon after the keyboard goes away.
+pub const INSETS_POLL: Duration = Duration::from_millis(250);
+
+static KEYBOARD_UP: AtomicBool = AtomicBool::new(false);
+
+/// Whether the last look at the window's insets found the on-screen keyboard up. Nothing wakes
+/// the UI when the keyboard goes away (Android sends the app no event the UI loop sees), so the
+/// UI keeps repainting while this is true.
+pub fn keyboard_up() -> bool {
+    KEYBOARD_UP.load(Ordering::Relaxed)
+}
+
+/// `activity.getWindow().getDecorView().getRootWindowInsets()`, top and bottom in pixels, and
+/// whether the keyboard is up (API 30; before that the UI repaints while a text field has focus).
+fn window_insets() -> jni::errors::Result<Insets> {
     with_activity(|env, activity| {
         let window = env.call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
         let decor = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
         let insets = env.call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])?.l()?;
         if insets.is_null() {
-            return Ok((0, 0));
+            return Ok(Insets::default());
         }
         let top = env.call_method(&insets, "getSystemWindowInsetTop", "()I", &[])?.i()?;
         let bottom = env.call_method(&insets, "getSystemWindowInsetBottom", "()I", &[])?.i()?;
-        Ok((top, bottom))
+        let sdk = env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()?;
+        let mut keyboard = false;
+        if sdk >= 30 {
+            let ime = env.call_static_method("android/view/WindowInsets$Type", "ime", "()I", &[])?.i()?;
+            let i = env.call_method(&insets, "getInsets", "(I)Landroid/graphics/Insets;", &[ime.into()])?.l()?;
+            keyboard = env.get_field(&i, "bottom", "I")?.i()? > 0;
+        }
+        Ok(Insets { top, bottom, keyboard })
     })
 }
 

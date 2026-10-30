@@ -44,14 +44,24 @@ pub fn item_sense() -> egui::Sense {
     if TOUCH { egui::Sense::click() } else { egui::Sense::click_and_drag() }
 }
 
-/// How far the status bar and the gesture bar cover the window, in points:
-/// (top, bottom). Zero on a desktop.
+/// How far the status bar, the gesture bar and the on-screen keyboard cover the window, in
+/// points: (top, bottom). Zero on a desktop.
 #[cfg_attr(not(target_os = "android"), allow(unused_variables))]
 pub fn system_bar_insets(pixels_per_point: f32) -> (f32, f32) {
     #[cfg(target_os = "android")]
     return crate::android::system_bar_insets(pixels_per_point);
     #[cfg(not(target_os = "android"))]
     (0.0, 0.0)
+}
+
+/// Asks for a repaint soon while the on-screen keyboard is up: when it goes away Android tells
+/// the UI nothing, and the window would stay small until the next tap.
+#[cfg_attr(not(target_os = "android"), allow(unused_variables))]
+pub fn watch_keyboard(ctx: &egui::Context) {
+    #[cfg(target_os = "android")]
+    if crate::android::keyboard_up() || ctx.egui_wants_keyboard_input() {
+        ctx.request_repaint_after(crate::android::INSETS_POLL);
+    }
 }
 
 /// Label of the context menu entry that reveals an item in the file manager.

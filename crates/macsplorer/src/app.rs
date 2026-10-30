@@ -74,6 +74,8 @@ const TREE_INDENT: f32 = 19.0;
 /// How long a new window size has to stay before it is written, so a
 /// resize writes the settings file once, at its end.
 const WINDOW_SAVE_DELAY: f64 = 0.5;
+/// How far apart two taps of a double tap may land, in points (touch screens only).
+const TOUCH_CLICK_DISTANCE: f32 = 24.0;
 
 type LoadResult = (PathBuf, bool, Result<Vec<Node>, String>);
 /// The Git branch glyph beside text (status bar, Branch column): the room
@@ -632,7 +634,9 @@ impl Explorer {
         // second click before the rename starts always opens the item.
         app.ctx.options_mut(|o| o.input_options.max_double_click_delay = slow_click::DELAY_MS as f64 / 1000.0);
         // A press that moves this far is a drag, not a click (`SM_CXDRAG`).
-        app.ctx.options_mut(|o| o.input_options.max_click_dist = dragdrop::DRAG_DISTANCE);
+        // A fingertip is not that precise: the two taps of a double tap land further apart than two clicks.
+        let click_dist = if platform::TOUCH { TOUCH_CLICK_DISTANCE } else { dragdrop::DRAG_DISTANCE };
+        app.ctx.options_mut(|o| o.input_options.max_click_dist = click_dist);
         app.reload();
         app.sync_tree();
         app
@@ -3948,13 +3952,13 @@ impl eframe::App for Explorer {
         self.drag_frame.begin(ui, self.drag.is_some());
 
         // The window frame: a raised 3D border around everything. On a phone
-        // it stays clear of the status bar, which shows on the caption's blue,
-        // and of the gesture bar.
+        // it stays clear of the status bar and of the navigation bar, which
+        // show the desktop color around the window.
         let (bar_top, bar_bottom) = platform::system_bar_insets(ui.ctx().pixels_per_point());
+        platform::watch_keyboard(ui.ctx());
         let screen = ui.max_rect();
         let outer = egui::Rect::from_min_max(screen.min + egui::vec2(0.0, bar_top), screen.max - egui::vec2(0.0, bar_bottom));
-        ui.painter().rect_filled(screen, 0.0, theme::color::face());
-        ui.painter().rect_filled(screen.with_max_y(outer.top()), 0.0, theme::color::active_caption());
+        ui.painter().rect_filled(screen, 0.0, theme::color::desktop());
         ui.painter().rect_filled(outer, 0.0, theme::color::face());
         theme::bevel(ui.painter(), outer, Bevel::Raised);
         theme::resize_frame(ui, outer);
