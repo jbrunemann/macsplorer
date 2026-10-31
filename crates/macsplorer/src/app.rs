@@ -3780,7 +3780,8 @@ impl Explorer {
                     drag_frame.item(shown, screen(icon), entry);
                     drag_frame.item(shown, screen(label), entry);
                     let name = entry.display_name(settings.show_extensions);
-                    drag_frame.drawn(shown, &entry.path, screen(icon), screen(label), || ui.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), font.clone(), theme::color::selection_text())), false);
+                    let room = label.max.0 - label.min.0 - 2.0 * layout::LABEL_PAD_X;
+                    drag_frame.drawn(shown, &entry.path, screen(icon), screen(label), || elided_galley(ui, name, &font, theme::color::selection_text(), room), false);
                     if let Some(r) = rename.as_mut().filter(|r| r.path == entry.path) {
                         let (x, y) = columns.cell(pos);
                         let area = layout::Rect::from_min_size((x + layout::SMALL_ICON, y), (columns.column_width - layout::SMALL_ICON, row_height));
@@ -3790,8 +3791,7 @@ impl Explorer {
                         continue;
                     }
                     let color = name_color(entry, settings, selected && focused);
-                    let name = entry.display_name(settings.show_extensions).to_owned();
-                    let galley = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), color));
+                    let galley = elided_galley(ui, entry.display_name(settings.show_extensions), &font, color, room);
                     paint_label(ui, screen(label), galley, selected, focused);
                     if cue && *focus_item == Some(index) {
                         paint_focus(ui, screen(label), selected);
@@ -4500,6 +4500,29 @@ fn text_field_focused(ui: &Ui) -> bool {
 
 /// Paints an item label in its box: the text alone, or on the selection
 /// color (button face while the view isn't focused).
+/// `text` laid out on one line, cut and ended with "..." when it is wider
+/// than `max_width`, as a list view label is when its column is too narrow
+/// (Win2000 draws it with `DT_END_ELLIPSIS`; unverified for the List view).
+fn elided_galley(ui: &Ui, text: &str, font: &egui::FontId, color: egui::Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
+    let lay = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), color));
+    let full = lay(text);
+    if full.size().x <= max_width + 0.5 {
+        return full;
+    }
+    // The most characters that still fit with the dots after them.
+    let ends: Vec<usize> = text.char_indices().map(|(i, _)| i).chain(Some(text.len())).collect();
+    let (mut fits, mut over) = (0, ends.len() - 1);
+    while over - fits > 1 {
+        let mid = (fits + over) / 2;
+        if lay(&format!("{}...", &text[..ends[mid]])).size().x <= max_width {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    lay(&format!("{}...", text[..ends[fits]].trim_end()))
+}
+
 fn paint_label(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, selected: bool, focused: bool) {
     if selected {
         ui.painter().rect_filled(rect, 0.0, if focused { theme::color::selection() } else { theme::color::face() });
