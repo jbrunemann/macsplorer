@@ -3,7 +3,6 @@
 //! Java side is reached over JNI.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -29,17 +28,16 @@ fn with_activity<T>(f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result
     f(&mut env, &activity)
 }
 
-/// How far the system covers the window, in pixels.
+/// How far the system bars cover the window, in pixels.
 #[derive(Clone, Copy, Default)]
 struct Insets {
     top: i32,
     bottom: i32,
-    /// The on-screen keyboard is up (its height is in `bottom`).
-    keyboard: bool,
 }
 
-/// How far the status bar, the gesture bar and the on-screen keyboard cover the window, in
-/// points: (top, bottom). Asked of the window four times a second at most:
+/// How far the status bar and the gesture bar cover the window, in points: (top, bottom). The
+/// on-screen keyboard is not counted: it draws over the window, which keeps its size. Asked of
+/// the window four times a second at most:
 /// `AndroidApp::content_rect` reports a top that includes an action bar the app doesn't have.
 pub fn system_bar_insets(pixels_per_point: f32) -> (f32, f32) {
     static LAST: Mutex<Option<(Instant, Insets)>> = Mutex::new(None);
@@ -51,7 +49,6 @@ pub fn system_bar_insets(pixels_per_point: f32) -> (f32, f32) {
                 log::warn!("window insets: {e}");
                 Insets::default()
             });
-            KEYBOARD_UP.store(insets.keyboard, Ordering::Relaxed);
             *last = Some((Instant::now(), insets));
             insets
         }
@@ -59,21 +56,11 @@ pub fn system_bar_insets(pixels_per_point: f32) -> (f32, f32) {
     (insets.top as f32 / pixels_per_point, insets.bottom as f32 / pixels_per_point)
 }
 
-/// How long the window's insets are remembered. Also the pace of the repaints while the keyboard
-/// is up, so the window grows back soon after the keyboard goes away.
-pub const INSETS_POLL: Duration = Duration::from_millis(250);
+/// How long the window's insets are remembered.
+const INSETS_POLL: Duration = Duration::from_millis(250);
 
-static KEYBOARD_UP: AtomicBool = AtomicBool::new(false);
-
-/// Whether the last look at the window's insets found the on-screen keyboard up. Nothing wakes
-/// the UI when the keyboard goes away (Android sends the app no event the UI loop sees), so the
-/// UI keeps repainting while this is true.
-pub fn keyboard_up() -> bool {
-    KEYBOARD_UP.load(Ordering::Relaxed)
-}
-
-/// `activity.getWindow().getDecorView().getRootWindowInsets()`, top and bottom in pixels, and
-/// whether the keyboard is up (API 30; before that the UI repaints while a text field has focus).
+/// `activity.getWindow().getDecorView().getRootWindowInsets()`, top and bottom in pixels. The
+/// bottom is the stable inset, which leaves the keyboard out (`getSystemWindowInsetBottom` has it).
 fn window_insets() -> jni::errors::Result<Insets> {
     with_activity(|env, activity| {
         let window = env.call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
@@ -83,15 +70,8 @@ fn window_insets() -> jni::errors::Result<Insets> {
             return Ok(Insets::default());
         }
         let top = env.call_method(&insets, "getSystemWindowInsetTop", "()I", &[])?.i()?;
-        let bottom = env.call_method(&insets, "getSystemWindowInsetBottom", "()I", &[])?.i()?;
-        let sdk = env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()?;
-        let mut keyboard = false;
-        if sdk >= 30 {
-            let ime = env.call_static_method("android/view/WindowInsets$Type", "ime", "()I", &[])?.i()?;
-            let i = env.call_method(&insets, "getInsets", "(I)Landroid/graphics/Insets;", &[ime.into()])?.l()?;
-            keyboard = env.get_field(&i, "bottom", "I")?.i()? > 0;
-        }
-        Ok(Insets { top, bottom, keyboard })
+        let bottom = env.call_method(&insets, "getStableInsetBottom", "()I", &[])?.i()?;
+        Ok(Insets { top, bottom })
     })
 }
 

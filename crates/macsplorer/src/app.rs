@@ -3965,7 +3965,6 @@ impl eframe::App for Explorer {
         // it stays clear of the status bar and of the navigation bar, which
         // show the desktop color around the window.
         let (bar_top, bar_bottom) = platform::system_bar_insets(ui.ctx().pixels_per_point());
-        platform::watch_keyboard(ui.ctx());
         let screen = ui.max_rect();
         let outer = egui::Rect::from_min_max(screen.min + egui::vec2(0.0, bar_top), screen.max - egui::vec2(0.0, bar_bottom));
         ui.painter().rect_filled(screen, 0.0, theme::color::desktop());
