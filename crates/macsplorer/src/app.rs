@@ -3952,6 +3952,26 @@ impl Explorer {
         let mid = egui::Rect::from_min_max(egui::pos2(right.left() - gap - size_w, rect.top()), egui::pos2(right.left() - gap, rect.bottom()));
         let git_pane = git.as_ref().map(|(_, w)| egui::Rect::from_min_max(egui::pos2(mid.left() - 2.0 - w, rect.top()), egui::pos2(mid.left() - 2.0, rect.bottom())));
         let left = egui::Rect::from_min_max(rect.min, egui::pos2(git_pane.map_or(mid.left(), |r| r.left()) - 2.0, rect.bottom()));
+        // A text wider than its pane can be dragged sideways, by finger or mouse.
+        let text_w = ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), theme::color::text()).size().x);
+        let overflow = (4.0 + text_w + 4.0 - left.width()).max(0.0);
+        let pan_key = ui.id().with("status_pan");
+        let (shown, mut pan): (String, f32) = ui.data(|d| d.get_temp(pan_key)).unwrap_or_default();
+        if shown != text {
+            pan = 0.0;
+        }
+        if overflow > 0.0 {
+            let drag = ui.interact(left, pan_key, Sense::drag());
+            pan = (pan - drag.drag_delta().x).clamp(0.0, overflow);
+            if drag.dragged() {
+                ui.set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if drag.hovered() {
+                ui.set_cursor_icon(egui::CursorIcon::Grab);
+            }
+        } else {
+            pan = 0.0;
+        }
+        ui.data_mut(|d| d.insert_temp(pan_key, (text.clone(), pan)));
         let p = ui.painter();
         for r in [left, mid].into_iter().chain(computer.then_some(right)).chain(git_pane) {
             theme::bevel(p, r, Bevel::SunkenThin);
@@ -3974,7 +3994,7 @@ impl Explorer {
             }
         }
         let color = if self.status.is_some() { theme::color::error_text() } else { theme::color::text() };
-        p.with_clip_rect(left.shrink(2.0)).text(egui::pos2(left.left() + 4.0, left.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), color);
+        p.with_clip_rect(left.shrink(2.0)).text(egui::pos2(left.left() + 4.0 - pan, left.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), color);
         let size_right = if grip && !computer { mid.right() - 2.0 - theme::GRIP_WIDTH } else { mid.right() - 4.0 };
         p.text(egui::pos2(size_right, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
         if !computer {
