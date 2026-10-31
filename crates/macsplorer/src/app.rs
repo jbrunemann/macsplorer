@@ -74,6 +74,8 @@ const TREE_INDENT: f32 = 19.0;
 /// How long a new window size has to stay before it is written, so a
 /// resize writes the settings file once, at its end.
 const WINDOW_SAVE_DELAY: f64 = 0.5;
+/// How far apart two taps of a double tap may land, in points (touch screens only).
+const TOUCH_CLICK_DISTANCE: f32 = 24.0;
 
 type LoadResult = (PathBuf, bool, Result<Vec<Node>, String>);
 /// The Git branch glyph beside text (status bar, Branch column): the room
@@ -430,6 +432,9 @@ pub struct Explorer {
     /// The address field showed a prediction last frame. Tab takes it then,
     /// and cycles through the panes otherwise.
     address_predicting: bool,
+    /// A touch screen: no Tab or Right to take a prediction, a tap on it does (`platform::TOUCH`,
+    /// a field so a test can set it).
+    touch: bool,
     /// ↓ in the address field was pressed: the view lists the folder being
     /// typed (`peek_dir`) until the field closes.
     address_peeking: bool,
@@ -440,6 +445,8 @@ pub struct Explorer {
     search: String,
     /// Give the search field the keyboard, its text selected, next frame.
     search_needs_focus: bool,
+    /// The search box is showing on its own row (a narrow window opens it from the toolbar's Search button).
+    search_open: bool,
     status: Option<String>,
     tree: FolderTree,
     /// Tree folder listings run on worker threads and report back here.
@@ -543,7 +550,7 @@ impl Explorer {
             git_request: 0,
             git_applied: 0,
             sort: SortSpec::default(),
-            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: true, color_names: true, click_rename: true },
+            settings: Settings { view: ViewMode::Details, show_extensions: true, show_hidden: false, natural_sort: true, mix_folders: false, expand_to_open: true, show_folders: !platform::TOUCH, color_names: true, click_rename: true },
             selection: BTreeSet::new(),
             anchor: None,
             focus_item: None,
@@ -574,12 +581,14 @@ impl Explorer {
             address_looking: None,
             address_deleted: false,
             address_predicting: false,
+            touch: platform::TOUCH,
             address_peeking: false,
             peek_dir: None,
             folders_tx,
             folders_rx,
             search: String::new(),
             search_needs_focus: false,
+            search_open: false,
             status: None,
             tree: FolderTree::new(tree_roots()),
             drives: drive_kinds(),
@@ -629,7 +638,9 @@ impl Explorer {
         // second click before the rename starts always opens the item.
         app.ctx.options_mut(|o| o.input_options.max_double_click_delay = slow_click::DELAY_MS as f64 / 1000.0);
         // A press that moves this far is a drag, not a click (`SM_CXDRAG`).
-        app.ctx.options_mut(|o| o.input_options.max_click_dist = dragdrop::DRAG_DISTANCE);
+        // A fingertip is not that precise: the two taps of a double tap land further apart than two clicks.
+        let click_dist = if platform::TOUCH { TOUCH_CLICK_DISTANCE } else { dragdrop::DRAG_DISTANCE };
+        app.ctx.options_mut(|o| o.input_options.max_click_dist = click_dist);
         app.reload();
         app.sync_tree();
         app
@@ -866,6 +877,36 @@ impl Explorer {
                     self.open_with(file, Some(app));
                 }
             }
+        }
+    }
+
+    /// Android's back button and back gesture: closes what is on top (a
+    /// menu, a dialog as its Cancel does, the Folders drawer, an address
+    /// being typed), else goes back in the history, else puts the app in the
+    /// background as Android apps do at their first page.
+    fn back_button(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if egui::Popup::is_any_open(ctx) {
+            egui::Popup::close_all(ctx);
+        } else if let Some(dialog) = self.conflict.take() {
+            dialog.answer(Choice::Cancel);
+        } else if self.properties.pop().is_some()
+            || self.password_dialog.take().is_some()
+            || self.extract_dialog.take().is_some()
+            || self.open_with_dialog.take().is_some()
+            || self.column_dialog.take().is_some()
+            || self.goto_dialog.take().is_some()
+            || self.shortcuts_dialog.take().is_some()
+            || self.about_dialog.take().is_some()
+        {
+        } else if self.settings.show_folders {
+            actions.push(Action::ToggleFolders);
+        } else if self.address_edit.take().is_some() {
+            ctx.memory_mut(|m| m.surrender_focus(address_id()));
+        } else if self.history.can_go_back() {
+            actions.push(Action::Back);
+        } else {
+            #[cfg(android_app)]
+            crate::android::to_background();
         }
     }
 
@@ -1740,7 +1781,10 @@ impl Explorer {
                 }
                 self.address_needs_focus = true;
             }
-            Stop::Search => self.search_needs_focus = true,
+            Stop::Search => {
+                self.search_needs_focus = true;
+                self.search_open = true;
+            }
         }
     }
 
@@ -2232,7 +2276,14 @@ impl Explorer {
                     self.paste(dir, true);
                 }
                 Action::Delete => self.delete_selection(),
-                Action::TreeSelect(key) => self.tree_select(key),
+                Action::TreeSelect(key) => {
+                    self.tree_select(key);
+                    // The drawer has done its job once a folder is picked.
+                    if platform::TOUCH {
+                        self.settings.show_folders = false;
+                        self.focus = Pane::List;
+                    }
+                }
                 Action::TreeKeySelect(key) => self.tree_key_select(key),
                 Action::TreeToggle(key) => {
                     let loads = self.tree.toggle(key);
@@ -2660,7 +2711,7 @@ impl Explorer {
                     self.load(loads);
                 }
                 ui.separator();
-                if ui.add(gutter_item(ui, "Go To Folder...", platform::go_to_keys())).clicked() {
+                if !platform::TOUCH && ui.add(gutter_item(ui, "Go To Folder...", platform::go_to_keys())).clicked() {
                     actions.push(Action::ShowGoTo);
                     ui.close();
                 }
@@ -2686,100 +2737,213 @@ impl Explorer {
     }
 
     fn toolbar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        // Too narrow for every button with its text (a phone held upright): icons only, as
+        // Win2000's "No text labels" toolbar option. The names stay in the tooltips.
+        let label = |text| (ui.available_width() >= TOOLBAR_LABELS_WIDTH).then_some(text);
+        let (back_label, folders_label, refresh_label) = (label("Back"), label("Folders"), label("Refresh"));
+        let search_collapsed = ui.available_width() < SEARCH_INLINE_WIDTH;
+        // Still too narrow (a larger text size): what does not fit goes into the `»` menu at the
+        // right end, as in a Win2000 rebar, the least needed buttons first.
+        let hidden = toolbar_hidden(ui, ui.available_width(), [back_label, folders_label, refresh_label], search_collapsed);
+        let shown = |item| !hidden.contains(&item);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(2.0);
-            let back = theme::tool_button(ui, Icon::Back, Some("Back"), self.history.can_go_back()).on_hover_text(format!("Back ({}[)", platform::CMD));
+            let back = theme::tool_button(ui, Icon::Back, back_label, self.history.can_go_back()).on_hover_text(format!("Back ({}[)", platform::CMD));
             if back.clicked() {
                 actions.push(Action::Back);
             }
-            let arrow = theme::drop_arrow_button(ui, self.history.can_go_back());
-            egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
-                for (i, p) in self.history.back_entries().take(12) {
-                    if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
-                        actions.push(Action::HistoryJump(i));
-                    }
-                }
-            });
-            let fwd = theme::tool_button(ui, Icon::Forward, None, self.history.can_go_forward()).on_hover_text(format!("Forward ({}])", platform::CMD));
-            if fwd.clicked() {
-                actions.push(Action::Forward);
+            if shown(ToolbarItem::HistoryArrows) {
+                let arrow = theme::drop_arrow_button(ui, self.history.can_go_back());
+                egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| self.back_entries_menu(ui, actions));
             }
-            let arrow = theme::drop_arrow_button(ui, self.history.can_go_forward());
-            egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
-                for (i, p) in self.history.forward_entries().take(12) {
-                    if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
-                        actions.push(Action::HistoryJump(i));
-                    }
+            if shown(ToolbarItem::Forward) {
+                let fwd = theme::tool_button(ui, Icon::Forward, None, self.history.can_go_forward()).on_hover_text(format!("Forward ({}])", platform::CMD));
+                if fwd.clicked() {
+                    actions.push(Action::Forward);
                 }
-            });
+                if shown(ToolbarItem::HistoryArrows) {
+                    let arrow = theme::drop_arrow_button(ui, self.history.can_go_forward());
+                    egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| self.forward_entries_menu(ui, actions));
+                }
+            }
             let has_parent = self.current().parent().is_some();
             if theme::tool_button(ui, Icon::Up, None, has_parent).on_hover_text(format!("Up ({}↑)", platform::CMD)).clicked() {
                 actions.push(Action::Up);
             }
-            theme::etched_vline(ui, 22.0);
-            let folders = theme::tool_toggle(ui, Icon::Folders, "Folders", self.settings.show_folders);
-            if folders.clicked() {
-                actions.push(Action::ToggleFolders);
+            if shown(ToolbarItem::Folders) || shown(ToolbarItem::Refresh) {
+                theme::etched_vline(ui, 22.0);
             }
-            if theme::tool_button(ui, Icon::Refresh, Some("Refresh"), true).on_hover_text(format!("Refresh ({}R)", platform::CMD)).clicked() {
+            if shown(ToolbarItem::Folders) {
+                let folders = theme::tool_toggle(ui, Icon::Folders, folders_label, self.settings.show_folders).on_hover_text("Folders");
+                if folders.clicked() {
+                    actions.push(Action::ToggleFolders);
+                }
+            }
+            if shown(ToolbarItem::Refresh) && theme::tool_button(ui, Icon::Refresh, refresh_label, true).on_hover_text(format!("Refresh ({}R)", platform::CMD)).clicked() {
                 actions.push(Action::Refresh);
             }
-            theme::etched_vline(ui, 22.0);
             let undo = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
-            let undo_button = theme::tool_button(ui, Icon::Undo, None, self.undo.peek().is_some());
-            if undo_button.on_hover_text(format!("{undo} ({}Z)", platform::CMD)).clicked() {
-                actions.push(Action::Undo);
+            if shown(ToolbarItem::Undo) {
+                theme::etched_vline(ui, 22.0);
+                let undo_button = theme::tool_button(ui, Icon::Undo, None, self.undo.peek().is_some());
+                if undo_button.on_hover_text(format!("{undo} ({}Z)", platform::CMD)).clicked() {
+                    actions.push(Action::Undo);
+                }
             }
-            theme::etched_vline(ui, 22.0);
-            // Windows 2000's Views button is all drop-down: a click anywhere opens the menu.
-            let views = theme::tool_dropdown(ui, Icon::Views, "Views").on_hover_text("Views");
-            egui::Popup::menu(&views).style(theme::menu_style).show(|ui| view_choices(ui, self.settings.view, actions));
+            if shown(ToolbarItem::Views) {
+                theme::etched_vline(ui, 22.0);
+                // Windows 2000's Views button is all drop-down: a click anywhere opens the menu.
+                let views = theme::tool_dropdown(ui, Icon::Views, "Views").on_hover_text("Views");
+                egui::Popup::menu(&views).style(theme::menu_style).show(|ui| view_choices(ui, self.settings.view, actions));
+            }
+            // A narrow window keeps the search box off the address bar's row until asked for.
+            if search_collapsed {
+                let open = self.search_open || !self.search.is_empty();
+                if theme::tool_toggle(ui, Icon::Search, None, open).on_hover_text("Search this folder").clicked() {
+                    if open {
+                        self.search.clear();
+                        self.search_open = false;
+                    } else {
+                        self.search_open = true;
+                        self.search_needs_focus = true;
+                    }
+                }
+            }
+            if !hidden.is_empty() {
+                ui.add_space((ui.available_width() - theme::TOOL_CHEVRON_WIDTH).max(0.0));
+                let more = theme::tool_chevron(ui, "More buttons").on_hover_text("More buttons");
+                egui::Popup::menu(&more).style(theme::menu_style).show(|ui| {
+                    for item in &hidden {
+                        match item {
+                            ToolbarItem::HistoryArrows => {
+                                delayed_menu_button(ui, "Back To", |ui| self.back_entries_menu(ui, actions));
+                                delayed_menu_button(ui, "Forward To", |ui| self.forward_entries_menu(ui, actions));
+                            }
+                            ToolbarItem::Forward => {
+                                if ui.add_enabled(self.history.can_go_forward(), gutter_item(ui, "Forward", platform::shortcut(false, "]"))).clicked() {
+                                    actions.push(Action::Forward);
+                                    ui.close();
+                                }
+                            }
+                            ToolbarItem::Folders => {
+                                let mut on = self.settings.show_folders;
+                                if egui_classic_menu::checkbox(ui, &mut on, "Folders").changed() {
+                                    actions.push(Action::ToggleFolders);
+                                    ui.close();
+                                }
+                            }
+                            ToolbarItem::Refresh => {
+                                if ui.add(gutter_item(ui, "Refresh", platform::shortcut(false, "R"))).clicked() {
+                                    actions.push(Action::Refresh);
+                                    ui.close();
+                                }
+                            }
+                            ToolbarItem::Undo => {
+                                let name = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
+                                if ui.add_enabled(self.undo.peek().is_some(), gutter_item(ui, name, platform::shortcut(false, "Z"))).clicked() {
+                                    actions.push(Action::Undo);
+                                    ui.close();
+                                }
+                            }
+                            ToolbarItem::Views => {
+                                delayed_menu_button(ui, "Views", |ui| view_choices(ui, self.settings.view, actions));
+                            }
+                        }
+                    }
+                });
+            }
         });
     }
 
+    /// The history entries behind the current one, for Back's drop-down.
+    fn back_entries_menu(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        for (i, p) in self.history.back_entries().take(12) {
+            if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
+                actions.push(Action::HistoryJump(i));
+                ui.close();
+            }
+        }
+    }
+
+    /// The history entries ahead of the current one, for Forward's drop-down.
+    fn forward_entries_menu(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        for (i, p) in self.history.forward_entries().take(12) {
+            if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
+                actions.push(Action::HistoryJump(i));
+                ui.close();
+            }
+        }
+    }
+
     fn address_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            ui.label("Address");
-            let search_w = 170.0;
-            let go_w = 44.0;
-            let field_w = (ui.available_width() - go_w - search_w - 16.0).max(120.0);
-            let (rect, bg) = ui.allocate_exact_size(egui::vec2(field_w, 22.0), Sense::click());
-            let inner = theme::sunken_field(ui.painter(), rect);
-            let mut field = ui.new_child(egui::UiBuilder::new().max_rect(inner.shrink2(egui::vec2(2.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
-            self.address_contents(&mut field, actions);
-            if bg.clicked() {
-                self.begin_address_edit();
-            }
-            let go = theme::tool_button(ui, Icon::Go, Some("Go"), true);
-            if go.clicked() {
-                match &self.address_edit {
-                    Some(text) => actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_ref()))),
-                    None => actions.push(Action::Refresh),
+        let search_w = 170.0;
+        // On a narrow window the search box gets a row of its own under the
+        // address, lined up with the address field, and "Address" and "Go"
+        // lose their text.
+        let own_row = ui.available_width() < SEARCH_INLINE_WIDTH;
+        let field_left = ui
+            .horizontal(|ui| {
+                ui.add_space(4.0);
+                if !own_row {
+                    ui.label("Address");
                 }
-            }
-            ui.add_space(4.0);
-            let (srect, _) = ui.allocate_exact_size(egui::vec2(search_w, 22.0), Sense::hover());
-            let sinner = theme::sunken_field(ui.painter(), srect);
-            let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sinner.shrink2(egui::vec2(3.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
-            let id = search_id();
-            // Esc drops the filter and goes back to the list (egui has already taken the focus
-            // off the box by now); Enter and Down keep it and go to the list. Not from Explorer:
-            // after the filter bars of the terminal file managers.
-            if ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter) | i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)) {
-                actions.push(Action::FilterDone);
-            }
-            let resp = sui.add(TextEdit::singleline(&mut self.search).id(id).hint_text("Search this folder").frame(egui::Frame::NONE).desired_width(f32::INFINITY));
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
-                self.search.clear();
-                actions.push(Action::FocusStop(Stop::View));
-            }
-            if std::mem::take(&mut self.search_needs_focus) {
-                resp.request_focus();
-                select_all(&sui, id, &self.search);
-            }
-        });
+                let go_w = if own_row { 28.0 } else { 44.0 };
+                let field_w = if own_row { ui.available_width() - go_w - 8.0 } else { (ui.available_width() - go_w - search_w - 16.0).max(120.0) };
+                let (rect, bg) = ui.allocate_exact_size(egui::vec2(field_w, 22.0), Sense::click());
+                let inner = theme::sunken_field(ui.painter(), rect);
+                let mut field = ui.new_child(egui::UiBuilder::new().max_rect(inner.shrink2(egui::vec2(2.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
+                self.address_contents(&mut field, actions);
+                if bg.clicked() {
+                    self.begin_address_edit();
+                }
+                let go = theme::tool_button(ui, Icon::Go, (!own_row).then_some("Go"), true).on_hover_text("Go");
+                if go.clicked() {
+                    match &self.address_edit {
+                        Some(text) => actions.push(Action::GoTo(expand_tilde(text.trim(), self.home.as_ref()))),
+                        None => actions.push(Action::Refresh),
+                    }
+                }
+                if !own_row {
+                    ui.add_space(4.0);
+                    self.search_box(ui, search_w, actions);
+                }
+                rect.left()
+            })
+            .inner;
+        if own_row && (self.search_open || !self.search.is_empty()) {
+            ui.horizontal(|ui| {
+                ui.add_space(field_left - ui.cursor().left());
+                let width = ui.available_width() - 4.0;
+                self.search_box(ui, width, actions);
+            });
+        }
+    }
+
+    /// The Search this folder box, `width` wide.
+    fn search_box(&mut self, ui: &mut Ui, width: f32, actions: &mut Vec<Action>) {
+        let (srect, _) = ui.allocate_exact_size(egui::vec2(width, 22.0), Sense::hover());
+        let sinner = theme::sunken_field(ui.painter(), srect);
+        let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sinner.shrink2(egui::vec2(3.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
+        let id = search_id();
+        // Esc drops the filter and goes back to the list (egui has already taken the focus
+        // off the box by now); Enter and Down keep it and go to the list. Not from Explorer:
+        // after the filter bars of the terminal file managers.
+        if ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter) | i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)) {
+            actions.push(Action::FilterDone);
+        }
+        let resp = sui.add(TextEdit::singleline(&mut self.search).id(id).hint_text("Search this folder").frame(egui::Frame::NONE).desired_width(f32::INFINITY));
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+            self.search.clear();
+            self.search_open = false;
+            actions.push(Action::FocusStop(Stop::View));
+        } else if resp.lost_focus() && self.search.is_empty() {
+            self.search_open = false;
+        }
+        if std::mem::take(&mut self.search_needs_focus) {
+            resp.request_focus();
+            select_all(&sui, id, &self.search);
+        }
     }
 
     /// The folder as the address bar starts editing it: the home folder as
@@ -2847,6 +3011,15 @@ impl Explorer {
             let galley = ui.painter().layout_no_wrap(next.ghost, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
             let at = out.galley_pos + egui::vec2(out.galley.size().x, 0.0);
             ui.painter().with_clip_rect(ui.max_rect()).galley(at, galley, theme::color::gray_text());
+            // A touch screen has no Tab or Right: a tap on the dimmed rest (or after it) takes it.
+            // The field has the focus already, so the tap only moves the cursor to the end.
+            if self.touch && resp.clicked() && resp.interact_pointer_pos().is_some_and(|pos| pos.x >= at.x) {
+                text = next.completed;
+                if let Some(mut state) = TextEdit::load_state(ui.ctx(), id) {
+                    state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(text.chars().count()))));
+                    TextEdit::store_state(ui.ctx(), id, state);
+                }
+            }
         }
         if resp.lost_focus() && !ui.input(|i| i.key_pressed(Key::Enter)) {
             return;
@@ -2970,6 +3143,28 @@ impl Explorer {
 
     // ---- folders pane ----------------------------------------------------
 
+    /// The Folders pane on a phone: a drawer over the window from the left
+    /// edge, the rest dimmed, below the title bar and above the status bar
+    /// (`window` is the space between them). A tap on the dimmed part closes it, as does
+    /// picking a folder (`Action::TreeSelect`).
+    fn folders_drawer(&mut self, ctx: &egui::Context, window: egui::Rect, actions: &mut Vec<Action>) {
+        const WIDTH: f32 = 300.0;
+        egui::Area::new(egui::Id::new("folders-drawer")).order(egui::Order::Middle).fixed_pos(window.min).show(ctx, |ui| {
+            let scrim = ui.interact(window, ui.id().with("scrim"), Sense::click());
+            ui.painter().rect_filled(window, 0.0, egui::Color32::from_black_alpha(110));
+            if scrim.clicked() {
+                actions.push(Action::ToggleFolders);
+            }
+            let drawer = window.with_max_x(window.left() + WIDTH.min(window.width() * 0.85));
+            ui.painter().rect_filled(drawer, 0.0, theme::color::face());
+            theme::bevel(ui.painter(), drawer, Bevel::Raised);
+            // Taps on the drawer's own face don't reach the scrim under it.
+            ui.interact(drawer, ui.id().with("drawer"), Sense::click());
+            let mut pane = ui.new_child(egui::UiBuilder::new().max_rect(drawer.shrink(4.0)).layout(Layout::top_down(Align::Min)));
+            self.folders_pane(&mut pane, actions);
+        });
+    }
+
     fn folders_pane(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         // Pane caption: "Folders" with a close box, as in Explorer's bar.
         ui.horizontal(|ui| {
@@ -3086,7 +3281,7 @@ impl Explorer {
 
         // Under the rows, so a click on a row still reaches the row. Not
         // under the header, where a press may grab a divider.
-        let bg = ui.interact(viewport.with_min_y(header_rect.bottom()), ui.id().with("details-bg"), Sense::click_and_drag());
+        let bg = ui.interact(viewport.with_min_y(header_rect.bottom()), ui.id().with("details-bg"), platform::item_sense());
         if bg.clicked() {
             if !extend {
                 actions.push(Action::Deselect);
@@ -3146,7 +3341,7 @@ impl Explorer {
                 .scroll_bar_visibility(hidden)
                 .auto_shrink([false, visible.is_empty()])
                 .striped(false)
-                .sense(Sense::click_and_drag())
+                .sense(platform::item_sense())
                 .cell_layout(Layout::left_to_right(Align::Center));
             for &column in &shown {
                 table = table.column(TableColumn::exact(columns.width(column)).clip(true));
@@ -3320,6 +3515,9 @@ impl Explorer {
                 }
             }
         }
+        if platform::TOUCH {
+            pan_sideways(ui, &h_out, None);
+        }
         bars.end_split(ui, &h_out, out);
     }
 
@@ -3454,7 +3652,7 @@ impl Explorer {
                     let content = egui::Rect::from_min_size(origin, egui::vec2(viewport.width(), grid.content_height()));
                     item_drag::edge_scroll(ui, shown, content, LIST_ROW_HEIGHT, 1);
                 }
-                let resp = ui.interact(shown, ui.id().with("icons-hit"), Sense::click_and_drag());
+                let resp = ui.interact(shown, ui.id().with("icons-hit"), platform::item_sense());
                 let content = |p: egui::Pos2| (p.x - origin.x, p.y - origin.y);
                 let pointer = resp.interact_pointer_pos().or(resp.hover_pos()).map(content);
                 let press = resp.drag_started().then(|| ui.input(|i| i.pointer.press_origin())).flatten().map(content);
@@ -3571,7 +3769,11 @@ impl Explorer {
             }
         };
         let row_height = layout::list_row_height(line_height);
-        let columns = ListColumns::new(visible.len(), layout::list_column_width(widest), row_height, inner.width(), inner.height(), scrollbar::WIDTH);
+        // On a touch screen a column is at most as wide as the view (Windows
+        // caps it at the screen width), so a swipe can bring the next one
+        // into place.
+        let cap = if platform::TOUCH { inner.width() } else { f32::INFINITY };
+        let columns = ListColumns::new(visible.len(), layout::list_column_width(widest).min(cap), row_height, inner.width(), inner.height(), scrollbar::WIDTH);
         self.nav_layout = Some(NavLayout::List { columns, client_width: inner.width() });
         // Guess: an arrow click scrolls one column.
         let (bars, viewport) = Bars::begin(ui, ui.id().with("list-bars"), inner, [true, false], columns.column_width);
@@ -3607,6 +3809,8 @@ impl Explorer {
             .id_salt("list")
             .auto_shrink(false)
             .animated(false)
+            // A swipe is `pan_sideways`', which lets go on a column's edge.
+            .scroll_source(egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..Default::default() })
             .scroll_bar_visibility(hidden)
             .show_viewport(ui, |ui, view| {
                 let origin = ui.max_rect().min;
@@ -3631,7 +3835,7 @@ impl Explorer {
                     let content = egui::Rect::from_min_size(origin, egui::vec2(columns.content_width(), viewport.height()));
                     item_drag::edge_scroll(ui, shown, content, layout::SMALL_ICON, 0);
                 }
-                let resp = ui.interact(shown, ui.id().with("list-hit"), Sense::click_and_drag());
+                let resp = ui.interact(shown, ui.id().with("list-hit"), platform::item_sense());
                 let content = |p: egui::Pos2| (p.x - origin.x, p.y - origin.y);
                 let pointer = resp.interact_pointer_pos().or(resp.hover_pos()).map(content);
                 let press = resp.drag_started().then(|| ui.input(|i| i.pointer.press_origin())).flatten().map(content);
@@ -3658,7 +3862,8 @@ impl Explorer {
                     drag_frame.item(shown, screen(icon), entry);
                     drag_frame.item(shown, screen(label), entry);
                     let name = entry.display_name(settings.show_extensions);
-                    drag_frame.drawn(shown, &entry.path, screen(icon), screen(label), || ui.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), font.clone(), theme::color::selection_text())), false);
+                    let room = label.max.0 - label.min.0 - 2.0 * layout::LABEL_PAD_X;
+                    drag_frame.drawn(shown, &entry.path, screen(icon), screen(label), || elided_galley(ui, name, &font, theme::color::selection_text(), room), false);
                     if let Some(r) = rename.as_mut().filter(|r| r.path == entry.path) {
                         let (x, y) = columns.cell(pos);
                         let area = layout::Rect::from_min_size((x + layout::SMALL_ICON, y), (columns.column_width - layout::SMALL_ICON, row_height));
@@ -3668,8 +3873,7 @@ impl Explorer {
                         continue;
                     }
                     let color = name_color(entry, settings, selected && focused);
-                    let name = entry.display_name(settings.show_extensions).to_owned();
-                    let galley = ui.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), color));
+                    let galley = elided_galley(ui, entry.display_name(settings.show_extensions), &font, color, room);
                     paint_label(ui, screen(label), galley, selected, focused);
                     if cue && *focus_item == Some(index) {
                         paint_focus(ui, screen(label), selected);
@@ -3704,6 +3908,9 @@ impl Explorer {
                     None => background_menu(ui, &folder, can_paste, actions),
                 });
             });
+        if platform::TOUCH {
+            pan_sideways(ui, &out, Some(&|| vec![columns.column_width; columns.columns()]));
+        }
         bars.end(ui, &out);
     }
 
@@ -3725,7 +3932,9 @@ impl Explorer {
         let rect = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), 20.0));
         ui.allocate_rect(rect, Sense::hover());
         let size_w = 90.0;
-        let place_w = 150.0;
+        // A narrow window leaves out the computer name pane.
+        let computer = rect.width() >= STATUS_COMPUTER_WIDTH;
+        let (place_w, gap) = if computer { (150.0, 2.0) } else { (0.0, 0.0) };
         let font = egui::TextStyle::Body.resolve(ui.style());
         // The Git summary gets a pane of its own, sized to its text, while the
         // open folder is in a working tree.
@@ -3738,18 +3947,39 @@ impl Explorer {
             let width = (4.0 + GIT_ICON_WIDTH + 4.0 + text_w + 6.0).min(rect.width() * 0.5);
             (segments, width)
         });
-        let grip = !theme::is_maximized(ui.ctx());
+        let grip = !platform::TOUCH && !theme::is_maximized(ui.ctx());
         let right = egui::Rect::from_min_max(egui::pos2(rect.right() - place_w, rect.top()), rect.max);
-        let mid = egui::Rect::from_min_max(egui::pos2(right.left() - 2.0 - size_w, rect.top()), egui::pos2(right.left() - 2.0, rect.bottom()));
+        let mid = egui::Rect::from_min_max(egui::pos2(right.left() - gap - size_w, rect.top()), egui::pos2(right.left() - gap, rect.bottom()));
         let git_pane = git.as_ref().map(|(_, w)| egui::Rect::from_min_max(egui::pos2(mid.left() - 2.0 - w, rect.top()), egui::pos2(mid.left() - 2.0, rect.bottom())));
         let left = egui::Rect::from_min_max(rect.min, egui::pos2(git_pane.map_or(mid.left(), |r| r.left()) - 2.0, rect.bottom()));
+        // A text wider than its pane can be dragged sideways, by finger or mouse.
+        let text_w = ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), theme::color::text()).size().x);
+        let overflow = (4.0 + text_w + 4.0 - left.width()).max(0.0);
+        let pan_key = ui.id().with("status_pan");
+        let (shown, mut pan): (String, f32) = ui.data(|d| d.get_temp(pan_key)).unwrap_or_default();
+        if shown != text {
+            pan = 0.0;
+        }
+        if overflow > 0.0 {
+            let drag = ui.interact(left, pan_key, Sense::drag());
+            pan = (pan - drag.drag_delta().x).clamp(0.0, overflow);
+            if drag.dragged() {
+                ui.set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if drag.hovered() {
+                ui.set_cursor_icon(egui::CursorIcon::Grab);
+            }
+        } else {
+            pan = 0.0;
+        }
+        ui.data_mut(|d| d.insert_temp(pan_key, (text.clone(), pan)));
         let p = ui.painter();
-        for r in [left, mid, right].into_iter().chain(git_pane) {
+        for r in [left, mid].into_iter().chain(computer.then_some(right)).chain(git_pane) {
             theme::bevel(p, r, Bevel::SunkenThin);
         }
+        let last = if computer { right } else { mid };
         // The grip sits inside the last pane's border, in its bottom right corner.
         if grip {
-            let inner = right.shrink(2.0);
+            let inner = last.shrink(2.0);
             theme::size_grip(ui, egui::Rect::from_min_max(egui::pos2(inner.right() - theme::GRIP_WIDTH, inner.top()), inner.max));
         }
         let p = ui.painter();
@@ -3764,8 +3994,12 @@ impl Explorer {
             }
         }
         let color = if self.status.is_some() { theme::color::error_text() } else { theme::color::text() };
-        p.with_clip_rect(left.shrink(2.0)).text(egui::pos2(left.left() + 4.0, left.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), color);
-        p.text(egui::pos2(mid.right() - 4.0, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
+        p.with_clip_rect(left.shrink(2.0)).text(egui::pos2(left.left() + 4.0 - pan, left.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), color);
+        let size_right = if grip && !computer { mid.right() - 2.0 - theme::GRIP_WIDTH } else { mid.right() - 4.0 };
+        p.text(egui::pos2(size_right, mid.center().y), egui::Align2::RIGHT_CENTER, size, font.clone(), theme::color::text());
+        if !computer {
+            return;
+        }
         let icon = egui::Rect::from_min_size(egui::pos2(right.left() + 4.0, right.center().y - 8.0), egui::vec2(16.0, 16.0));
         theme::paint_icon(p, icon, Icon::Computer, true);
         let name_clip = if grip { right.shrink(2.0).with_max_x(right.right() - 2.0 - theme::GRIP_WIDTH) } else { right.shrink(2.0) };
@@ -3843,11 +4077,19 @@ impl eframe::App for Explorer {
         let visible = self.visible();
         self.slow_click_rename(ui);
         let mut actions = Vec::new();
+        if platform::TOUCH && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::BrowserBack)) {
+            self.back_button(ui.ctx(), &mut actions);
+        }
         self.keyboard(ui, &visible, &mut actions);
         self.drag_frame.begin(ui, self.drag.is_some());
 
-        // The window frame: a raised 3D border around everything.
-        let outer = ui.max_rect();
+        // The window frame: a raised 3D border around everything. On a phone
+        // it stays clear of the status bar and of the navigation bar, which
+        // show the desktop color around the window.
+        let (bar_top, bar_bottom) = platform::system_bar_insets(ui.ctx().pixels_per_point());
+        let screen = ui.max_rect();
+        let outer = egui::Rect::from_min_max(screen.min + egui::vec2(0.0, bar_top), screen.max - egui::vec2(0.0, bar_bottom));
+        ui.painter().rect_filled(screen, 0.0, theme::color::desktop());
         ui.painter().rect_filled(outer, 0.0, theme::color::face());
         theme::bevel(ui.painter(), outer, Bevel::Raised);
         theme::resize_frame(ui, outer);
@@ -3869,7 +4111,7 @@ impl eframe::App for Explorer {
             ui.add_space(2.0);
             self.status_bar(ui, &visible);
         });
-        if self.settings.show_folders {
+        if self.settings.show_folders && !platform::TOUCH {
             egui::Panel::left("folders")
                 .frame(plain)
                 .show_separator_line(false)
@@ -3878,9 +4120,14 @@ impl eframe::App for Explorer {
                 .size_range(120.0..=600.0)
                 .show(ui, |ui| self.folders_pane(ui, &mut actions));
         }
+        // What is left between the caption/toolbar and the status bar: the drawer covers only this.
+        let body = ui.available_rect_before_wrap();
         egui::CentralPanel::default()
-            .frame(plain.inner_margin(egui::Margin { left: if self.settings.show_folders { 3 } else { 0 }, ..Default::default() }))
+            .frame(plain.inner_margin(egui::Margin { left: if self.settings.show_folders && !platform::TOUCH { 3 } else { 0 }, ..Default::default() }))
             .show(ui, |ui| self.item_view(ui, &visible, &mut actions));
+        if self.settings.show_folders && platform::TOUCH {
+            self.folders_drawer(ui.ctx(), body, &mut actions);
+        }
 
         self.drag_step(ui, &mut actions);
         if !cfg!(target_os = "macos") {
@@ -3941,6 +4188,71 @@ impl eframe::App for Explorer {
 #[cfg(unix)]
 const TERMINAL_LABEL: &str = "Open in Terminal";
 
+/// A toolbar button that moves into the `»` menu when the toolbar is too narrow.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ToolbarItem {
+    HistoryArrows,
+    Undo,
+    Folders,
+    Forward,
+    Refresh,
+    Views,
+}
+
+/// The order buttons leave the toolbar in: the first one goes first. Back, Up and Search stay.
+const TOOLBAR_HIDING_ORDER: [ToolbarItem; 6] =
+    [ToolbarItem::HistoryArrows, ToolbarItem::Undo, ToolbarItem::Folders, ToolbarItem::Forward, ToolbarItem::Refresh, ToolbarItem::Views];
+
+/// Which toolbar buttons do not fit in `width`: the fewest, taken from `TOOLBAR_HIDING_ORDER`,
+/// that leave room for the rest and for the `»` button. `labels` are the texts of Back, Folders
+/// and Refresh, `None` when they show no text.
+fn toolbar_hidden(ui: &Ui, width: f32, labels: [Option<&str>; 3], search_collapsed: bool) -> Vec<ToolbarItem> {
+    use theme::{tool_button_width as button, DROP_ARROW_WIDTH, ETCHED_VLINE_WIDTH as LINE, TOOL_CHEVRON_WIDTH, TOOL_DROPDOWN_WIDTH};
+    let [back, folders, refresh] = labels;
+    let needed = |hidden: &[ToolbarItem]| {
+        let shown = |item| !hidden.contains(&item);
+        let arrow = if shown(ToolbarItem::HistoryArrows) { DROP_ARROW_WIDTH } else { 0.0 };
+        let mut w = 2.0 + button(ui, back) + arrow + button(ui, None);
+        if shown(ToolbarItem::Forward) {
+            w += button(ui, None) + arrow;
+        }
+        if shown(ToolbarItem::Folders) || shown(ToolbarItem::Refresh) {
+            w += LINE;
+        }
+        if shown(ToolbarItem::Folders) {
+            w += button(ui, folders);
+        }
+        if shown(ToolbarItem::Refresh) {
+            w += button(ui, refresh);
+        }
+        if shown(ToolbarItem::Undo) {
+            w += LINE + button(ui, None);
+        }
+        if shown(ToolbarItem::Views) {
+            w += LINE + TOOL_DROPDOWN_WIDTH;
+        }
+        if search_collapsed {
+            w += button(ui, None);
+        }
+        if hidden.is_empty() { w } else { w + TOOLBAR_CHEVRON_GAP + TOOL_CHEVRON_WIDTH }
+    };
+    (0..=TOOLBAR_HIDING_ORDER.len())
+        .map(|n| &TOOLBAR_HIDING_ORDER[..n])
+        .find(|hidden| needed(hidden) <= width)
+        .unwrap_or(&TOOLBAR_HIDING_ORDER)
+        .to_vec()
+}
+
+/// Space kept between the last toolbar button and the `»` button.
+const TOOLBAR_CHEVRON_GAP: f32 = 2.0;
+
+/// Below this toolbar width Back, Folders and Refresh lose their text.
+const TOOLBAR_LABELS_WIDTH: f32 = 420.0;
+/// Below this width the search box is a toolbar button that opens it under the address field.
+const SEARCH_INLINE_WIDTH: f32 = 480.0;
+/// Below this width the status bar drops the computer name pane.
+const STATUS_COMPUTER_WIDTH: f32 = 480.0;
+
 /// Asks the UI thread about a name conflict and waits for the answer: the
 /// Replace question of a paste running on a worker thread.
 fn conflict_asker(ask_tx: Sender<conflict_dialog::Ask>, ctx: egui::Context) -> impl FnMut(&macsplorer_core::fileops::Conflict) -> Choice {
@@ -3955,6 +4267,63 @@ fn conflict_asker(ask_tx: Sender<conflict_dialog::Ask>, ctx: egui::Context) -> i
         // The window closing drops the dialog, and with it the sender.
         answer.recv().unwrap_or(Choice::Cancel)
     }
+}
+
+/// A swipe sideways over the Details or List view scrolls it sideways. With
+/// `snap`, the columns' widths (asked for only when the finger lifts), the
+/// view then settles on a column's left edge (`columns::snap_target`): the
+/// nearest, or the next one when the swipe was a fling. The Details rows'
+/// scroll area takes the whole drag and moves only up and down, so the
+/// sideways part goes to the horizontal area around it here; the List view's
+/// own area has dragging switched off so this is the only mover. Snapping is
+/// not from Explorer.
+fn pan_sideways<R>(ui: &Ui, outer: &egui::scroll_area::ScrollAreaOutput<R>, snap: Option<&dyn Fn() -> Vec<f32>>) {
+    /// How fast the view closes in on the stop: 1 - e^(-RATE * dt) of the way per frame.
+    const SETTLE_RATE: f32 = 16.0;
+    #[derive(Clone, Copy, Default)]
+    struct Pan {
+        /// The finger is down on a sideways swipe.
+        panning: bool,
+        /// The finger's speed along x, kept from the last frame it was down.
+        velocity: f32,
+        /// The offset the view is gliding to.
+        target: Option<f32>,
+    }
+    let key = outer.id.with("pan");
+    let mut pan: Pan = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    let (touching, dragging, dx, velocity, origin, dt) =
+        ui.input(|i| (i.any_touches(), i.pointer.is_decidedly_dragging(), i.pointer.delta().x, i.pointer.velocity().x, i.pointer.press_origin(), i.stable_dt));
+    let mut state = egui::scroll_area::State::load(ui.ctx(), outer.id).unwrap_or(outer.state);
+    let max = (outer.content_size.x - outer.inner_rect.width()).max(0.0);
+    if touching {
+        if !pan.panning && dragging && dx != 0.0 && origin.is_some_and(|p| outer.inner_rect.contains(p)) {
+            pan.panning = true;
+        }
+        if pan.panning {
+            pan.target = None;
+            pan.velocity = velocity;
+            state.offset.x = (state.offset.x - dx).clamp(0.0, max);
+            state.store(ui.ctx(), outer.id);
+            ui.ctx().request_repaint();
+        }
+    } else if std::mem::take(&mut pan.panning)
+        && let Some(widths) = snap
+    {
+        let stops = columns::snap_stops(&widths(), max);
+        pan.target = Some(columns::snap_target(&stops, state.offset.x, pan.velocity));
+    }
+    if let Some(target) = pan.target {
+        let left = target - state.offset.x;
+        if left.abs() < 0.5 {
+            state.offset.x = target;
+            pan.target = None;
+        } else {
+            state.offset.x += left * (1.0 - (-SETTLE_RATE * dt).exp());
+            ui.ctx().request_repaint();
+        }
+        state.store(ui.ctx(), outer.id);
+    }
+    ui.data_mut(|d| d.insert_temp(key, pan));
 }
 
 /// A menu bar entry. While one bar menu is open, resting the pointer on
@@ -4310,6 +4679,29 @@ fn text_field_focused(ui: &Ui) -> bool {
 
 /// Paints an item label in its box: the text alone, or on the selection
 /// color (button face while the view isn't focused).
+/// `text` laid out on one line, cut and ended with "..." when it is wider
+/// than `max_width`, as a list view label is when its column is too narrow
+/// (Win2000 draws it with `DT_END_ELLIPSIS`; unverified for the List view).
+fn elided_galley(ui: &Ui, text: &str, font: &egui::FontId, color: egui::Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
+    let lay = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), color));
+    let full = lay(text);
+    if full.size().x <= max_width + 0.5 {
+        return full;
+    }
+    // The most characters that still fit with the dots after them.
+    let ends: Vec<usize> = text.char_indices().map(|(i, _)| i).chain(Some(text.len())).collect();
+    let (mut fits, mut over) = (0, ends.len() - 1);
+    while over - fits > 1 {
+        let mid = (fits + over) / 2;
+        if lay(&format!("{}...", &text[..ends[mid]])).size().x <= max_width {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    lay(&format!("{}...", text[..ends[fits]].trim_end()))
+}
+
 fn paint_label(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, selected: bool, focused: bool) {
     if selected {
         ui.painter().rect_filled(rect, 0.0, if focused { theme::color::selection() } else { theme::color::face() });
@@ -4514,7 +4906,7 @@ fn tree_row(
     let x0 = ui.max_rect().left() + 2.0;
     let label_x = x0 + (row.depth + 1) as f32 * TREE_INDENT + 16.0 + 4.0;
     let width = (label_x - ui.max_rect().left() + text_w + 6.0).max(ui.available_width());
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TREE_ROW_HEIGHT), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, TREE_ROW_HEIGHT), platform::item_sense());
     let p = ui.painter();
     let line = egui::Stroke::new(1.0, theme::color::tree_line());
     // Single-pixel dots on even pixel coordinates, so the pattern lines up
@@ -4735,6 +5127,10 @@ fn select_all(ui: &Ui, id: egui::Id, text: &str) {
 }
 
 fn place_label(p: &Path) -> String {
+    // Android's shared storage is `/storage/emulated/0`; its own Files app calls it this.
+    if platform::TOUCH && dirs::home_dir().as_deref() == Some(p) {
+        return "Internal storage".into();
+    }
     p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
@@ -5667,6 +6063,17 @@ mod screenshot {
         });
     }
 
+    /// A phone held upright: Search is a toolbar button, closed and open.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn narrow_search() {
+        shoot("narrow-search-closed", egui::vec2(380.0, 320.0), |_| {});
+        shoot("narrow-search-open", egui::vec2(380.0, 320.0), |app| {
+            app.search_open = true;
+            app.search = "main".into();
+        });
+    }
+
     /// Inside a zip, browsed like a folder.
     #[test]
     #[ignore = "renders a screenshot; run with --ignored"]
@@ -5851,6 +6258,25 @@ mod screenshot {
     }
 
     #[test]
+    fn narrow_toolbars_hide_the_least_needed_buttons_first() {
+        let hidden_in = |width: f32| {
+            let out = std::cell::RefCell::new(Vec::new());
+            let mut harness = Harness::new_ui(|ui| *out.borrow_mut() = toolbar_hidden(ui, width, [None; 3], true));
+            harness.run();
+            drop(harness);
+            out.into_inner()
+        };
+        assert!(hidden_in(600.0).is_empty());
+        let some = hidden_in(200.0);
+        assert!(!some.is_empty() && some.len() < TOOLBAR_HIDING_ORDER.len(), "{some:?}");
+        assert_eq!(some, TOOLBAR_HIDING_ORDER[..some.len()]);
+        // Back, Up and Search never go: below their width the rest is all hidden.
+        assert_eq!(hidden_in(10.0), TOOLBAR_HIDING_ORDER);
+        // Narrower never shows more.
+        assert!(hidden_in(150.0).len() >= some.len());
+    }
+
+    #[test]
     fn the_address_bar_predicts_the_folder_and_right_takes_it() {
         let (mut harness, dir) = drag_harness("predict");
         let base = dir.display().to_string();
@@ -5864,6 +6290,45 @@ mod screenshot {
         harness.key_press(Key::ArrowRight);
         harness.run_steps(2);
         assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tap_on_the_prediction_takes_it_on_a_touch_screen() {
+        let (mut harness, dir) = drag_harness("predict-tap");
+        harness.state_mut().touch = true;
+        let base = dir.display().to_string();
+        type_address(&mut harness, format!("{base}/su"));
+        assert!(harness.state().address_predicting);
+        // After the text, inside the field: the dimmed rest and the empty space behind it.
+        let field = harness.get_all_by_role(egui::accesskit::Role::TextInput).next().expect("the address field").rect();
+        let at = egui::pos2(field.right() - 4.0, field.center().y);
+        harness.input_mut().events.push(egui::Event::PointerMoved(at));
+        harness.run_steps(1);
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            harness.run_steps(1);
+        }
+        harness.run_steps(2);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tap_after_the_text_does_nothing_without_touch() {
+        let (mut harness, dir) = drag_harness("predict-click");
+        let base = dir.display().to_string();
+        type_address(&mut harness, format!("{base}/su"));
+        let field = harness.get_all_by_role(egui::accesskit::Role::TextInput).next().expect("the address field").rect();
+        let at = egui::pos2(field.right() - 4.0, field.center().y);
+        harness.input_mut().events.push(egui::Event::PointerMoved(at));
+        harness.run_steps(1);
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            harness.run_steps(1);
+        }
+        harness.run_steps(2);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/su").as_str()));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -6776,6 +7241,13 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn text_size_larger() {
         shoot("text-size-larger", egui::vec2(1000.0, 680.0), |app| app.ctx.set_zoom_factor(1.5));
+    }
+
+    /// A toolbar too narrow for every button: the `»` button, and the menu with the rest.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn toolbar_overflow() {
+        shoot("toolbar-overflow", egui::vec2(190.0, 400.0), |_| {});
     }
 
     /// A window small enough that both panes need classic scroll bars.

@@ -9,7 +9,7 @@ use std::path::Path;
 /// What `getxattr` and `removexattr` set when the attribute isn't there.
 #[cfg(target_os = "macos")]
 const NO_ATTRIBUTE: i32 = libc::ENOATTR;
-#[cfg(target_os = "linux")]
+#[cfg(any(linux_desktop, android_app))]
 const NO_ATTRIBUTE: i32 = libc::ENODATA;
 
 fn c_path(path: &Path) -> io::Result<CString> {
@@ -24,7 +24,7 @@ pub fn read(path: &Path, name: &CStr) -> Option<Vec<u8>> {
     #[cfg(target_os = "macos")]
     let n = unsafe { libc::getxattr(cpath.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
     // SAFETY: as above.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(linux_desktop, android_app))]
     let n = unsafe { libc::getxattr(cpath.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
     let n = usize::try_from(n).ok()?;
     buf.truncate(n);
@@ -37,7 +37,7 @@ pub fn set(path: &Path, name: &CStr, value: &[u8]) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     let r = unsafe { libc::setxattr(cpath.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) };
     // SAFETY: as above.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(linux_desktop, android_app))]
     let r = unsafe { libc::setxattr(cpath.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0) };
     if r == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
@@ -49,7 +49,7 @@ pub fn remove(path: &Path, name: &CStr) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     let r = unsafe { libc::removexattr(cpath.as_ptr(), name.as_ptr(), 0) };
     // SAFETY: as above.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(linux_desktop, android_app))]
     let r = unsafe { libc::removexattr(cpath.as_ptr(), name.as_ptr()) };
     let err = io::Error::last_os_error();
     if r == 0 || err.raw_os_error() == Some(NO_ATTRIBUTE) { Ok(()) } else { Err(err) }

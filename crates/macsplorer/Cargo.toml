@@ -3,10 +3,24 @@ name = "macsplorer"
 version.workspace = true
 edition.workspace = true
 
+# The desktop program is `main.rs`; the Android app is `crates/macsplorer-android`, which hands its activity to
+# `run_android`.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "macsplorer"
+path = "src/main.rs"
+
+[features]
+# The Android app, built by crates/macsplorer-android.
+android-app = ["eframe/wgpu", "eframe/android-native-activity", "dep:android-activity", "dep:android_logger", "dep:jni", "dep:log"]
+# A desktop build for Termux (aarch64-linux-android, X11 window, OpenGL): see scripts/bundle-termux.sh.
+termux = ["macsplorer-core/termux", "eframe/glow", "eframe/x11", "dep:fontdb", "dep:trash"]
+
 [dependencies]
 chrono = "0.4.45"
 dirs = "7.0.0"
-eframe = "0.36.2"
 egui_extras = "0.36.2"
 egui-classic-menu = { version = "2.0.2", path = "../egui-classic-menu" }
 macsplorer-core = { version = "2.0.2", path = "../macsplorer-core" }
@@ -16,6 +30,21 @@ update-check = { version = "2.0.2", path = "../update-check" }
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs", "aes-crypto"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = "0.36.2"
+
+# On Android the program is either the Android app (`android-app`, native activity and wgpu) or, with `termux`, a
+# desktop program in a Termux X11 window. Both need winit patches: see scripts/bundle-termux.sh.
+[target.'cfg(target_os = "android")'.dependencies]
+libc = "0.2.190"
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts"] }
+android-activity = { version = "0.6", features = ["native-activity"], optional = true }
+android_logger = { version = "0.15", optional = true }
+jni = { version = "0.21", optional = true }
+log = { version = "0.4", optional = true }
+fontdb = { version = "0.24.0", optional = true }
+trash = { version = "5.2.9", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -27,5 +56,5 @@ raw-window-handle = "0.6"
 fontdb = "0.24.0"
 libc = "0.2.190"
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(not(any(target_os = "macos", target_os = "android")))'.dependencies]
 trash = "5.2.9"

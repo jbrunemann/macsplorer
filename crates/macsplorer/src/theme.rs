@@ -70,6 +70,11 @@ pub mod color {
     pub fn selection_text() -> Color32 {
         pick(Color32::WHITE, rgb(0xF2, 0xF4, 0xF8))
     }
+    /// The Windows 2000 default desktop (COLOR_BACKGROUND, 58 110 165). Behind the window; on Android it
+    /// is what the status bar and the navigation bar sit on.
+    pub fn desktop() -> Color32 {
+        pick(rgb(0x3A, 0x6E, 0xA5), rgb(0x1E, 0x38, 0x52))
+    }
     pub fn active_caption() -> Color32 {
         pick(rgb(0x0A, 0x24, 0x6A), rgb(0x10, 0x1C, 0x38))
     }
@@ -182,19 +187,21 @@ pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let mut bold_fonts = Vec::new();
     let mut ui_font = UiFont { label: "egui's built-in font".to_string(), path: None };
-    #[cfg(target_os = "linux")]
+    #[cfg(linux_desktop)]
     let system = crate::system_fonts::SystemFonts::scan();
     #[cfg(unix)]
     for (key, paths, family) in [("tahoma", platform::TAHOMA, FontFamily::Proportional), ("tahoma-bold", platform::TAHOMA_BOLD, bold_family())] {
         let data = paths.iter().find_map(|path| Some((FontData::from_owned(std::fs::read(path).ok()?), UiFont { label: "Tahoma".to_string(), path: Some(path.into()) })));
         // No Tahoma at the known paths: one elsewhere on the system, else the bundled DejaVu.
-        #[cfg(target_os = "linux")]
+        #[cfg(linux_desktop)]
         let data = data
             .or_else(|| {
                 let found = system.ui_font(family != FontFamily::Proportional)?;
                 let origin = UiFont { label: found.family.clone(), path: found.path.map(Into::into) };
                 Some((FontData { index: found.index, ..FontData::from_owned(found.data) }, origin))
-            })
+            });
+        #[cfg(any(linux_desktop, android_app))]
+        let data = data
             .or_else(|| {
                 let origin = UiFont { label: "DejaVu Sans Condensed, built into Macsplorer".to_string(), path: None };
                 // Autohinted and on whole pixels: sharp at 12 px on a 1x screen (see `fonts::prefer_autohinter`).
@@ -214,7 +221,7 @@ pub fn install(ctx: &egui::Context) {
     }
     let _ = UI_FONT.set(ui_font);
     // Scripts and symbols the UI font lacks (file names hold anything), after egui's own fonts.
-    #[cfg(target_os = "linux")]
+    #[cfg(linux_desktop)]
     for (n, found) in system.fallbacks(&std::env::var("LANG").unwrap_or_default()).into_iter().enumerate() {
         let key = format!("system-{n}-{}", found.family);
         fonts.font_data.insert(key.clone(), Arc::new(FontData { index: found.index, ..FontData::from_owned(found.data) }));
@@ -422,7 +429,7 @@ pub fn etched_hline(ui: &mut Ui) {
 }
 
 pub fn etched_vline(ui: &mut Ui, height: f32) {
-    let (r, _) = ui.allocate_exact_size(vec2(6.0, height), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(ETCHED_VLINE_WIDTH, height), Sense::hover());
     let x = r.center().x.floor();
     let p = ui.painter();
     p.vline(x + 0.5, r.y_range(), Stroke::new(1.0, shadow()));
@@ -457,14 +464,31 @@ pub fn sunken_field(p: &Painter, rect: Rect) -> Rect {
 
 // ---- buttons -----------------------------------------------------------------
 
+/// How wide `tool_button` is with `label`.
+pub fn tool_button_width(ui: &Ui, label: Option<&str>) -> f32 {
+    let text_w = label.map_or(0.0, |l| {
+        let font = TextStyle::Button.resolve(ui.style());
+        ui.painter().layout_no_wrap(l.into(), font, text()).size().x + 4.0
+    });
+    6.0 + 16.0 + text_w + 6.0
+}
+
+/// How wide `drop_arrow_button` is.
+pub const DROP_ARROW_WIDTH: f32 = 12.0;
+/// How wide `tool_dropdown` is.
+pub const TOOL_DROPDOWN_WIDTH: f32 = 6.0 + 16.0 + 4.0 + 6.0 + 4.0;
+/// How wide `etched_vline` is.
+pub const ETCHED_VLINE_WIDTH: f32 = 6.0;
+/// How wide `tool_chevron` is.
+pub const TOOL_CHEVRON_WIDTH: f32 = 14.0;
+
 /// A flat toolbar button: raised when hot, sunken when pressed (IE5 coolbar).
 pub fn tool_button(ui: &mut Ui, icon: Icon, label: Option<&str>, enabled: bool) -> Response {
     let font = TextStyle::Button.resolve(ui.style());
     let galley = label.map(|l| ui.painter().layout_no_wrap(l.into(), font.clone(), if enabled { text() } else { gray_text() }));
     // Disabled text is embossed: a white copy one pixel down-right.
     let emboss = label.filter(|_| !enabled).map(|l| ui.painter().layout_no_wrap(l.into(), font, highlight()));
-    let text_w = galley.as_ref().map_or(0.0, |g| g.size().x + 4.0);
-    let size = vec2(6.0 + 16.0 + text_w + 6.0, 24.0);
+    let size = vec2(tool_button_width(ui, label), 24.0);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let p = ui.painter();
@@ -488,13 +512,13 @@ pub fn tool_button(ui: &mut Ui, icon: Icon, label: Option<&str>, enabled: bool) 
 }
 
 /// A toolbar button that stays pushed in while `checked` (e.g. "Folders").
-pub fn tool_toggle(ui: &mut Ui, icon: Icon, label: &str, checked: bool) -> Response {
+pub fn tool_toggle(ui: &mut Ui, icon: Icon, label: Option<&str>, checked: bool) -> Response {
     if !checked {
-        return tool_button(ui, icon, Some(label), true);
+        return tool_button(ui, icon, label, true);
     }
     // Checked buttons get the classic light dither behind a sunken edge.
     let bg = ui.painter().add(egui::Shape::Noop);
-    let resp = tool_button(ui, icon, Some(label), true);
+    let resp = tool_button(ui, icon, label, true);
     ui.painter().set(bg, egui::Shape::rect_filled(resp.rect, 0.0, checked_face()));
     bevel(ui.painter(), resp.rect, Bevel::SunkenThin);
     resp
@@ -503,7 +527,7 @@ pub fn tool_toggle(ui: &mut Ui, icon: Icon, label: &str, checked: bool) -> Respo
 /// The small ▾ split part next to Back/Forward.
 pub fn drop_arrow_button(ui: &mut Ui, enabled: bool) -> Response {
     let sense = if enabled { Sense::click() } else { Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(vec2(12.0, 24.0), sense);
+    let (rect, resp) = ui.allocate_exact_size(vec2(DROP_ARROW_WIDTH, 24.0), sense);
     let p = ui.painter();
     if enabled && resp.is_pointer_button_down_on() {
         bevel(p, rect, Bevel::SunkenThin);
@@ -523,7 +547,7 @@ pub fn drop_arrow_button(ui: &mut Ui, enabled: bool) -> Response {
 /// A button that only opens a menu, icon and ▾ in one bevel (the toolbar's
 /// Views button, `BTNS_WHOLEDROPDOWN`). `name` is for accessibility.
 pub fn tool_dropdown(ui: &mut Ui, icon: Icon, name: &str) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(6.0 + 16.0 + 4.0 + 6.0 + 4.0, 24.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_DROPDOWN_WIDTH, 24.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
     let p = ui.painter();
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
@@ -542,6 +566,33 @@ pub fn tool_dropdown(ui: &mut Ui, icon: Icon, name: &str) -> Response {
         text(),
         Stroke::NONE,
     ));
+    resp
+}
+
+/// The toolbar's `»` at the right end, which opens the buttons that did not fit (the
+/// rebar's chevron). `name` is for accessibility.
+pub fn tool_chevron(ui: &mut Ui, name: &str) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_CHEVRON_WIDTH, 24.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    let p = ui.painter();
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    let down = open || resp.is_pointer_button_down_on();
+    if down {
+        bevel(p, rect, Bevel::SunkenThin);
+    } else if resp.hovered() {
+        bevel(p, rect, Bevel::RaisedThin);
+    }
+    let c = rect.center() + if down { vec2(1.0, 1.0) } else { Vec2::ZERO };
+    // Two ">" of 4 × 7 pixels side by side.
+    for dx in [-3.0, 1.0] {
+        for i in 0..4 {
+            let x = c.x + dx + i as f32;
+            let half = 3.0 - i as f32;
+            for y in [c.y - half, c.y + half] {
+                dot(p, pos2(x.floor(), y.floor()), text());
+            }
+        }
+    }
     resp
 }
 
@@ -603,11 +654,16 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
 
 /// A dialog's caption: no icon and only a close button. Win2000 property
 /// sheets also have "?" (context help), left out as there is no help.
-pub fn dialog_title_bar(ui: &mut Ui, title: &str) {
-    caption(ui, title, true);
+/// `true` when the close button was clicked. On a desktop it also asks the
+/// viewport to close, which is all a dialog in its own window needs; on a
+/// touch screen the caller has to close the dialog.
+pub fn dialog_title_bar(ui: &mut Ui, title: &str) -> bool {
+    caption(ui, title, true)
 }
 
-fn caption(ui: &mut Ui, title: &str, dialog: bool) {
+/// On a touch screen the main window fills the screen: only the close
+/// button (it quits the app), nothing to minimize, maximize or drag.
+fn caption(ui: &mut Ui, title: &str, dialog: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::click_and_drag());
     let (active, maximized) = ui.ctx().input(|i| (i.viewport().focused.unwrap_or(true), i.viewport().maximized.unwrap_or(false)));
     let (left, right, text) = if active {
@@ -653,17 +709,27 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
 
     // A title too long for the caption ends in an ellipsis before the buttons.
     let text_left = icon.right() + 3.0;
-    let text_right = if dialog { close.left() } else { min.left() } - 4.0;
+    let text_right = match (dialog, platform::TOUCH) {
+        (true, _) => close.left(),
+        (false, true) => close.left(),
+        (false, false) => min.left(),
+    } - 4.0;
     let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), bold(FONT_SIZE), text);
     job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - text_left).max(0.0));
     let galley = ui.fonts_mut(|f| f.layout_job(job));
     p.galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, text);
     let ctx = ui.ctx().clone();
     let buttons = [(min, Caption::Minimize), (max, if maximized { Caption::Restore } else { Caption::Maximize }), (close, Caption::Close)];
-    for (r, kind) in buttons.into_iter().skip(if dialog { 2 } else { 0 }) {
+    let mut closed = false;
+    for (r, kind) in buttons.into_iter().skip(if dialog || platform::TOUCH { 2 } else { 0 }) {
         let b = ui.interact(r, ui.id().with(("caption", kind as u8)), Sense::click());
         caption_button(ui.painter(), r, kind, b.is_pointer_button_down_on());
         if b.clicked() {
+            closed |= kind == Caption::Close;
+            // A phone's only window is the app's: the dialog's caller closes the dialog.
+            if platform::TOUCH && dialog {
+                continue;
+            }
             ctx.send_viewport_cmd(match kind {
                 Caption::Minimize => ViewportCommand::Minimized(true),
                 Caption::Maximize => ViewportCommand::Maximized(true),
@@ -673,12 +739,16 @@ fn caption(ui: &mut Ui, title: &str, dialog: bool) {
         }
     }
 
+    if platform::TOUCH {
+        return closed;
+    }
     if resp.drag_started_by(egui::PointerButton::Primary) {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
     }
     if resp.double_clicked() && !dialog {
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
+    closed
 }
 
 /// The macOS close button: red, gray while the window is inactive (unless the pointer is on it),
@@ -704,7 +774,7 @@ fn mac_close_dot(p: &egui::Painter, c: Pos2, active: bool, hovered: bool, presse
 /// borderless window, but on Linux the compositor gives it none, so the app
 /// asks for a resize drag itself. Does nothing on macOS or when maximized.
 pub fn resize_frame(ui: &Ui, outer: Rect) {
-    if cfg!(target_os = "macos") || ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false)) {
+    if cfg!(target_os = "macos") || platform::TOUCH || ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false)) {
         return;
     }
     use egui::viewport::ResizeDirection as Dir;
@@ -781,7 +851,7 @@ pub fn size_grip(ui: &Ui, area: Rect) {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Caption {
     Minimize,
     Maximize,
@@ -836,6 +906,8 @@ pub enum Icon {
     Folders,
     Undo,
     Views,
+    /// A magnifying glass: the toolbar's Search button on a narrow window (not from Windows).
+    Search,
     Go,
     Folder,
     FolderOpen,
@@ -940,6 +1012,12 @@ pub fn paint_icon(p: &Painter, r: Rect, icon: Icon, enabled: bool) {
                 p.rect_filled(Rect::from_min_max(at(x, y), at(x + 3.0, y + 3.0)), 0.0, gray(active_caption()));
                 p.hline(at(x + 3.5, 0.0).x..=at(x + 5.0, 0.0).x, at(0.0, y + 1.5).y, Stroke::new(1.0, gray(shadow())));
             }
+        }
+        Icon::Search => {
+            let lens = at(6.5, 6.5);
+            p.circle_filled(lens, 3.8 * s, gray(PAPER));
+            p.line_segment([at(9.4, 9.4), at(14.0, 14.0)], Stroke::new(2.4 * s, gray(dark())));
+            p.circle_stroke(lens, 3.8 * s, Stroke::new(1.6 * s, gray(active_caption())));
         }
         Icon::Folder | Icon::FolderOpen => folder(p, r, enabled),
         Icon::CompressedFolder => {

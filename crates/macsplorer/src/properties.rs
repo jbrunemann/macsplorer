@@ -46,6 +46,10 @@ const GROUP_TOP: f32 = 9.0;
 const GROUP_BOTTOM: f32 = 6.0;
 /// Where each permission's check box starts, from the first one.
 const BOX_STEP: f32 = 76.0;
+/// The same on a page too narrow for the full words, which are cut to r, w and x.
+const BOX_STEP_NARROW: f32 = 44.0;
+/// The page width below which the permission names don't fit.
+const PERMISSION_NAMES_WIDTH: f32 = VALUE_X + 2.0 * BOX_STEP + 13.0 + 4.0 + 52.0 + 8.0;
 const FRAME: f32 = 4.0;
 const TAB_HEIGHT: f32 = 20.0;
 const ROW_HEIGHT: f32 = 22.0;
@@ -143,6 +147,8 @@ struct Multi {
 
 pub struct Properties {
     viewport: egui::ViewportId,
+    /// On a touch screen the dialog fills the screen: its size there.
+    full_screen: Option<egui::Vec2>,
     entry: Entry,
     /// The name box. With extensions hidden it holds the stem only.
     name: String,
@@ -197,6 +203,7 @@ impl Properties {
         });
         Self {
             viewport: egui::ViewportId::from_hash_of(("properties", &entry.path, Instant::now())),
+            full_screen: None,
             name: entry.display_name(show_extensions).to_owned(),
             hidden_ext: entry.hidden_extension(show_extensions).map(str::to_owned),
             entry,
@@ -251,6 +258,7 @@ impl Properties {
         let (_, info_rx) = channel();
         Self {
             viewport: egui::ViewportId::from_hash_of(("properties", &entry.path, Instant::now())),
+            full_screen: None,
             name: entry.display_name(show_extensions).to_owned(),
             hidden_ext: None,
             entry,
@@ -299,6 +307,9 @@ impl Properties {
     }
 
     fn size(&self) -> egui::Vec2 {
+        if let Some(size) = self.full_screen {
+            return size;
+        }
         if self.multi.is_some() { size_for_multi() } else { size_for(&self.entry) }
     }
 
@@ -427,6 +438,14 @@ impl Properties {
         if (self.is_dir() || self.multi.is_some()) && !self.size.is_done() {
             ctx.request_repaint_after(SIZE_REFRESH);
         }
+        if crate::platform::TOUCH {
+            // A phone has one window: the dialog covers it, between the system bars.
+            let (top, bottom) = crate::platform::system_bar_insets(ctx.pixels_per_point());
+            let screen = ctx.content_rect();
+            let rect = Rect::from_min_max(screen.min + vec2(0.0, top), screen.max - vec2(0.0, bottom));
+            self.full_screen = Some(rect.size());
+            return egui::Area::new(egui::Id::new(self.viewport)).order(egui::Order::Middle).fixed_pos(rect.min).show(ctx, |ui| self.ui(ui, icons)).inner;
+        }
         let title = self.title();
         let builder = egui::ViewportBuilder::default()
             .with_title(&title)
@@ -464,7 +483,9 @@ impl Properties {
         theme::bevel(p, outer, Bevel::Raised);
         let inner = outer.shrink(FRAME);
         let mut caption = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
-        theme::dialog_title_bar(&mut caption, &title);
+        if theme::dialog_title_bar(&mut caption, &title) {
+            return Outcome::Close;
+        }
 
         let buttons_top = inner.bottom() - 7.0 - BUTTON.y;
         let tab_top = inner.top() + 18.0 + 6.0;
@@ -536,11 +557,13 @@ impl Properties {
                     }
                 }
                 Group::Permissions(bits) => {
+                    let narrow = page.width() < PERMISSION_NAMES_WIDTH;
+                    let step = if narrow { BOX_STEP_NARROW } else { BOX_STEP };
                     for (who, row_bits) in ["Owner:", "Group:", "Others:"].into_iter().zip(bits) {
                         let center = y + ROW_HEIGHT / 2.0;
                         ui.painter().text(pos2(left, center), egui::Align2::LEFT_CENTER, who, font.clone(), theme::color::text());
-                        for (n, (on, name)) in row_bits.into_iter().zip(["Read", "Write", "Execute"]).enumerate() {
-                            let check = Rect::from_min_size(pos2(page.left() + VALUE_X + n as f32 * BOX_STEP, center - 6.5), vec2(13.0, 13.0));
+                        for (n, (on, name)) in row_bits.into_iter().zip(if narrow { ["r", "w", "x"] } else { ["Read", "Write", "Execute"] }).enumerate() {
+                            let check = Rect::from_min_size(pos2(page.left() + VALUE_X + n as f32 * step, center - 6.5), vec2(13.0, 13.0));
                             theme::check_box(ui.painter(), check, on, editable);
                             let at = pos2(check.right() + 4.0, center);
                             let galley = ui.painter().layout_no_wrap(name.to_owned(), font.clone(), theme::color::text());
