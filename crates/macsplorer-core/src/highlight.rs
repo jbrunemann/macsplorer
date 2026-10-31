@@ -43,6 +43,12 @@ pub fn classify(entry: &Entry) -> Option<Highlight> {
     if entry.extension().is_some_and(|e| ARCHIVE_EXTENSIONS.iter().any(|a| a.eq_ignore_ascii_case(e))) {
         return Some(Highlight::Archive);
     }
+    // Android's shared storage (FAT, exFAT or a FUSE layer over them) has no
+    // per-file permissions and reports one mode for everything, usually with
+    // the execute bits set. It is mounted noexec, so the bit means nothing.
+    if cfg!(android_app) {
+        return None;
+    }
     let regular = entry.mode & 0o170000 == 0o100000;
     (regular && entry.mode & 0o111 != 0).then_some(Highlight::Executable)
 }
@@ -81,10 +87,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(android_app))]
     fn executables() {
         assert_eq!(classify(&entry("build.sh", RenameKind::File, 0o100755, None)), Some(Highlight::Executable));
         assert_eq!(classify(&entry("tool", RenameKind::File, 0o100700, None)), Some(Highlight::Executable));
         assert_eq!(classify(&entry("others", RenameKind::File, 0o100601, None)), Some(Highlight::Executable));
+    }
+
+    #[test]
+    #[cfg(android_app)]
+    fn no_executables_on_android() {
+        assert_eq!(classify(&entry("photo.jpg", RenameKind::File, 0o100777, None)), None);
+        assert_eq!(classify(&entry("a.zip", RenameKind::File, 0o100777, None)), Some(Highlight::Archive));
     }
 
     #[test]
