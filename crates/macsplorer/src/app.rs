@@ -3178,13 +3178,7 @@ impl Explorer {
             return;
         }
         let header_rect = egui::Rect::from_min_size(viewport.min, egui::vec2(viewport.width(), LIST_HEADER_HEIGHT));
-        // On a touch screen a column is at most as wide as the view, so one
-        // always fits and a swipe can bring the next one into place.
-        let cap = if platform::TOUCH { viewport.width() } else { f32::INFINITY };
-        let widths: Vec<f32> = self.columns.visible().into_iter().map(|c| self.columns.width(c).min(cap)).collect();
-        // A finger drag on a divider would fight the swipe, and there is no
-        // pointer to hover one.
-        let header_hit = if platform::TOUCH { HeaderHit::Nowhere } else { self.header_input(ui, header_rect, visible) };
+        let header_hit = self.header_input(ui, header_rect, visible);
         let pitch = LIST_ROW_HEIGHT + ui.spacing().item_spacing.y;
         self.nav_layout = Some(NavLayout::Details { rows: (((viewport.height() - LIST_HEADER_HEIGHT) / pitch).floor() as usize).max(1) });
         let focused = self.focus == Pane::List && window_focused(ui) && !text_field_focused(ui);
@@ -3267,8 +3261,8 @@ impl Explorer {
                 .striped(false)
                 .sense(platform::item_sense())
                 .cell_layout(Layout::left_to_right(Align::Center));
-            for &width in &widths {
-                table = table.column(TableColumn::exact(width).clip(true));
+            for &column in &shown {
+                table = table.column(TableColumn::exact(columns.width(column)).clip(true));
             }
             let table = table.column(TableColumn::remainder().at_least(0.0).clip(true)).header(LIST_HEADER_HEIGHT, |mut row| {
                 for (i, &column) in shown.iter().enumerate() {
@@ -3440,7 +3434,7 @@ impl Explorer {
             }
         }
         if platform::TOUCH {
-            pan_sideways(ui, &h_out, &widths);
+            pan_sideways(ui, &h_out, None);
         }
         bars.end_split(ui, &h_out, out);
     }
@@ -3693,7 +3687,11 @@ impl Explorer {
             }
         };
         let row_height = layout::list_row_height(line_height);
-        let columns = ListColumns::new(visible.len(), layout::list_column_width(widest), row_height, inner.width(), inner.height(), scrollbar::WIDTH);
+        // On a touch screen a column is at most as wide as the view (Windows
+        // caps it at the screen width), so a swipe can bring the next one
+        // into place.
+        let cap = if platform::TOUCH { inner.width() } else { f32::INFINITY };
+        let columns = ListColumns::new(visible.len(), layout::list_column_width(widest).min(cap), row_height, inner.width(), inner.height(), scrollbar::WIDTH);
         self.nav_layout = Some(NavLayout::List { columns, client_width: inner.width() });
         // Guess: an arrow click scrolls one column.
         let (bars, viewport) = Bars::begin(ui, ui.id().with("list-bars"), inner, [true, false], columns.column_width);
@@ -3729,6 +3727,8 @@ impl Explorer {
             .id_salt("list")
             .auto_shrink(false)
             .animated(false)
+            // A swipe is `pan_sideways`', which lets go on a column's edge.
+            .scroll_source(egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..Default::default() })
             .scroll_bar_visibility(hidden)
             .show_viewport(ui, |ui, view| {
                 let origin = ui.max_rect().min;
@@ -3826,6 +3826,9 @@ impl Explorer {
                     None => background_menu(ui, &folder, can_paste, actions),
                 });
             });
+        if platform::TOUCH {
+            pan_sideways(ui, &out, Some(&|| vec![columns.column_width; columns.columns()]));
+        }
         bars.end(ui, &out);
     }
 
@@ -4087,12 +4090,15 @@ fn conflict_asker(ask_tx: Sender<conflict_dialog::Ask>, ctx: egui::Context) -> i
     }
 }
 
-/// A swipe sideways over the Details view scrolls it sideways, and on
-/// letting go it settles on a column's left edge (`columns::snap_target`):
-/// the nearest, or the next one when the swipe was a fling. The rows' scroll
-/// area takes the whole drag and moves only up and down, so the sideways
-/// part goes to the horizontal area around it here. Not from Explorer.
-fn pan_sideways<R>(ui: &Ui, outer: &egui::scroll_area::ScrollAreaOutput<R>, widths: &[f32]) {
+/// A swipe sideways over the Details or List view scrolls it sideways. With
+/// `snap`, the columns' widths (asked for only when the finger lifts), the
+/// view then settles on a column's left edge (`columns::snap_target`): the
+/// nearest, or the next one when the swipe was a fling. The Details rows'
+/// scroll area takes the whole drag and moves only up and down, so the
+/// sideways part goes to the horizontal area around it here; the List view's
+/// own area has dragging switched off so this is the only mover. Snapping is
+/// not from Explorer.
+fn pan_sideways<R>(ui: &Ui, outer: &egui::scroll_area::ScrollAreaOutput<R>, snap: Option<&dyn Fn() -> Vec<f32>>) {
     /// How fast the view closes in on the stop: 1 - e^(-RATE * dt) of the way per frame.
     const SETTLE_RATE: f32 = 16.0;
     #[derive(Clone, Copy, Default)]
@@ -4121,8 +4127,10 @@ fn pan_sideways<R>(ui: &Ui, outer: &egui::scroll_area::ScrollAreaOutput<R>, widt
             state.store(ui.ctx(), outer.id);
             ui.ctx().request_repaint();
         }
-    } else if std::mem::take(&mut pan.panning) {
-        let stops = columns::snap_stops(widths, max);
+    } else if std::mem::take(&mut pan.panning)
+        && let Some(widths) = snap
+    {
+        let stops = columns::snap_stops(&widths(), max);
         pan.target = Some(columns::snap_target(&stops, state.offset.x, pan.velocity));
     }
     if let Some(target) = pan.target {
