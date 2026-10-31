@@ -429,7 +429,7 @@ pub fn etched_hline(ui: &mut Ui) {
 }
 
 pub fn etched_vline(ui: &mut Ui, height: f32) {
-    let (r, _) = ui.allocate_exact_size(vec2(6.0, height), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(ETCHED_VLINE_WIDTH, height), Sense::hover());
     let x = r.center().x.floor();
     let p = ui.painter();
     p.vline(x + 0.5, r.y_range(), Stroke::new(1.0, shadow()));
@@ -464,14 +464,31 @@ pub fn sunken_field(p: &Painter, rect: Rect) -> Rect {
 
 // ---- buttons -----------------------------------------------------------------
 
+/// How wide `tool_button` is with `label`.
+pub fn tool_button_width(ui: &Ui, label: Option<&str>) -> f32 {
+    let text_w = label.map_or(0.0, |l| {
+        let font = TextStyle::Button.resolve(ui.style());
+        ui.painter().layout_no_wrap(l.into(), font, text()).size().x + 4.0
+    });
+    6.0 + 16.0 + text_w + 6.0
+}
+
+/// How wide `drop_arrow_button` is.
+pub const DROP_ARROW_WIDTH: f32 = 12.0;
+/// How wide `tool_dropdown` is.
+pub const TOOL_DROPDOWN_WIDTH: f32 = 6.0 + 16.0 + 4.0 + 6.0 + 4.0;
+/// How wide `etched_vline` is.
+pub const ETCHED_VLINE_WIDTH: f32 = 6.0;
+/// How wide `tool_chevron` is.
+pub const TOOL_CHEVRON_WIDTH: f32 = 14.0;
+
 /// A flat toolbar button: raised when hot, sunken when pressed (IE5 coolbar).
 pub fn tool_button(ui: &mut Ui, icon: Icon, label: Option<&str>, enabled: bool) -> Response {
     let font = TextStyle::Button.resolve(ui.style());
     let galley = label.map(|l| ui.painter().layout_no_wrap(l.into(), font.clone(), if enabled { text() } else { gray_text() }));
     // Disabled text is embossed: a white copy one pixel down-right.
     let emboss = label.filter(|_| !enabled).map(|l| ui.painter().layout_no_wrap(l.into(), font, highlight()));
-    let text_w = galley.as_ref().map_or(0.0, |g| g.size().x + 4.0);
-    let size = vec2(6.0 + 16.0 + text_w + 6.0, 24.0);
+    let size = vec2(tool_button_width(ui, label), 24.0);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let p = ui.painter();
@@ -510,7 +527,7 @@ pub fn tool_toggle(ui: &mut Ui, icon: Icon, label: Option<&str>, checked: bool) 
 /// The small ▾ split part next to Back/Forward.
 pub fn drop_arrow_button(ui: &mut Ui, enabled: bool) -> Response {
     let sense = if enabled { Sense::click() } else { Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(vec2(12.0, 24.0), sense);
+    let (rect, resp) = ui.allocate_exact_size(vec2(DROP_ARROW_WIDTH, 24.0), sense);
     let p = ui.painter();
     if enabled && resp.is_pointer_button_down_on() {
         bevel(p, rect, Bevel::SunkenThin);
@@ -530,7 +547,7 @@ pub fn drop_arrow_button(ui: &mut Ui, enabled: bool) -> Response {
 /// A button that only opens a menu, icon and ▾ in one bevel (the toolbar's
 /// Views button, `BTNS_WHOLEDROPDOWN`). `name` is for accessibility.
 pub fn tool_dropdown(ui: &mut Ui, icon: Icon, name: &str) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(6.0 + 16.0 + 4.0 + 6.0 + 4.0, 24.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_DROPDOWN_WIDTH, 24.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
     let p = ui.painter();
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
@@ -549,6 +566,33 @@ pub fn tool_dropdown(ui: &mut Ui, icon: Icon, name: &str) -> Response {
         text(),
         Stroke::NONE,
     ));
+    resp
+}
+
+/// The toolbar's `»` at the right end, which opens the buttons that did not fit (the
+/// rebar's chevron). `name` is for accessibility.
+pub fn tool_chevron(ui: &mut Ui, name: &str) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(TOOL_CHEVRON_WIDTH, 24.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    let p = ui.painter();
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    let down = open || resp.is_pointer_button_down_on();
+    if down {
+        bevel(p, rect, Bevel::SunkenThin);
+    } else if resp.hovered() {
+        bevel(p, rect, Bevel::RaisedThin);
+    }
+    let c = rect.center() + if down { vec2(1.0, 1.0) } else { Vec2::ZERO };
+    // Two ">" of 4 × 7 pixels side by side.
+    for dx in [-3.0, 1.0] {
+        for i in 0..4 {
+            let x = c.x + dx + i as f32;
+            let half = 3.0 - i as f32;
+            for y in [c.y - half, c.y + half] {
+                dot(p, pos2(x.floor(), y.floor()), text());
+            }
+        }
+    }
     resp
 }
 

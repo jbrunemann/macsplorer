@@ -2707,7 +2707,7 @@ impl Explorer {
                     self.load(loads);
                 }
                 ui.separator();
-                if ui.add(gutter_item(ui, "Go To Folder...", platform::go_to_keys())).clicked() {
+                if !platform::TOUCH && ui.add(gutter_item(ui, "Go To Folder...", platform::go_to_keys())).clicked() {
                     actions.push(Action::ShowGoTo);
                     ui.close();
                 }
@@ -2738,6 +2738,10 @@ impl Explorer {
         let label = |text| (ui.available_width() >= TOOLBAR_LABELS_WIDTH).then_some(text);
         let (back_label, folders_label, refresh_label) = (label("Back"), label("Folders"), label("Refresh"));
         let search_collapsed = ui.available_width() < SEARCH_INLINE_WIDTH;
+        // Still too narrow (a larger text size): what does not fit goes into the `»` menu at the
+        // right end, as in a Win2000 rebar, the least needed buttons first.
+        let hidden = toolbar_hidden(ui, ui.available_width(), [back_label, folders_label, refresh_label], search_collapsed);
+        let shown = |item| !hidden.contains(&item);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(2.0);
@@ -2745,53 +2749,55 @@ impl Explorer {
             if back.clicked() {
                 actions.push(Action::Back);
             }
-            let arrow = theme::drop_arrow_button(ui, self.history.can_go_back());
-            egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
-                for (i, p) in self.history.back_entries().take(12) {
-                    if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
-                        actions.push(Action::HistoryJump(i));
-                    }
-                }
-            });
-            let fwd = theme::tool_button(ui, Icon::Forward, None, self.history.can_go_forward()).on_hover_text(format!("Forward ({}])", platform::CMD));
-            if fwd.clicked() {
-                actions.push(Action::Forward);
+            if shown(ToolbarItem::HistoryArrows) {
+                let arrow = theme::drop_arrow_button(ui, self.history.can_go_back());
+                egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| self.back_entries_menu(ui, actions));
             }
-            let arrow = theme::drop_arrow_button(ui, self.history.can_go_forward());
-            egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| {
-                for (i, p) in self.history.forward_entries().take(12) {
-                    if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
-                        actions.push(Action::HistoryJump(i));
-                    }
+            if shown(ToolbarItem::Forward) {
+                let fwd = theme::tool_button(ui, Icon::Forward, None, self.history.can_go_forward()).on_hover_text(format!("Forward ({}])", platform::CMD));
+                if fwd.clicked() {
+                    actions.push(Action::Forward);
                 }
-            });
+                if shown(ToolbarItem::HistoryArrows) {
+                    let arrow = theme::drop_arrow_button(ui, self.history.can_go_forward());
+                    egui::Popup::menu(&arrow).style(theme::menu_style).show(|ui| self.forward_entries_menu(ui, actions));
+                }
+            }
             let has_parent = self.current().parent().is_some();
             if theme::tool_button(ui, Icon::Up, None, has_parent).on_hover_text(format!("Up ({}↑)", platform::CMD)).clicked() {
                 actions.push(Action::Up);
             }
-            theme::etched_vline(ui, 22.0);
-            let folders = theme::tool_toggle(ui, Icon::Folders, folders_label, self.settings.show_folders).on_hover_text("Folders");
-            if folders.clicked() {
-                actions.push(Action::ToggleFolders);
+            if shown(ToolbarItem::Folders) || shown(ToolbarItem::Refresh) {
+                theme::etched_vline(ui, 22.0);
             }
-            if theme::tool_button(ui, Icon::Refresh, refresh_label, true).on_hover_text(format!("Refresh ({}R)", platform::CMD)).clicked() {
+            if shown(ToolbarItem::Folders) {
+                let folders = theme::tool_toggle(ui, Icon::Folders, folders_label, self.settings.show_folders).on_hover_text("Folders");
+                if folders.clicked() {
+                    actions.push(Action::ToggleFolders);
+                }
+            }
+            if shown(ToolbarItem::Refresh) && theme::tool_button(ui, Icon::Refresh, refresh_label, true).on_hover_text(format!("Refresh ({}R)", platform::CMD)).clicked() {
                 actions.push(Action::Refresh);
             }
-            theme::etched_vline(ui, 22.0);
             let undo = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
-            let undo_button = theme::tool_button(ui, Icon::Undo, None, self.undo.peek().is_some());
-            if undo_button.on_hover_text(format!("{undo} ({}Z)", platform::CMD)).clicked() {
-                actions.push(Action::Undo);
+            if shown(ToolbarItem::Undo) {
+                theme::etched_vline(ui, 22.0);
+                let undo_button = theme::tool_button(ui, Icon::Undo, None, self.undo.peek().is_some());
+                if undo_button.on_hover_text(format!("{undo} ({}Z)", platform::CMD)).clicked() {
+                    actions.push(Action::Undo);
+                }
             }
-            theme::etched_vline(ui, 22.0);
-            // Windows 2000's Views button is all drop-down: a click anywhere opens the menu.
-            let views = theme::tool_dropdown(ui, Icon::Views, "Views").on_hover_text("Views");
-            egui::Popup::menu(&views).style(theme::menu_style).show(|ui| view_choices(ui, self.settings.view, actions));
+            if shown(ToolbarItem::Views) {
+                theme::etched_vline(ui, 22.0);
+                // Windows 2000's Views button is all drop-down: a click anywhere opens the menu.
+                let views = theme::tool_dropdown(ui, Icon::Views, "Views").on_hover_text("Views");
+                egui::Popup::menu(&views).style(theme::menu_style).show(|ui| view_choices(ui, self.settings.view, actions));
+            }
             // A narrow window keeps the search box off the address bar's row until asked for.
             if search_collapsed {
-                let shown = self.search_open || !self.search.is_empty();
-                if theme::tool_toggle(ui, Icon::Search, None, shown).on_hover_text("Search this folder").clicked() {
-                    if shown {
+                let open = self.search_open || !self.search.is_empty();
+                if theme::tool_toggle(ui, Icon::Search, None, open).on_hover_text("Search this folder").clicked() {
+                    if open {
                         self.search.clear();
                         self.search_open = false;
                     } else {
@@ -2800,7 +2806,70 @@ impl Explorer {
                     }
                 }
             }
+            if !hidden.is_empty() {
+                ui.add_space((ui.available_width() - theme::TOOL_CHEVRON_WIDTH).max(0.0));
+                let more = theme::tool_chevron(ui, "More buttons").on_hover_text("More buttons");
+                egui::Popup::menu(&more).style(theme::menu_style).show(|ui| {
+                    for item in &hidden {
+                        match item {
+                            ToolbarItem::HistoryArrows => {
+                                delayed_menu_button(ui, "Back To", |ui| self.back_entries_menu(ui, actions));
+                                delayed_menu_button(ui, "Forward To", |ui| self.forward_entries_menu(ui, actions));
+                            }
+                            ToolbarItem::Forward => {
+                                if ui.add_enabled(self.history.can_go_forward(), gutter_item(ui, "Forward", platform::shortcut(false, "]"))).clicked() {
+                                    actions.push(Action::Forward);
+                                    ui.close();
+                                }
+                            }
+                            ToolbarItem::Folders => {
+                                let mut on = self.settings.show_folders;
+                                if egui_classic_menu::checkbox(ui, &mut on, "Folders").changed() {
+                                    actions.push(Action::ToggleFolders);
+                                    ui.close();
+                                }
+                            }
+                            ToolbarItem::Refresh => {
+                                if ui.add(gutter_item(ui, "Refresh", platform::shortcut(false, "R"))).clicked() {
+                                    actions.push(Action::Refresh);
+                                    ui.close();
+                                }
+                            }
+                            ToolbarItem::Undo => {
+                                let name = self.undo.peek().map_or_else(|| "Undo".to_owned(), |op| format!("Undo {}", op.label()));
+                                if ui.add_enabled(self.undo.peek().is_some(), gutter_item(ui, name, platform::shortcut(false, "Z"))).clicked() {
+                                    actions.push(Action::Undo);
+                                    ui.close();
+                                }
+                            }
+                            ToolbarItem::Views => {
+                                delayed_menu_button(ui, "Views", |ui| view_choices(ui, self.settings.view, actions));
+                            }
+                        }
+                    }
+                });
+            }
         });
+    }
+
+    /// The history entries behind the current one, for Back's drop-down.
+    fn back_entries_menu(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        for (i, p) in self.history.back_entries().take(12) {
+            if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
+                actions.push(Action::HistoryJump(i));
+                ui.close();
+            }
+        }
+    }
+
+    /// The history entries ahead of the current one, for Forward's drop-down.
+    fn forward_entries_menu(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        for (i, p) in self.history.forward_entries().take(12) {
+            if ui.add(gutter_item(ui, place_label(p), String::new())).clicked() {
+                actions.push(Action::HistoryJump(i));
+                ui.close();
+            }
+        }
     }
 
     fn address_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
@@ -4065,6 +4134,64 @@ impl eframe::App for Explorer {
 
 #[cfg(unix)]
 const TERMINAL_LABEL: &str = "Open in Terminal";
+
+/// A toolbar button that moves into the `»` menu when the toolbar is too narrow.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ToolbarItem {
+    HistoryArrows,
+    Undo,
+    Folders,
+    Forward,
+    Refresh,
+    Views,
+}
+
+/// The order buttons leave the toolbar in: the first one goes first. Back, Up and Search stay.
+const TOOLBAR_HIDING_ORDER: [ToolbarItem; 6] =
+    [ToolbarItem::HistoryArrows, ToolbarItem::Undo, ToolbarItem::Folders, ToolbarItem::Forward, ToolbarItem::Refresh, ToolbarItem::Views];
+
+/// Which toolbar buttons do not fit in `width`: the fewest, taken from `TOOLBAR_HIDING_ORDER`,
+/// that leave room for the rest and for the `»` button. `labels` are the texts of Back, Folders
+/// and Refresh, `None` when they show no text.
+fn toolbar_hidden(ui: &Ui, width: f32, labels: [Option<&str>; 3], search_collapsed: bool) -> Vec<ToolbarItem> {
+    use theme::{tool_button_width as button, DROP_ARROW_WIDTH, ETCHED_VLINE_WIDTH as LINE, TOOL_CHEVRON_WIDTH, TOOL_DROPDOWN_WIDTH};
+    let [back, folders, refresh] = labels;
+    let needed = |hidden: &[ToolbarItem]| {
+        let shown = |item| !hidden.contains(&item);
+        let arrow = if shown(ToolbarItem::HistoryArrows) { DROP_ARROW_WIDTH } else { 0.0 };
+        let mut w = 2.0 + button(ui, back) + arrow + button(ui, None);
+        if shown(ToolbarItem::Forward) {
+            w += button(ui, None) + arrow;
+        }
+        if shown(ToolbarItem::Folders) || shown(ToolbarItem::Refresh) {
+            w += LINE;
+        }
+        if shown(ToolbarItem::Folders) {
+            w += button(ui, folders);
+        }
+        if shown(ToolbarItem::Refresh) {
+            w += button(ui, refresh);
+        }
+        if shown(ToolbarItem::Undo) {
+            w += LINE + button(ui, None);
+        }
+        if shown(ToolbarItem::Views) {
+            w += LINE + TOOL_DROPDOWN_WIDTH;
+        }
+        if search_collapsed {
+            w += button(ui, None);
+        }
+        if hidden.is_empty() { w } else { w + TOOLBAR_CHEVRON_GAP + TOOL_CHEVRON_WIDTH }
+    };
+    (0..=TOOLBAR_HIDING_ORDER.len())
+        .map(|n| &TOOLBAR_HIDING_ORDER[..n])
+        .find(|hidden| needed(hidden) <= width)
+        .unwrap_or(&TOOLBAR_HIDING_ORDER)
+        .to_vec()
+}
+
+/// Space kept between the last toolbar button and the `»` button.
+const TOOLBAR_CHEVRON_GAP: f32 = 2.0;
 
 /// Below this toolbar width Back, Folders and Refresh lose their text.
 const TOOLBAR_LABELS_WIDTH: f32 = 420.0;
@@ -6078,6 +6205,25 @@ mod screenshot {
     }
 
     #[test]
+    fn narrow_toolbars_hide_the_least_needed_buttons_first() {
+        let hidden_in = |width: f32| {
+            let out = std::cell::RefCell::new(Vec::new());
+            let mut harness = Harness::new_ui(|ui| *out.borrow_mut() = toolbar_hidden(ui, width, [None; 3], true));
+            harness.run();
+            drop(harness);
+            out.into_inner()
+        };
+        assert!(hidden_in(600.0).is_empty());
+        let some = hidden_in(200.0);
+        assert!(!some.is_empty() && some.len() < TOOLBAR_HIDING_ORDER.len(), "{some:?}");
+        assert_eq!(some, TOOLBAR_HIDING_ORDER[..some.len()]);
+        // Back, Up and Search never go: below their width the rest is all hidden.
+        assert_eq!(hidden_in(10.0), TOOLBAR_HIDING_ORDER);
+        // Narrower never shows more.
+        assert!(hidden_in(150.0).len() >= some.len());
+    }
+
+    #[test]
     fn the_address_bar_predicts_the_folder_and_right_takes_it() {
         let (mut harness, dir) = drag_harness("predict");
         let base = dir.display().to_string();
@@ -7003,6 +7149,13 @@ mod screenshot {
     #[ignore = "renders a screenshot; run with --ignored"]
     fn text_size_larger() {
         shoot("text-size-larger", egui::vec2(1000.0, 680.0), |app| app.ctx.set_zoom_factor(1.5));
+    }
+
+    /// A toolbar too narrow for every button: the `»` button, and the menu with the rest.
+    #[test]
+    #[ignore = "renders a screenshot; run with --ignored"]
+    fn toolbar_overflow() {
+        shoot("toolbar-overflow", egui::vec2(190.0, 400.0), |_| {});
     }
 
     /// A window small enough that both panes need classic scroll bars.
