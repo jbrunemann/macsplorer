@@ -40,7 +40,8 @@ fi
 export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,/data/data/com.termux/files/usr/lib"
 
 mkdir -p "$work"
-cargo fetch --locked --target "$target" >/dev/null
+# Not --target: the patched crates are X11 ones that cargo skips for an Android target.
+cargo fetch --locked >/dev/null
 python3 -I scripts/termux-patch.py Cargo.lock "$work/patched" > "$work.list"
 set --
 while IFS='=' read -r name path; do
