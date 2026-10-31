@@ -39,6 +39,7 @@ fi
 # The program finds Termux's X11 libraries with dlopen, which looks in the RUNPATH of the caller.
 export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,/data/data/com.termux/files/usr/lib"
 
+mkdir -p "$work"
 cargo fetch --locked --target "$target" >/dev/null
 python3 -I scripts/termux-patch.py Cargo.lock "$work/patched" > "$work.list"
 set --
