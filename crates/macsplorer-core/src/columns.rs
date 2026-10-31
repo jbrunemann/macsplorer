@@ -362,6 +362,43 @@ pub fn column_left(widths: &[f32], i: usize) -> f32 {
     widths[..i].iter().sum()
 }
 
+/// Where a sideways scroll of the Details view may come to rest on a touch
+/// screen: each column's left edge, the last ones held back at `max_offset`,
+/// the furthest the content scrolls. Ascending, without repeats. Not from
+/// Explorer.
+pub fn snap_stops(widths: &[f32], max_offset: f32) -> Vec<f32> {
+    let max_offset = max_offset.max(0.0);
+    let mut stops: Vec<f32> = Vec::with_capacity(widths.len() + 1);
+    for i in 0..=widths.len() {
+        let stop = column_left(widths, i).min(max_offset);
+        if stops.last().is_none_or(|&last| stop > last + 0.5) {
+            stops.push(stop);
+        }
+    }
+    stops
+}
+
+/// A swipe faster than this (points per second, of the finger) carries the
+/// view on to the next stop in its direction, however short the drag was.
+pub const FLING_SPEED: f32 = 250.0;
+
+/// The stop a sideways scroll let go at `offset` settles on. `velocity` is
+/// the finger's, so a negative one scrolls forward. A fling goes to the
+/// next stop that way, a slow release to the nearest. `stops` is
+/// [`snap_stops`]. Not from Explorer.
+pub fn snap_target(stops: &[f32], offset: f32, velocity: f32) -> f32 {
+    let nearest = || stops.iter().copied().min_by(|a, b| (a - offset).abs().total_cmp(&(b - offset).abs()));
+    let next = if velocity <= -FLING_SPEED {
+        stops.iter().copied().find(|&s| s > offset + 0.5)
+    } else if velocity >= FLING_SPEED {
+        stops.iter().rev().copied().find(|&s| s < offset - 0.5)
+    } else {
+        None
+    };
+    // At the end already, a fling stays there.
+    next.or_else(nearest).unwrap_or(0.0)
+}
+
 /// A divider drag in progress.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ColumnDrag {
@@ -629,5 +666,36 @@ mod tests {
         assert_eq!(d.width_at(147.0), 50.0);
         assert_eq!(d.width_at(250.0), 153.0);
         assert_eq!(d.width_at(90.0), 0.0);
+    }
+
+    #[test]
+    fn snap_stops_are_the_column_edges_held_back_at_the_end() {
+        assert_eq!(snap_stops(&[300.0, 80.0, 90.0], 1000.0), vec![0.0, 300.0, 380.0, 470.0]);
+        // 470 wide in a 400 wide view: the last edges merge into the end.
+        assert_eq!(snap_stops(&[300.0, 80.0, 90.0], 70.0), vec![0.0, 70.0]);
+        assert_eq!(snap_stops(&[300.0, 0.0, 90.0], 1000.0), vec![0.0, 300.0, 390.0]);
+        assert_eq!(snap_stops(&[], 0.0), vec![0.0]);
+    }
+
+    #[test]
+    fn a_slow_release_settles_on_the_nearest_stop() {
+        let stops = [0.0, 300.0, 380.0];
+        assert_eq!(snap_target(&stops, 100.0, 0.0), 0.0);
+        assert_eq!(snap_target(&stops, 200.0, 100.0), 300.0);
+        assert_eq!(snap_target(&stops, 330.0, -100.0), 300.0);
+    }
+
+    #[test]
+    fn a_fling_goes_to_the_next_stop_that_way() {
+        let stops = [0.0, 300.0, 380.0];
+        // Forward from just past a stop, and from just short of one.
+        assert_eq!(snap_target(&stops, 20.0, -600.0), 300.0);
+        assert_eq!(snap_target(&stops, 290.0, -600.0), 300.0);
+        assert_eq!(snap_target(&stops, 300.0, -600.0), 380.0);
+        assert_eq!(snap_target(&stops, 320.0, 600.0), 300.0);
+        assert_eq!(snap_target(&stops, 300.0, 600.0), 0.0);
+        // Nowhere further: stay.
+        assert_eq!(snap_target(&stops, 380.0, -600.0), 380.0);
+        assert_eq!(snap_target(&stops, 0.0, 600.0), 0.0);
     }
 }

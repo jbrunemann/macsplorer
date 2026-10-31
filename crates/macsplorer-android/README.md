@@ -33,7 +33,9 @@ The layout is the desktop's, small buttons included. `platform::TOUCH` switches 
 - **The back button** (and gesture) closes what is on top: a menu, a dialog (as Cancel), the drawer, an address being
   typed. Otherwise it goes back in the history, and at the first page puts the app in the background
   (`Explorer::back_button`).
-- **A sideways swipe** in the Details view scrolls the columns (`pan_sideways`).
+- **A sideways swipe** in the Details view scrolls the columns (`pan_sideways`) and, on letting go, snaps a column's left edge
+  into place (`columns::snap_target`: the nearest, or the next one after a fling). A column is never wider than the view, and
+  the header dividers can't be dragged.
 
 On a narrow window, on any system, Back, Folders, Refresh, Address and Go lose their text, the search box becomes a magnifier
 button at the end of the toolbar that opens it under the address field (closed again by Esc, by leaving it empty or by

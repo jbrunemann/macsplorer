@@ -3178,7 +3178,13 @@ impl Explorer {
             return;
         }
         let header_rect = egui::Rect::from_min_size(viewport.min, egui::vec2(viewport.width(), LIST_HEADER_HEIGHT));
-        let header_hit = self.header_input(ui, header_rect, visible);
+        // On a touch screen a column is at most as wide as the view, so one
+        // always fits and a swipe can bring the next one into place.
+        let cap = if platform::TOUCH { viewport.width() } else { f32::INFINITY };
+        let widths: Vec<f32> = self.columns.visible().into_iter().map(|c| self.columns.width(c).min(cap)).collect();
+        // A finger drag on a divider would fight the swipe, and there is no
+        // pointer to hover one.
+        let header_hit = if platform::TOUCH { HeaderHit::Nowhere } else { self.header_input(ui, header_rect, visible) };
         let pitch = LIST_ROW_HEIGHT + ui.spacing().item_spacing.y;
         self.nav_layout = Some(NavLayout::Details { rows: (((viewport.height() - LIST_HEADER_HEIGHT) / pitch).floor() as usize).max(1) });
         let focused = self.focus == Pane::List && window_focused(ui) && !text_field_focused(ui);
@@ -3261,8 +3267,8 @@ impl Explorer {
                 .striped(false)
                 .sense(platform::item_sense())
                 .cell_layout(Layout::left_to_right(Align::Center));
-            for &column in &shown {
-                table = table.column(TableColumn::exact(columns.width(column)).clip(true));
+            for &width in &widths {
+                table = table.column(TableColumn::exact(width).clip(true));
             }
             let table = table.column(TableColumn::remainder().at_least(0.0).clip(true)).header(LIST_HEADER_HEIGHT, |mut row| {
                 for (i, &column) in shown.iter().enumerate() {
@@ -3434,7 +3440,7 @@ impl Explorer {
             }
         }
         if platform::TOUCH {
-            pan_sideways(ui, &h_out);
+            pan_sideways(ui, &h_out, &widths);
         }
         bars.end_split(ui, &h_out, out);
     }
@@ -4081,19 +4087,56 @@ fn conflict_asker(ask_tx: Sender<conflict_dialog::Ask>, ctx: egui::Context) -> i
     }
 }
 
-/// A swipe sideways over the Details view scrolls it sideways. The rows'
-/// scroll area takes the whole drag and moves only up and down, so the
-/// sideways part goes to the horizontal area around it here.
-fn pan_sideways<R>(ui: &Ui, outer: &egui::scroll_area::ScrollAreaOutput<R>) {
-    let (dragging, dx, origin) = ui.input(|i| (i.any_touches() && i.pointer.is_decidedly_dragging(), i.pointer.delta().x, i.pointer.press_origin()));
-    if !dragging || dx == 0.0 || !origin.is_some_and(|p| outer.inner_rect.contains(p)) {
-        return;
+/// A swipe sideways over the Details view scrolls it sideways, and on
+/// letting go it settles on a column's left edge (`columns::snap_target`):
+/// the nearest, or the next one when the swipe was a fling. The rows' scroll
+/// area takes the whole drag and moves only up and down, so the sideways
+/// part goes to the horizontal area around it here. Not from Explorer.
+fn pan_sideways<R>(ui: &Ui, outer: &egui::scroll_area::ScrollAreaOutput<R>, widths: &[f32]) {
+    /// How fast the view closes in on the stop: 1 - e^(-RATE * dt) of the way per frame.
+    const SETTLE_RATE: f32 = 16.0;
+    #[derive(Clone, Copy, Default)]
+    struct Pan {
+        /// The finger is down on a sideways swipe.
+        panning: bool,
+        /// The finger's speed along x, kept from the last frame it was down.
+        velocity: f32,
+        /// The offset the view is gliding to.
+        target: Option<f32>,
     }
+    let key = outer.id.with("pan");
+    let mut pan: Pan = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    let (touching, dragging, dx, velocity, origin, dt) =
+        ui.input(|i| (i.any_touches(), i.pointer.is_decidedly_dragging(), i.pointer.delta().x, i.pointer.velocity().x, i.pointer.press_origin(), i.stable_dt));
     let mut state = egui::scroll_area::State::load(ui.ctx(), outer.id).unwrap_or(outer.state);
     let max = (outer.content_size.x - outer.inner_rect.width()).max(0.0);
-    state.offset.x = (state.offset.x - dx).clamp(0.0, max);
-    state.store(ui.ctx(), outer.id);
-    ui.ctx().request_repaint();
+    if touching {
+        if !pan.panning && dragging && dx != 0.0 && origin.is_some_and(|p| outer.inner_rect.contains(p)) {
+            pan.panning = true;
+        }
+        if pan.panning {
+            pan.target = None;
+            pan.velocity = velocity;
+            state.offset.x = (state.offset.x - dx).clamp(0.0, max);
+            state.store(ui.ctx(), outer.id);
+            ui.ctx().request_repaint();
+        }
+    } else if std::mem::take(&mut pan.panning) {
+        let stops = columns::snap_stops(widths, max);
+        pan.target = Some(columns::snap_target(&stops, state.offset.x, pan.velocity));
+    }
+    if let Some(target) = pan.target {
+        let left = target - state.offset.x;
+        if left.abs() < 0.5 {
+            state.offset.x = target;
+            pan.target = None;
+        } else {
+            state.offset.x += left * (1.0 - (-SETTLE_RATE * dt).exp());
+            ui.ctx().request_repaint();
+        }
+        state.store(ui.ctx(), outer.id);
+    }
+    ui.data_mut(|d| d.insert_temp(key, pan));
 }
 
 /// A menu bar entry. While one bar menu is open, resting the pointer on
