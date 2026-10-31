@@ -432,6 +432,9 @@ pub struct Explorer {
     /// The address field showed a prediction last frame. Tab takes it then,
     /// and cycles through the panes otherwise.
     address_predicting: bool,
+    /// A touch screen: no Tab or Right to take a prediction, a tap on it does (`platform::TOUCH`,
+    /// a field so a test can set it).
+    touch: bool,
     /// ↓ in the address field was pressed: the view lists the folder being
     /// typed (`peek_dir`) until the field closes.
     address_peeking: bool,
@@ -578,6 +581,7 @@ impl Explorer {
             address_looking: None,
             address_deleted: false,
             address_predicting: false,
+            touch: platform::TOUCH,
             address_peeking: false,
             peek_dir: None,
             folders_tx,
@@ -3007,6 +3011,15 @@ impl Explorer {
             let galley = ui.painter().layout_no_wrap(next.ghost, egui::TextStyle::Body.resolve(ui.style()), theme::color::gray_text());
             let at = out.galley_pos + egui::vec2(out.galley.size().x, 0.0);
             ui.painter().with_clip_rect(ui.max_rect()).galley(at, galley, theme::color::gray_text());
+            // A touch screen has no Tab or Right: a tap on the dimmed rest (or after it) takes it.
+            // The field has the focus already, so the tap only moves the cursor to the end.
+            if self.touch && resp.clicked() && resp.interact_pointer_pos().is_some_and(|pos| pos.x >= at.x) {
+                text = next.completed;
+                if let Some(mut state) = TextEdit::load_state(ui.ctx(), id) {
+                    state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(text.chars().count()))));
+                    TextEdit::store_state(ui.ctx(), id, state);
+                }
+            }
         }
         if resp.lost_focus() && !ui.input(|i| i.key_pressed(Key::Enter)) {
             return;
@@ -6237,6 +6250,45 @@ mod screenshot {
         harness.key_press(Key::ArrowRight);
         harness.run_steps(2);
         assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tap_on_the_prediction_takes_it_on_a_touch_screen() {
+        let (mut harness, dir) = drag_harness("predict-tap");
+        harness.state_mut().touch = true;
+        let base = dir.display().to_string();
+        type_address(&mut harness, format!("{base}/su"));
+        assert!(harness.state().address_predicting);
+        // After the text, inside the field: the dimmed rest and the empty space behind it.
+        let field = harness.get_all_by_role(egui::accesskit::Role::TextInput).next().expect("the address field").rect();
+        let at = egui::pos2(field.right() - 4.0, field.center().y);
+        harness.input_mut().events.push(egui::Event::PointerMoved(at));
+        harness.run_steps(1);
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            harness.run_steps(1);
+        }
+        harness.run_steps(2);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/sub/").as_str()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tap_after_the_text_does_nothing_without_touch() {
+        let (mut harness, dir) = drag_harness("predict-click");
+        let base = dir.display().to_string();
+        type_address(&mut harness, format!("{base}/su"));
+        let field = harness.get_all_by_role(egui::accesskit::Role::TextInput).next().expect("the address field").rect();
+        let at = egui::pos2(field.right() - 4.0, field.center().y);
+        harness.input_mut().events.push(egui::Event::PointerMoved(at));
+        harness.run_steps(1);
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            harness.run_steps(1);
+        }
+        harness.run_steps(2);
+        assert_eq!(harness.state().address_edit.as_deref(), Some(format!("{base}/su").as_str()));
         fs::remove_dir_all(&dir).unwrap();
     }
 

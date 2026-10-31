@@ -29,6 +29,7 @@ The layout is the desktop's, small buttons included. `platform::TOUCH` switches 
 - **Toolbar buttons that do not fit** (a narrow screen, a larger text size) move into a `»` menu at the right end, as in
   a Win2000 rebar: the history drop-downs go first, then Undo, Folders, Forward, Refresh and Views (`toolbar_hidden`).
   Back, Up and Search stay.
+- **A tap on the dimmed rest of the address being typed takes it**, for the Tab and Right a touch keyboard lacks (`Explorer::touch`).
 - View > Go To Folder is left out (a window made for a keyboard).
 - The window keeps clear of the status bar and the gesture bar (`android::system_bar_insets`), which sit on the Windows 2000
   desktop color (`theme::color::desktop`), and has no caption buttons or size grip. The keyboard draws over the window, which keeps its size (it covers whatever is under it). Two taps count as a double tap
