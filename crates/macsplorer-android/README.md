@@ -16,6 +16,24 @@ adb shell am start -n dev.macsplorer.ai/android.app.NativeActivity
 
 Debug logs: `adb logcat -s macsplorer`.
 
+## Releases
+
+The `android` job in `.github/workflows/release.yml` runs `scripts/build-android.sh` on a tag and attaches the APK to
+the GitHub release as `Macsplorer-android-arm64.apk` (no version in the name, so an Obtainium filter such as
+`Macsplorer-android.*\.apk$` keeps matching) with a `.sha256` next to it. It signs with the repository secrets
+`ANDROID_KEYSTORE_B64` (the keystore, base64) and `ANDROID_KEYSTORE_PASSWORD`, and fails without them rather than
+fall back to the debug key: an update signed with another key cannot replace the installed app, so never change the
+key and keep a backup. The keystore needs one key whose password equals the keystore password. Create it once:
+
+```sh
+keytool -genkeypair -v -keystore macsplorer-release.keystore -alias macsplorer -keyalg RSA -keysize 4096 -validity 36500
+base64 -i macsplorer-release.keystore | gh secret set ANDROID_KEYSTORE_B64
+gh secret set ANDROID_KEYSTORE_PASSWORD
+```
+
+`versionName` is the workspace version and cargo-apk derives `versionCode` from it (`VersionCode::from_semver`), so
+every version bump is also an increase Android accepts. Neither can be set in `Cargo.toml`.
+
 ## What differs from the desktop
 
 The layout is the desktop's, small buttons included. `platform::TOUCH` switches the few exceptions:

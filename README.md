@@ -165,6 +165,15 @@ Pinning favorites and tabs. Dragging with the right button (Explorer's
 Copy Here / Move Here menu) and dropping onto an app. For file operations: no
 redo and no Shift+Delete. Small Icons and Thumbnails views are still to come.
 
+### Android (first draft)
+
+Download `Macsplorer-android-arm64.apk` from the
+[latest release](https://github.com/jbrunemann/macsplorer/releases/latest) and open it (64-bit ARM, Android 8 or later),
+or let [Obtainium](https://obtainium.imranr.dev/) keep it up to date: add
+`https://github.com/jbrunemann/macsplorer` as a source and set "Filter APKs by regular expression" to
+`Macsplorer-android.*\.apk$`, so it ignores the desktop downloads. Every release is signed with the same key, so
+updates install over the app. On first start the app asks for All files access.
+
 ### Termux (experimental)
 
 For an Android device with a mouse, such as Samsung DeX, in plain Termux with no proot or glibc. Install
