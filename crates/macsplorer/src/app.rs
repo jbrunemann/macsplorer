@@ -1587,6 +1587,8 @@ impl Explorer {
         self.selection.clear();
         self.anchor = None;
         self.focus_item = None;
+        // Edit > Select Items belongs to the folder it was turned on in.
+        self.select_mode = false;
         self.type_ahead.reset();
         self.marquee = None;
         self.rename = None;
@@ -5703,6 +5705,10 @@ mod clipboard {
         assert_eq!(app.selection.len(), 2);
         app.apply(vec![Action::Click { index: a, toggle: true, extend: false, on_label: false }], &visible);
         assert_eq!(app.selection.len(), 1, "a second tap deselects the item");
+
+        app.select_mode = true;
+        app.navigate(dir.parent().unwrap().to_path_buf());
+        assert!(!app.select_mode, "leaving the folder turns Select Items off");
         fs::remove_dir_all(&dir).unwrap();
     }
 
