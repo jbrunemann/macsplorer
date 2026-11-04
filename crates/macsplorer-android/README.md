@@ -43,6 +43,9 @@ The layout is the desktop's, small buttons included. `platform::TOUCH` switches 
 - **A long press is the right click**: egui reports it as `secondary_clicked`, so the desktop context menus open.
 - **A drag scrolls**: rows and the view background sense clicks only (`platform::item_sense`), so a swipe never
   moves files or draws a selection band.
+- **Edit > Select Items picks several files**: while it is checked a tap toggles an item in the selection (Ctrl-click
+  on a desktop, `click_modifiers`), a double tap does not open it and a tap on empty space keeps the selection. Select
+  All and Invert Selection work as before; uncheck it to open files by tapping again (`Explorer::select_mode`).
 - **Properties fills the screen** (an `Area` instead of its own window). Its close box closes the dialog only.
 - **Toolbar buttons that do not fit** (a narrow screen, a larger text size) move into a `»` menu at the right end, as in
   a Win2000 rebar: the history drop-downs go first, then Undo, Folders, Forward, Refresh and Views (`toolbar_hidden`).

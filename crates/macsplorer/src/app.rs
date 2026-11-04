@@ -435,6 +435,10 @@ pub struct Explorer {
     /// A touch screen: no Tab or Right to take a prediction, a tap on it does (`platform::TOUCH`,
     /// a field so a test can set it).
     touch: bool,
+    /// Touch only: Edit > Select Items is on, so a tap on an item toggles it in the selection
+    /// (what Ctrl does with a mouse) and nothing opens or deselects by tapping. Without it a
+    /// touch screen has no way to pick several files, as long press is the context menu.
+    select_mode: bool,
     /// ↓ in the address field was pressed: the view lists the folder being
     /// typed (`peek_dir`) until the field closes.
     address_peeking: bool,
@@ -582,6 +586,7 @@ impl Explorer {
             address_deleted: false,
             address_predicting: false,
             touch: platform::TOUCH,
+            select_mode: false,
             address_peeking: false,
             peek_dir: None,
             folders_tx,
@@ -2651,6 +2656,9 @@ impl Explorer {
                     actions.push(Action::Delete);
                 }
                 ui.separator();
+                if self.touch {
+                    egui_classic_menu::checkbox(ui, &mut self.select_mode, "Select Items");
+                }
                 if ui.add(gutter_item(ui, "Select All", platform::shortcut(false, "A"))).clicked() {
                     actions.push(Action::SelectAll);
                 }
@@ -3276,7 +3284,7 @@ impl Explorer {
         ui.visuals_mut().widgets.hovered.bg_fill = theme::color::window();
         ui.spacing_mut().item_spacing.x = 0.0;
         let font = egui::TextStyle::Body.resolve(ui.style());
-        let (press, mods) = ui.input(|i| (i.pointer.press_origin(), i.modifiers));
+        let (press, mods) = (ui.input(|i| i.pointer.press_origin()), click_modifiers(ui));
         let extend = mods.command || mods.shift;
 
         // Under the rows, so a click on a row still reaches the row. Not
@@ -3463,7 +3471,7 @@ impl Explorer {
                             let on_label = resp.clicked() && resp.interact_pointer_pos().is_some_and(|p| label_rect.contains(p));
                             actions.push(Action::Click { index, toggle: mods.command, extend: mods.shift, on_label });
                         }
-                        if resp.double_clicked() {
+                        if resp.double_clicked() && !select_mode(&resp.ctx) {
                             actions.push(Action::Open(entry.path.clone()));
                         }
                     } else if resp.clicked() || resp.secondary_clicked() {
@@ -3712,7 +3720,7 @@ impl Explorer {
                 match (press, press_hit) {
                     (_, Some(index)) => actions.push(Action::DragItems(index)),
                     (Some(origin), None) => {
-                        let m = ui.input(|i| i.modifiers);
+                        let m = click_modifiers(ui);
                         actions.push(Action::MarqueeBegin { origin, extend: m.command || m.shift });
                     }
                     (None, None) => {}
@@ -3882,7 +3890,7 @@ impl Explorer {
                 match (press, press_hit) {
                     (_, Some(index)) => actions.push(Action::DragItems(index)),
                     (Some(origin), None) => {
-                        let m = ui.input(|i| i.modifiers);
+                        let m = click_modifiers(ui);
                         actions.push(Action::MarqueeBegin { origin, extend: m.command || m.shift });
                     }
                     (None, None) => {}
@@ -4063,6 +4071,8 @@ impl eframe::App for Explorer {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let select = self.touch && self.select_mode;
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("select-mode"), select));
         self.poll_loads();
         self.poll_lists();
         self.poll_git();
@@ -4538,13 +4548,13 @@ fn item_clicks(
     menu_id: egui::Id,
     actions: &mut Vec<Action>,
 ) {
-    let m = ui.input(|i| i.modifiers);
+    let m = click_modifiers(ui);
     match hit {
         Some((index, entry)) => {
             if resp.clicked() || resp.secondary_clicked() && !selection.contains(&entry.path) {
                 actions.push(Action::Click { index, toggle: m.command, extend: m.shift, on_label: on_label && resp.clicked() });
             }
-            if resp.double_clicked() {
+            if resp.double_clicked() && !select_mode(ui.ctx()) {
                 actions.push(Action::Open(entry.path.clone()));
             }
         }
@@ -5137,6 +5147,19 @@ fn place_label(p: &Path) -> String {
 /// A menu row between the check mark and arrow gutters, so the labels and
 /// shortcuts of a menu bar dropdown line up the way Windows' do. No shortcut
 /// when `keys` is empty.
+/// Whether taps select (Edit > Select Items), as the views see it: `Explorer::ui` stores it
+/// each frame, so the drawing code needs no extra argument.
+fn select_mode(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::new("select-mode"))).unwrap_or(false)
+}
+
+/// The modifiers a click in the views is read with: in select mode a tap counts as Ctrl-click.
+fn click_modifiers(ui: &Ui) -> egui::Modifiers {
+    let mut m = ui.input(|i| i.modifiers);
+    m.command |= select_mode(ui.ctx());
+    m
+}
+
 fn gutter_item(ui: &Ui, label: impl Into<RichText>, keys: String) -> egui::Button<'static> {
     let shortcut = (!keys.is_empty()).then(|| RichText::new(keys).family(theme::shortcut_family()));
     egui_classic_menu::item(ui, label, shortcut)
@@ -5648,6 +5671,38 @@ mod clipboard {
         assert_eq!(name(&app), Some("Banana.txt".into()));
         ty(&mut app, "zz", 9000);
         assert_eq!(app.selection.len(), 1, "no match keeps the selection");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Edit > Select Items: a tap counts as a Ctrl-click, so several files can be picked by touch.
+    #[test]
+    fn select_mode_taps_toggle() {
+        let ctx = egui::Context::default();
+        let read = |on: bool| {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("select-mode"), on));
+            let mut out = false;
+            let mut full = ctx.run_ui(Default::default(), |ui| out = click_modifiers(ui).command);
+            full.textures_delta.clear();
+            out
+        };
+        assert!(!read(false), "taps replace the selection by default");
+        assert!(read(true), "in select mode a tap toggles");
+
+        let (mut app, dir) = explorer("select-mode");
+        for name in ["a", "b"] {
+            fs::write(dir.join(name), "").unwrap();
+        }
+        app.reload();
+        app.finish_listing();
+        let visible: Vec<usize> = (0..app.entries.len()).collect();
+        let index = |app: &Explorer, name: &str| app.entries.iter().position(|e| e.name == name).unwrap();
+        let (a, b) = (index(&app, "a"), index(&app, "b"));
+        for i in [a, b] {
+            app.apply(vec![Action::Click { index: i, toggle: true, extend: false, on_label: false }], &visible);
+        }
+        assert_eq!(app.selection.len(), 2);
+        app.apply(vec![Action::Click { index: a, toggle: true, extend: false, on_label: false }], &visible);
+        assert_eq!(app.selection.len(), 1, "a second tap deselects the item");
         fs::remove_dir_all(&dir).unwrap();
     }
 
