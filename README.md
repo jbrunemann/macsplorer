@@ -5,7 +5,7 @@
 <h1 align="center">Macsplorer</h1>
 
 <p align="center">
-  <strong>The Windows 2000 Explorer you remember, as a native file browser for macOS and Linux.</strong><br>
+  <strong>The Windows 2000 Explorer you remember, as a native file browser for macOS and Linux, with a first draft for Android.</strong><br>
   Written in Rust. Always-on folder tree, a real address bar, classic bevels and Tahoma font.
 </p>
 
@@ -43,13 +43,22 @@ Macsplorer is a file browser for people who think better with a folder tree on t
 - **Status bar that tells you something.** Object count, total size of the
   selection (or the folder), the free space of the disk you're on and the name
   of your machine, like the original.
+- **Zip and tar files are folders.** Browse an archive like a compressed
+  folder, copy or drag items out, or Extract All. Password-protected zips ask
+  for the password.
+- **Jump anywhere.** ⇧⌘G opens Go To Folder, where a few letters
+  (`dwn`) find `Downloads`. The address bar also predicts the folder you type,
+  as the Fish shell does.
 - **Never freezes on a big folder.** Listings run on background threads, so a
   huge directory or a slow volume doesn't lock up the window.
 - **Hidden files and extensions on your terms.** Toggle both from the View
   menu. File extensions that could make an app pass for a document
   (`Invoice.pdf.app`) always stay visible.
 - **Small, fast and open.** A single native Rust binary, no account, no
-  telemetry, MIT licensed.
+  telemetry, MIT licensed. It checks for a newer version only when you press
+  the button in the About box.
+- **On more than the Mac.** The same window runs on Linux, and a first Android
+  draft puts it on a phone or tablet, with a touch-friendly layout.
 - **Because it looks great.** Gradient caption bar, 3D bevels, classic scroll
   bars, dotted tree lines with +/− boxes. Nothing else on macOS looks like it.
 
@@ -73,7 +82,8 @@ xattr -dr com.apple.quarantine /Applications/Macsplorer.app
 
 ### Linux (experimental)
 
-Download `Macsplorer-linux-x86_64.tar.gz` from the
+Download `Macsplorer-linux-x86_64.tar.gz` (or `Macsplorer-linux-aarch64.tar.gz` for
+64-bit ARM) from the
 [latest release](https://github.com/jbrunemann/macsplorer/releases/latest),
 unpack it and run `./macsplorer [folder]`. To get the dock icon and a launcher
 entry, run `./install.sh` from the unpacked folder (`README.txt` inside says
@@ -98,73 +108,6 @@ the Linux build uses DejaVu Sans Condensed, which is built into the binary, and
 adds installed system fonts for CJK, Arabic, Hebrew and symbols so such file
 names don't show as boxes.
 
-## Features
-
-New to Macsplorer? The **[user manual](docs/manual/README.md)** walks through
-every feature with screenshots, in plain language.
-
-### Browsing
-
-- **Large Icons**, **List** and **Details** views (View menu). Details shows Name / Size / Modified / Attributes and, from the header's right-click menu, Type, Comment, Created, Accessed, Owner, Group and Branch (Column Settings under More...). Click a header to sort, click again to reverse. Drag a divider to resize a column (Esc cancels), double-click it to fit the contents. The column layout, view mode, sort, text size, dark mode and window size are remembered between runs.
-- Large Icons uses 75 px slots with names wrapped under the icon and cut to two lines (the focused item shows its full name), and arrow keys move to the nearest icon in that direction. List fills columns top to bottom with small icons and scrolls sideways (the mouse wheel too); ↑↓ step through the items, ←→ jump a column.
-- Folders first, natural name sorting (`file2` before `file10`); turn it off under View.
-- Click, ⌘-click and ⇧-click selection, arrow keys, type a few letters to jump to a name, double-click or Enter to open (files open in their default app).
-- **Marquee selection**: drag a dotted rectangle from empty space (in Details, anywhere beside a name) to select what it touches. ⌘ toggles items, ⇧ adds to the selection, Esc clears it, and the view scrolls when you drag past its edge.
-- **Folders pane** with Favorites and Locations roots. Children load in the background with a "Loading…" row, and chevrons appear only on folders that have subfolders. Click a name to open it, click the chevron or double-click to expand. Arrow keys follow tree conventions (← collapses or goes to the parent, → expands or goes to the first child).
-- **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
-- **Breadcrumb address bar**: click a segment to go there, `›` for a subfolder menu, click empty space or ⌘L to type a path (`~` works).
-- Back / forward / up / refresh. Right-click back or forward for the history list.
-- Search box filters the current folder by name.
-- **Live updates**: the list and the Folders pane follow changes other programs make, within a second, keeping the selection.
-- **Dark mode** (View menu), for people who want the classic look after sunset.
-
-### Working with files
-
-- Right-click an item for **Open**, **Open With**, **Show in Finder**, **Open in Terminal** (folders), **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete**, **Rename** and **Properties**. Right-click empty space for **Paste**, **Refresh**, **Open in Terminal** and **Properties** of the open folder.
-- **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does. A name that's taken elsewhere asks with Windows 2000's Confirm File Replace (replaced items go to the Trash). Cut items are drawn faded until pasted. A paste that takes more than a second shows the **Copying...** window with the time left and **Cancel**, which leaves no half-copied item behind. On macOS, Cut and Copy use the system pasteboard, so they work with Finder and between Macsplorer windows.
-- **Drag and drop** inside the window, into the Folders pane and to and from Finder and other apps (macOS): the same disk moves, another copies, ⌥ copies, ⌘ moves, ⌥⌘ makes a shortcut (a symbolic link "Name - Shortcut"). The dragged items follow the pointer half transparent and the target folder is highlighted. A closed folder in the Folders pane opens when you rest on it. On Linux it works inside the window, with Windows' keys (Shift, Ctrl, Ctrl+Shift).
-- **Rename** with F2 or right-click, in place. The initial selection follows Explorer's rule (name without extension, whole name for folders, dotfiles and hidden extensions). Enter or clicking away commits, Esc cancels, `/` can't be typed. Clicking a selected name also starts a rename, after a short pause.
-- **Delete** (⌦ forward delete, or ⌘⌫) moves the selection to the Trash.
-- **Undo** (toolbar button, Edit menu or ⌘Z) reverses the last rename, move, copy or delete, up to 10 steps back. Undoing a delete restores the items from the Trash.
-- **Copy as Path** (⌘⌥C) puts the selected items' quoted full paths on the clipboard.
-- **Properties** (⌘I, File menu or right-click): the Windows 2000 General page in its own window, with name (editable, renames on OK or Apply), type (Finder's Kind, e.g. "Microsoft Excel Workbook"), location, size, and for folders the number of files and folders inside, counted in the background. Files also show created, modified and accessed dates, folders their created date. A Customize tab gives folders a color and an emblem, the way Finder stores them.
-- **Open in Terminal** starts Terminal on macOS; on Linux `$TERMINAL`, else the first common terminal found. Set `"terminal"` in `settings.json` (an app name such as `iTerm` or `Ghostty` on macOS, a command on Linux) to use another one.
-- Dates and numbers follow the system locale (macOS Language & Region settings).
-
-### Git
-
-Inside a Git working tree the status bar gets a pane with the branch glyph and a [posh-git](https://github.com/dahlbyk/posh-git) style summary (`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, same symbols and colors). The **Branch** column (header menu) shows the branch of folders that are working trees. Nothing runs on the UI thread, and nothing is shown when no git is found.
-
-### Look
-
-A Windows 2000 "Windows Classic" theme: system colors, 3D bevels, Tahoma, a gradient caption bar that replaces the macOS title bar, flat toolbar buttons that pop out on hover, classic scroll bars, a dotted-line tree with +/− boxes and hand-drawn 16×16 icons. Documents are the dog-eared paper page with a colored emblem from the Seti icon theme, folders are the yellow Windows 2000 folder, and apps keep their real macOS icon. File names get ls-style colors for executables, links and archives. The menus from File to Help follow the original, with Folders and Views buttons on the toolbar. The status bar shows the object count, free disk space (or the selection count), size of the selection (or of the folder) and the machine name.
-
-### Shortcuts
-
-| Shortcut | Action |
-|---|---|
-| ⌘[ · ⌥← · ⌫ | Back |
-| ⌘] · ⌥→ | Forward |
-| ⌘↑ · ⌥↑ | Up |
-| ⌘R · F5 | Refresh |
-| ⌘L | Edit path |
-| F2 | Rename |
-| Enter | Open |
-| ⌘A | Select all |
-| ⌘X · ⌘C · ⌘V | Cut · Copy · Paste |
-| ⌘⌥C | Copy as Path |
-| ⌦ · ⌘⌫ | Move to Trash |
-| ⌘Z | Undo |
-| ⌘I | Properties |
-
-On Linux, ⌘ is Ctrl.
-
-### Not yet
-
-Pinning favorites and tabs. Dragging with the right button (Explorer's
-Copy Here / Move Here menu) and dropping onto an app. For file operations: no
-redo and no Shift+Delete. Small Icons and Thumbnails views are still to come.
-
 ### Android (first draft)
 
 Download `Macsplorer-android-arm64.apk` from the
@@ -172,7 +115,16 @@ Download `Macsplorer-android-arm64.apk` from the
 or let [Obtainium](https://obtainium.imranr.dev/) keep it up to date: add
 `https://github.com/jbrunemann/macsplorer` as a source and set "Filter APKs by regular expression" to
 `Macsplorer-android.*\.apk$`, so it ignores the desktop downloads. Every release is signed with the same key, so
-updates install over the app. On first start the app asks for All files access.
+updates install over the app. On first start the app asks for All files access, which it needs to list every
+folder.
+
+It is the desktop window on a touch screen, with a few changes: the Folders pane is a drawer that opens from the
+**Folders** button, a long press is the right click, a swipe scrolls instead of dragging files, **Edit › Select Items**
+lets you tap several files, toolbar buttons that don't fit move into a **»** menu, and the back button or gesture
+closes what is on top before it goes back in the history. Properties fills the screen. Dates and numbers follow the
+phone's region settings. Delete moves items to a `Trash` folder inside the app, Open in Terminal and Eject aren't
+available, and only the Properties dialog is sized for touch. Expect rough edges: this is a first draft, and the
+[crate's README](crates/macsplorer-android/README.md) lists the known gaps.
 
 ### Termux (experimental)
 
@@ -201,6 +153,84 @@ GPU. Dates use the `LANG` of the Termux session (the C library there only has th
 differences above apply (Trash in `~/.local/share/Trash`, no Open With). For the touch app see the Android APK
 (`crates/macsplorer-android`).
 
+## Features
+
+New to Macsplorer? The **[user manual](docs/manual/README.md)** walks through
+every feature with screenshots, in plain language.
+
+### Browsing
+
+- **Large Icons**, **List** and **Details** views (View menu). Details shows Name / Size / Modified / Attributes and, from the header's right-click menu, Type, Comment, Created, Accessed, Owner, Group and Branch (Column Settings under More...). Click a header to sort, click again to reverse. Drag a divider to resize a column (Esc cancels), double-click it to fit the contents. The column layout, view mode, sort, text size, dark mode and window size are remembered between runs.
+- Large Icons uses 75 px slots with names wrapped under the icon and cut to two lines (the focused item shows its full name), and arrow keys move to the nearest icon in that direction. List fills columns top to bottom with small icons and scrolls sideways (the mouse wheel too); ↑↓ step through the items, ←→ jump a column.
+- Folders first, natural name sorting (`file2` before `file10`); turn it off under View.
+- Click, ⌘-click and ⇧-click selection, arrow keys, type a few letters to jump to a name, double-click or Enter to open (files open in their default app).
+- **Marquee selection**: drag a dotted rectangle from empty space (in Details, anywhere beside a name) to select what it touches. ⌘ toggles items, ⇧ adds to the selection, Esc clears it, and the view scrolls when you drag past its edge.
+- **Folders pane** with Favorites and Locations roots. Children load in the background with a "Loading…" row, and chevrons appear only on folders that have subfolders. Click a name to open it, click the chevron or double-click to expand. Arrow keys follow tree conventions (← collapses or goes to the parent, → expands or goes to the first child).
+- **Expand to open folder** (View menu, on by default): the tree expands to and selects the folder you're in, under the most specific root (`~/Documents/x` opens under Documents, not Home).
+- **Breadcrumb address bar**: click a segment to go there, `›` for a subfolder menu, click empty space or ⌘L to type a path (`~` works).
+- Back / forward / up / refresh. Right-click back or forward for the history list.
+- **Go To Folder** (⇧⌘G, View menu): type a few letters of a folder's name and pick it from a ranked list of recent folders, places and open tree folders.
+- **Address bar prediction**: while you type a folder path the rest of its name appears in gray (→, End or Tab takes it), and ↓ previews that folder in the list.
+- Search box filters the current folder by name (⌘F, F3 or `/`).
+- **Text Size** (View menu, ⌘+ and ⌘−): 100, 125, 150 or 200 % for the whole window, text and icons together.
+- **Zip and tar archives** (`.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`) open as read-only folders through Show Package Contents or by typing the path. Double-click a file in one to open a temporary copy, copy or drag items out, **Extract...** the selection or **Extract All...** into a folder. Zip passwords are asked for. Items taken out keep the quarantine mark, so Gatekeeper still checks downloaded apps. Rename, Delete and Paste are refused inside an archive.
+- **Live updates**: the list and the Folders pane follow changes other programs make, within a second, keeping the selection.
+- **Dark mode** (View menu), for people who want the classic look after sunset.
+
+### Working with files
+
+- Right-click an item for **Open**, **Open With**, **Show in Finder**, **Open in Terminal** (folders), **Eject** (volumes), **Cut**, **Copy**, **Copy as Path**, **Paste** (into a folder), **Delete**, **Rename** and **Properties**. Right-click empty space for **Paste**, **Refresh**, **Open in Terminal** and **Properties** of the open folder.
+- **Cut, Copy and Paste** files and folders (⌘X / ⌘C / ⌘V). Pasting next to an existing name creates "Name - Copy.ext", "Name - Copy (2).ext", as Explorer does. A name that's taken elsewhere asks with Windows 2000's Confirm File Replace (replaced items go to the Trash). Cut items are drawn faded until pasted. A paste that takes more than a second shows the **Copying...** window with the time left and **Cancel**, which leaves no half-copied item behind. On macOS, Cut and Copy use the system pasteboard, so they work with Finder and between Macsplorer windows.
+- **Drag and drop** inside the window, into the Folders pane and to and from Finder and other apps (macOS): the same disk moves, another copies, ⌥ copies, ⌘ moves, ⌥⌘ makes a shortcut (a symbolic link "Name - Shortcut"). The dragged items follow the pointer half transparent and the target folder is highlighted. A closed folder in the Folders pane opens when you rest on it. On Linux it works inside the window, with Windows' keys (Shift, Ctrl, Ctrl+Shift).
+- **New › Folder** (right-click empty space) makes "New Folder" and lets you type its name at once.
+- **Rename** with F2 or right-click, in place. The initial selection follows Explorer's rule (name without extension, whole name for folders, dotfiles and hidden extensions). Enter or clicking away commits, Esc cancels, `/` can't be typed. Clicking a selected name also starts a rename, after a short pause (View › Click to rename turns that off).
+- **Delete** (⌦ forward delete, or ⌘⌫) moves the selection to the Trash.
+- **Undo** (toolbar button, Edit menu or ⌘Z) reverses the last rename, move, copy or delete, up to 10 steps back. Undoing a delete restores the items from the Trash.
+- **Copy as Path** (⌘⌥C) puts the selected items' quoted full paths on the clipboard.
+- **Properties** (⌘I, File menu or right-click): the Windows 2000 General page in its own window, with name (editable, renames on OK or Apply), type (Finder's Kind, e.g. "Microsoft Excel Workbook"), location, size, and for folders the number of files and folders inside, counted in the background. Files also show created, modified and accessed dates, folders their created date. A Customize tab gives folders a color and an emblem, the way Finder stores them.
+- **Open in Terminal** starts Terminal on macOS; on Linux `$TERMINAL`, else the first common terminal found. Set `"terminal"` in `settings.json` (an app name such as `iTerm` or `Ghostty` on macOS, a command on Linux) to use another one.
+- Dates and numbers follow the system locale (macOS Language & Region settings).
+
+### Git
+
+Inside a Git working tree the status bar gets a pane with the branch glyph and a [posh-git](https://github.com/dahlbyk/posh-git) style summary (`[main ≡ +0 ~2 -1 | +1 ~1 -0 !]`, same symbols and colors). The **Branch** column (header menu) shows the branch of folders that are working trees. Nothing runs on the UI thread, and nothing is shown when no git is found.
+
+### Look
+
+A Windows 2000 "Windows Classic" theme: system colors, 3D bevels, Tahoma, a gradient caption bar that replaces the macOS title bar, flat toolbar buttons that pop out on hover, classic scroll bars, a dotted-line tree with +/− boxes and hand-drawn 16×16 icons. Documents are the dog-eared paper page with a colored emblem from the Seti icon theme, folders are the yellow Windows 2000 folder, and apps keep their real macOS icon. File names get ls-style colors for executables, links and archives. The menus from File to Help follow the original, with Folders and Views buttons on the toolbar. The status bar shows the object count, free disk space (or the selection count), size of the selection (or of the folder) and the machine name.
+
+### Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| ⌘[ · ⌥← · ⌫ | Back |
+| ⌘] · ⌥→ | Forward |
+| ⌘↑ · ⌥↑ | Up |
+| ⌘R · F5 | Refresh |
+| ⌘L · F4 | Edit path |
+| ⌘F · F3 · / | Search this folder |
+| ⇧⌘G | Go To Folder |
+| Tab · F6 | Next part of the window |
+| ? · F1 | Shortcut list |
+| F2 | Rename |
+| Enter | Open |
+| ⌘A | Select all |
+| ⌘X · ⌘C · ⌘V | Cut · Copy · Paste |
+| ⌘⌥C | Copy as Path |
+| ⌦ · ⌘⌫ | Move to Trash |
+| ⌘Z | Undo |
+| ⌘I | Properties |
+| ⌘+ · ⌘− · ⌘0 | Bigger, smaller, normal text |
+| ⌘E · ⌘N | New window |
+
+On Linux, ⌘ is Ctrl.
+
+### Not yet
+
+Pinning favorites and tabs. Archives you can change (writing into a zip), and 7z, rar and cab files. Dragging with the right button (Explorer's
+Copy Here / Move Here menu) and dropping onto an app. For file operations: no
+redo and no Shift+Delete. Small Icons and Thumbnails views are still to come.
+
 ## For developers
 
 ### Build from source
@@ -227,6 +257,9 @@ dock icon on Linux comes from the installed `.desktop` file, so run `install.sh`
 after unpacking. `cargo check --target x86_64-unknown-linux-gnu` cross-checks
 from a Mac (`rustup target add` first).
 
+`scripts/build-android.sh [install]` builds `target/release/apk/macsplorer.apk` with cargo-apk (an Android
+NDK and a JDK are needed; the crate's README has the details, including how releases are signed).
+
 `scripts/bundle-termux.sh` builds `target/release/macsplorer-termux-aarch64.tar.gz` and the Termux package
 `macsplorer_<version>_aarch64.deb` (`scripts/termux-deb.py` writes the `.deb` itself, no dpkg needed) for Termux:X11, cross-compiled with
 the Android NDK (`rustup target add aarch64-linux-android`), or natively inside Termux. winit, glutin and a few
@@ -248,9 +281,11 @@ cargo run -p make-icon                  # regenerates assets/icon.png and macspl
 
 | Path | Purpose |
 |---|---|
-| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, history, breadcrumbs, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons and List layouts, marquee selection, column header resizing, Git status and the Properties folder size walk. Unit-tested. |
+| `crates/macsplorer-core` | UI-independent logic: listing, sorting, rename rules, copy/move, zip and tar archives, history, breadcrumbs, Go To Folder ranking, address bar prediction, sidebar places, the Folders tree model, Seti icon lookup, the Large Icons and List layouts, marquee selection, column header resizing, Git status and the Properties folder size walk. Unit-tested. |
 | `crates/macsplorer` | The app (egui/eframe 0.36). |
+| `crates/macsplorer-android` | The Android app (first draft): the `cdylib` that cargo-apk packs around `macsplorer::run_android`. See its README. |
 | `crates/egui-classic-menu` | Standalone egui crate for Windows Classic menu rows. Reusable, see its README. |
+| `crates/update-check` | Standalone crate that asks a web address (GitHub's "latest release") whether a newer version exists. Reusable, see its README. |
 | `tools/make-icon` | Renders the app icon and `.icns`. |
 | `tools/re` | PDB and disassembly helpers for the Windows analysis. |
 | `docs/` | Findings from the Windows binaries, and the user manual in `docs/manual/`. |

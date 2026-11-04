@@ -1,6 +1,6 @@
 # Macsplorer User Manual
 
-Macsplorer is a file browser for your Mac. It looks and works like the Windows 2000 Explorer: a folder tree on the left, your files on the right, and the full path of where you are along the top. You can use it next to Finder or instead of it. Your files open in the same apps as always.
+Macsplorer is a file browser for your Mac. It looks and works like the Windows 2000 Explorer: a folder tree on the left, your files on the right, and the full path of where you are along the top. You can use it next to Finder or instead of it. Your files open in the same apps as always. This manual describes the Mac version. Macsplorer also runs on Linux and, as a first draft, on Android phones and tablets: [chapter 14](#14-linux-and-android) lists what is different there.
 
 <img src="images/window.png" alt="The Macsplorer window" width="900">
 
@@ -19,7 +19,8 @@ Macsplorer is a file browser for your Mac. It looks and works like the Windows 2
 11. [Finding files](#11-finding-files)
 12. [Making it your own](#12-making-it-your-own)
 13. [Keyboard shortcuts](#13-keyboard-shortcuts)
-14. [Questions and answers](#14-questions-and-answers)
+14. [Linux and Android](#14-linux-and-android)
+15. [Questions and answers](#15-questions-and-answers)
 
 ---
 
@@ -497,10 +498,67 @@ You can use Macsplorer without the mouse. **Tab** moves from the file list to th
 
 On Linux, use Ctrl wherever this manual says ⌘.
 
-## 14. Questions and answers
+## 14. Linux and Android
+
+The desktop chapters above apply to all of these, except where this chapter says otherwise. Wherever the manual says ⌘, use **Ctrl** on Linux.
+
+### Linux
+
+Download `Macsplorer-linux-x86_64.tar.gz` (or `Macsplorer-linux-aarch64.tar.gz` on a 64-bit ARM computer such as a Raspberry Pi) from the project's releases page and unpack it. Run `./macsplorer` to try it, or `./install.sh` to put it in your application menu with its icon. It needs a Wayland or X11 desktop. This version is newer and has seen less use than the Mac one, so some edges are still rough.
+
+What is different from the Mac:
+
+- **Delete** moves items to the desktop's Trash, **Show in File Manager** opens your file manager, and **Eject** unmounts a disk. Disks come from `/media`, `/run/media` and `/mnt`.
+- **Open With** isn't there yet, and apps show the paper page icon instead of their own.
+- **Dragging** works inside the window, and files dragged in from another file manager are accepted on X11 (see [Dragging](#dragging)). Dragging out of the window isn't there yet. Hold **Shift** (move), **Ctrl** (copy) or **Ctrl+Shift** (shortcut) as in Windows.
+- **Folders** can have a color but no emblem (see [Customizing a folder](#customizing-a-folder)).
+- Like Nautilus, Macsplorer hides the names listed in a folder's `.hidden` file and backup files ending in `~`.
+- The window has no Mac title bar: Macsplorer draws its own, with resize handles on the frame.
+- **Tahoma**, the font of the Windows 2000 look, isn't included. If it is installed (Wine and the `msttcorefonts` package have it) Macsplorer uses it, otherwise it uses DejaVu Sans Condensed and borrows installed fonts for Chinese, Japanese, Korean, Arabic, Hebrew and symbols.
+
+### Android
+
+Download `Macsplorer-android-arm64.apk` from the releases page and open it on your phone or tablet (64-bit ARM, Android 8 or later). Android asks you to allow installing from that source. To get updates automatically, add `https://github.com/jbrunemann/macsplorer` to the [Obtainium](https://obtainium.imranr.dev/) app, and set "Filter APKs by regular expression" to `Macsplorer-android.*\.apk$`.
+
+The first time, Android opens a settings page asking for **All files access**. Macsplorer needs it to list every folder. Switch it on and go back.
+
+It is the same window as on the desktop, drawn for a finger:
+
+| On a computer | On Android |
+|---|---|
+| Right-click | **Long press** |
+| Drag to scroll or select | **Swipe** scrolls. Dragging doesn't move files or draw a selection rectangle. |
+| ⌘-click or ⇧-click to select several items | Choose **Edit › Select Items**: while it is checked, tapping an item adds or removes it from the selection, and a double tap doesn't open it. Uncheck it to open files by tapping again. **Select All** and **Invert Selection** work as before. |
+| The Folders pane stays on the left | The Folders pane is a **drawer**: tap **Folders** on the toolbar to slide it over the window, and tap a folder or the dimmed part to close it. |
+| Alt-left or the Back button | The phone's **back button or gesture** closes what is on top (a menu, a window, the drawer, an address being typed) and otherwise goes back to the previous folder. At the first folder it puts the app away. |
+| Tab or → takes the gray guess in the address bar | **Tap the gray rest** of the address. |
+| A wide toolbar | Buttons that don't fit move into a **»** menu at the right end. On a narrow screen the search box becomes a magnifier button. |
+
+Other things that are different:
+
+- **Properties** fills the screen.
+- The sideways swipe in **Details** scrolls the columns. In **List**, a column is never wider than the screen, and a swipe snaps to the next column.
+- **Your home folder** (`~`) is the phone's shared storage, shown as "Internal storage". Memory cards appear under **Locations**.
+- **Dates and numbers** follow the phone's region settings.
+- **Delete** moves items to a Trash folder inside Macsplorer, and nothing empties it by itself.
+- **Open in Terminal**, **Eject** and **New Window** don't work. **Show in File Manager** opens the Files app on the folder that holds the item.
+- Files open in the app Android picks for their type.
+- Windows other than Properties are small and sit in the middle of the screen, and their close box does nothing: use **Cancel**.
+
+### Termux
+
+On an Android device with a mouse and a big screen, such as a Samsung phone or tablet in DeX mode, you can run the Linux version instead of the touch app. Install the Termux and Termux:X11 apps, download `macsplorer_<version>_aarch64.deb` from the releases page and install it with `pkg install ./macsplorer_<version>_aarch64.deb`. Start the display with `termux-x11 :0 &`, then `DISPLAY=:0 macsplorer`. It looks and works like the Linux version, mouse and keyboard included, so the Linux notes above apply. It is experimental.
+
+## 15. Questions and answers
 
 **I added a file in another app. Do I need to refresh?**
 No. Macsplorer notices changes in the folder you're looking at and in the folders open in the Folders pane, and updates within a second. **Refresh** (⌘R) is still there for everything else.
+
+**Does Macsplorer run on Windows, iPhone or iPad?**
+No. It runs on macOS, Linux and Android. See [chapter 14](#14-linux-and-android).
+
+**On my phone I can't select more than one file.**
+Choose **Edit › Select Items**, then tap each file. Uncheck it again to open files with a tap.
 
 **Can I drag files to move them?**
 Yes, see [Dragging](#dragging). On the same disk dragging moves; hold ⌥ Option to copy instead.
