@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds target/release/macsplorer-termux-<arch>.tar.gz: Macsplorer for Termux, shown in a Termux:X11 window
+# Builds target/release/macsplorer-termux-<arch>.tar.gz and target/release/macsplorer_<version>_<arch>.deb (for
+# `pkg install ./macsplorer_*.deb`, see scripts/termux-deb.py): Macsplorer for Termux, shown in a Termux:X11 window
 # (a desktop on a Samsung DeX, Chromebook or tablet with a mouse). It is a normal Android (Bionic) program with
 # the desktop Linux code and an X11 window, so it runs in plain Termux, with no proot and no glibc.
 #
@@ -106,3 +107,6 @@ TXT
 
 tar -C "$out" -czf "$dir.tar.gz" "$(basename "$dir")"
 echo "$dir.tar.gz"
+
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+python3 -I scripts/termux-deb.py "$dir" "$version" "$arch" "$out/macsplorer_${version}_$arch.deb"

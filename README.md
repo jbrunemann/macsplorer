@@ -178,9 +178,17 @@ updates install over the app. On first start the app asks for All files access.
 
 For an Android device with a mouse, such as Samsung DeX, in plain Termux with no proot or glibc. Install
 [Termux](https://f-droid.org/packages/com.termux/) and the Termux:X11 app, download
-`Macsplorer-termux-aarch64.tar.gz` from the
-[latest release](https://github.com/jbrunemann/macsplorer/releases/latest), unpack it and run `./install.sh`
-(it installs the X11 libraries with `pkg`). Then start the X server and the program:
+`macsplorer_<version>_aarch64.deb` from the
+[latest release](https://github.com/jbrunemann/macsplorer/releases/latest) and install it with `pkg`, which
+fetches the X11 libraries it needs:
+
+```sh
+pkg install ./macsplorer_<version>_aarch64.deb
+```
+
+`pkg remove macsplorer` takes it off again; a newer `.deb` installs over it. (The release also has
+`Macsplorer-termux-aarch64.tar.gz` with an `install.sh`, for the same thing without a package.) Then start the X
+server and the program:
 
 ```sh
 termux-x11 :0 &
@@ -219,7 +227,8 @@ dock icon on Linux comes from the installed `.desktop` file, so run `install.sh`
 after unpacking. `cargo check --target x86_64-unknown-linux-gnu` cross-checks
 from a Mac (`rustup target add` first).
 
-`scripts/bundle-termux.sh` builds `target/release/macsplorer-termux-aarch64.tar.gz` for Termux:X11, cross-compiled with
+`scripts/bundle-termux.sh` builds `target/release/macsplorer-termux-aarch64.tar.gz` and the Termux package
+`macsplorer_<version>_aarch64.deb` (`scripts/termux-deb.py` writes the `.deb` itself, no dpkg needed) for Termux:X11, cross-compiled with
 the Android NDK (`rustup target add aarch64-linux-android`), or natively inside Termux. winit, glutin and a few
 crates around them switch X11 off for every Android target, so the script patches copies of them
 (`scripts/termux-patch.py`, `cargo --config patch`: nothing in the workspace or `Cargo.lock` changes). The program

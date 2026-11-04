@@ -68,10 +68,14 @@ jobs:
           scripts/bundle-termux.sh
           mv target/release/macsplorer-termux-aarch64.tar.gz Macsplorer-termux-aarch64.tar.gz
           sha256sum Macsplorer-termux-aarch64.tar.gz > Macsplorer-termux-aarch64.tar.gz.sha256
+          mv target/release/macsplorer_*_aarch64.deb .
+          sha256sum macsplorer_*_aarch64.deb > "$(echo macsplorer_*_aarch64.deb).sha256"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: Macsplorer-termux-aarch64
-          path: Macsplorer-termux-aarch64.tar.gz*
+          path: |
+            Macsplorer-termux-aarch64.tar.gz*
+            macsplorer_*_aarch64.deb*
 
   android:
     # The APK is what Obtainium installs. The file name has no version in it, so an Obtainium filter
